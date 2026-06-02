@@ -12,6 +12,7 @@ from typing import Any
 
 from config.settings import ModelTier
 from llm.client import LLMClient
+from llm.soul import inject
 
 
 class Decision(str, Enum):
@@ -90,7 +91,7 @@ class PortfolioManagerAgent:
         }
         """
         user_msg = self._build_prompt(ticker, context)
-        raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.REASONING)
+        raw = self._llm.call(system=inject(_SYSTEM_PROMPT), user=user_msg, tier=ModelTier.REASONING)
 
         return PortfolioDecision(
             ticker=ticker,
