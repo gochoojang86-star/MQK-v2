@@ -1,0 +1,43 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.env.*
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# 보안 - 절대 커밋 금지
+.env
+.env.*
+config/secrets.py
+config/kis_credentials.py
+*.key
+*.pem
+
+# 로그 (크기 이슈)
+logs/debug/
+
+# 데이터
+data/raw/
+data/cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 테스트 캐시
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OMC 상태
+.omc/state/
