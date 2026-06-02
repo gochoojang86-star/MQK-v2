@@ -127,16 +127,14 @@ class OrderManager:
         self._log_execution(execution)
         return execution
 
-    def _log_order(self, order: OrderRequest) -> None:
-        today = datetime.now().strftime("%Y-%m-%d")
-        log_path = self._log_dir / today / "orders.jsonl"
+    def _append_log(self, record) -> None:
+        log_path = self._log_dir / datetime.now().strftime("%Y-%m-%d") / "orders.jsonl"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(asdict(order), ensure_ascii=False) + "\n")
+            f.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
+
+    def _log_order(self, order: OrderRequest) -> None:
+        self._append_log(order)
 
     def _log_execution(self, result: ExecutionResult) -> None:
-        today = datetime.now().strftime("%Y-%m-%d")
-        log_path = self._log_dir / today / "orders.jsonl"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(asdict(result), ensure_ascii=False) + "\n")
+        self._append_log(result)

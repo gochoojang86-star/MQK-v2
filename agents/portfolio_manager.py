@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from config.settings import ModelTier
 from llm.client import LLMClient
 
 
@@ -89,7 +90,7 @@ class PortfolioManagerAgent:
         }
         """
         user_msg = self._build_prompt(ticker, context)
-        raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg)
+        raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.REASONING)
 
         return PortfolioDecision(
             ticker=ticker,

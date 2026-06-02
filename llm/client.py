@@ -1,6 +1,7 @@
 """
 LLM 클라이언트 유틸리티
-모든 Agent가 공통으로 사용하는 Claude API 래퍼
+모든 Agent가 공통으로 사용하는 API 래퍼.
+Agent에서만 사용 — Code에서는 절대 호출 금지.
 """
 from __future__ import annotations
 
@@ -8,40 +9,74 @@ import json
 import os
 from typing import Any
 
-import anthropic
+# ── OpenAI (현재 사용) ────────────────────────────────────────────────────────
+from openai import OpenAI
 
-from config.settings import LLM_CONFIG
+# ── Anthropic (원복용 주석) ───────────────────────────────────────────────────
+# import anthropic
+
+from config.settings import LLM_CONFIG, ModelTier
+
+
+# o-series 모델은 temperature 미지원, max_completion_tokens 사용
+_REASONING_MODELS = {"o1", "o1-mini", "o3", "o3-mini", "o4-mini", "o1-preview"}
 
 
 class LLMClient:
     """
-    Anthropic Claude API 클라이언트.
-    Agent에서만 사용 - Code에서는 절대 호출 금지.
+    OpenAI API 클라이언트.
+    tier 인자로 모델을 선택한다 — 직접 model 문자열을 넘기지 않는다.
     """
 
     def __init__(self, config=None):
         self._cfg = config or LLM_CONFIG
-        self._client = anthropic.Anthropic(
-            api_key=os.environ.get("ANTHROPIC_API_KEY", "")
-        )
+        # ── OpenAI ───────────────────────────────────────────────────────────
+        self._client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+        # ── Anthropic (원복용 주석) ───────────────────────────────────────────
+        # self._client = anthropic.Anthropic(
+        #     api_key=os.environ.get("ANTHROPIC_API_KEY", "")
+        # )
 
     def call(
         self,
         system: str,
         user: str,
+        tier: ModelTier = ModelTier.STANDARD,
         expect_json: bool = True,
     ) -> dict[str, Any] | str:
         """
-        Claude 호출. expect_json=True면 JSON 파싱 후 반환.
-        비용 제어: Scanner 통과 종목에만 호출할 것.
+        OpenAI 호출.
+        - tier로 모델 자동 선택 (REASONING/STANDARD/FAST)
+        - o-series는 temperature 제거, max_completion_tokens 사용
+        - expect_json=True면 JSON 파싱 후 반환
         """
-        response = self._client.messages.create(
-            model=self._cfg.model,
-            max_tokens=self._cfg.max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        raw = response.content[0].text.strip()
+        model = self._cfg.model_for(tier)
+        is_reasoning = model in _REASONING_MODELS
+
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user",   "content": user},
+            ],
+        }
+        if is_reasoning:
+            kwargs["max_completion_tokens"] = self._cfg.max_tokens
+        else:
+            kwargs["max_tokens"]  = self._cfg.max_tokens
+            kwargs["temperature"] = self._cfg.temperature
+
+        response = self._client.chat.completions.create(**kwargs)
+        raw = response.choices[0].message.content.strip()
+
+        # ── Anthropic (원복용 주석) ───────────────────────────────────────────
+        # response = self._client.messages.create(
+        #     model=self._cfg.model,
+        #     max_tokens=self._cfg.max_tokens,
+        #     system=system,
+        #     messages=[{"role": "user", "content": user}],
+        # )
+        # raw = response.content[0].text.strip()
 
         if not expect_json:
             return raw

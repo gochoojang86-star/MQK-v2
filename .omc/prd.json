@@ -1,0 +1,123 @@
+{
+  "project": "MQK-v2 Master Build",
+  "version": "1.0",
+  "stories": [
+    {
+      "id": "US-001",
+      "title": "PROJECT_MASTER_SPEC.md 저장 + 기반 폴더 구조 생성",
+      "passes": true,
+      "acceptanceCriteria": [
+        "PROJECT_MASTER_SPEC.md 파일이 MQK-v2 루트에 존재한다",
+        "agents/, codes/, broker/, llm/, config/, data/, logs/, backtest/ 디렉토리가 존재한다",
+        "logs/debug/ 하위 구조가 존재한다",
+        "pyproject.toml 또는 requirements.txt가 존재한다",
+        "config/settings.py에 리스크 규칙(risk_per_trade_pct 등 8개 파라미터)이 정의된다",
+        ".gitignore 파일이 존재한다",
+        "README.md가 존재한다"
+      ]
+    },
+    {
+      "id": "US-002",
+      "title": "Phase 2: Risk Officer Code + Position Sizer Code",
+      "passes": true,
+      "acceptanceCriteria": [
+        "codes/risk_officer.py가 존재하며 RiskOfficer 클래스를 포함한다",
+        "RiskOfficer.check()는 종목당 리스크, 일일 리스크, 보유종목수, 섹터 집중도를 검증한다",
+        "RiskOfficer.check()는 위반 시 RiskViolation을 raise한다",
+        "codes/position_sizer.py가 존재하며 PositionSizer 클래스를 포함한다",
+        "PositionSizer.calculate()는 risk_per_trade_pct=0.5% 기준으로 수량을 계산한다",
+        "ATR 기반 손절폭 계산 로직이 포함된다(atr_multiplier=1.5)",
+        "averaging_down=false 강제 적용 로직이 존재한다"
+      ]
+    },
+    {
+      "id": "US-003",
+      "title": "Phase 1 Code: Market Data + Scanner + Technical + Flow",
+      "passes": true,
+      "acceptanceCriteria": [
+        "codes/market_data.py가 존재하며 MarketData 클래스를 포함한다",
+        "codes/scanner.py가 존재하며 Scanner 클래스가 5000→30종목 필터링 인터페이스를 가진다",
+        "codes/technical.py가 존재하며 ATR, RSI, VCP, 박스돌파, 눌림목, 이평선 계산 함수를 포함한다",
+        "codes/flow.py가 존재하며 외국인/기관/프로그램 수급 계산 로직을 포함한다"
+      ]
+    },
+    {
+      "id": "US-004",
+      "title": "Phase 3: Portfolio Manager Agent + Theme Agent",
+      "passes": true,
+      "acceptanceCriteria": [
+        "agents/portfolio_manager.py가 존재하며 PortfolioManagerAgent 클래스를 포함한다",
+        "PortfolioManagerAgent.decide()는 BUY/SELL/HOLD/WAIT 중 하나와 confidence, reason, counter_argument를 반환한다",
+        "agents/theme_agent.py가 존재하며 ThemeAgent 클래스를 포함한다",
+        "ThemeAgent.analyze()는 theme, leader, strength를 포함한 dict를 반환한다",
+        "agents/regime_agent.py가 존재하며 RegimeAgent 클래스를 포함한다",
+        "RegimeAgent.judge()는 regime과 confidence를 반환한다",
+        "LLM 호출 비용 제어: Scanner Code 통과 후 30종목 이하에만 LLM 호출"
+      ]
+    },
+    {
+      "id": "US-005",
+      "title": "Phase 3 보조: News Agent + Disclosure Agent",
+      "passes": true,
+      "acceptanceCriteria": [
+        "agents/news_agent.py가 존재하며 NewsAgent 클래스를 포함한다",
+        "NewsAgent.evaluate()는 뉴스 질 판단(재탕/신규재료/소멸/루머/정책수혜)을 반환한다",
+        "agents/disclosure_agent.py가 존재하며 DisclosureAgent 클래스를 포함한다",
+        "DisclosureAgent.interpret()는 공시 유형(CB/BW/유증/수주/공급계약)을 판단한다"
+      ]
+    },
+    {
+      "id": "US-006",
+      "title": "Phase 4: Order Manager + Stop/TakeProfit Code",
+      "passes": true,
+      "acceptanceCriteria": [
+        "codes/order_manager.py가 존재하며 OrderManager 클래스를 포함한다",
+        "OrderManager는 KIS API 연동 인터페이스(buy/sell/cancel 메서드)를 가진다",
+        "codes/stop_take_profit.py가 존재하며 StopTakeProfitManager 클래스를 포함한다",
+        "손절, 1차 익절, 2차 익절, 트레일링스탑 로직이 포함된다",
+        "broker/kis_api.py가 존재하며 KIS API 연동 기본 구조를 가진다"
+      ]
+    },
+    {
+      "id": "US-007",
+      "title": "Phase 4: Telegram Approval 시스템",
+      "passes": true,
+      "acceptanceCriteria": [
+        "broker/telegram.py가 존재하며 TelegramApproval 클래스를 포함한다",
+        "TelegramApproval.request_approval()은 매수 신호를 텔레그램으로 전송하는 인터페이스를 가진다",
+        "require_telegram_approval=true 설정이 config/settings.py에 반영된다"
+      ]
+    },
+    {
+      "id": "US-008",
+      "title": "Phase 5: Review Agent + Self Improvement Agent",
+      "passes": true,
+      "acceptanceCriteria": [
+        "agents/review_agent.py가 존재하며 ReviewAgent 클래스를 포함한다",
+        "ReviewAgent.analyze()는 실패 원인/성공 원인을 분석하고 journal.md에 기록한다",
+        "agents/self_improvement_agent.py가 존재하며 SelfImprovementAgent 클래스를 포함한다",
+        "SelfImprovementAgent.suggest()는 전략 개선안을 반환하되 실전 자동 반영 금지 로직이 있다"
+      ]
+    },
+    {
+      "id": "US-009",
+      "title": "Phase 5: Backtest Code",
+      "passes": true,
+      "acceptanceCriteria": [
+        "backtest/backtest_engine.py가 존재하며 BacktestEngine 클래스를 포함한다",
+        "수익률, MDD, 승률, 손익비 계산 메서드가 존재한다",
+        "전략 비교 인터페이스가 존재한다"
+      ]
+    },
+    {
+      "id": "US-010",
+      "title": "운영 플로우 오케스트레이터 + 로그 시스템",
+      "passes": true,
+      "acceptanceCriteria": [
+        "orchestrator.py가 존재하며 08:00 장전/08:30 후보생성/장중/장마감 플로우를 정의한다",
+        "logs/ 구조가 logs/debug/YYYY-MM-DD/ 패턴으로 생성된다",
+        "각 단계별 JSON 로그(market_scan, candidate_scores, llm_calls, risk_checks, orders)가 기록되는 인터페이스가 있다"
+      ]
+    }
+  ]
+}

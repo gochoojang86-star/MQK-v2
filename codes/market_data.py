@@ -5,6 +5,7 @@ LLM 미사용. KIS API / 데이터 소스 연동.
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -95,7 +96,6 @@ class MarketData:
     # ── Mock (개발/테스트용) ──────────────────────────────────────────────────
 
     def _mock_ohlcv(self, ticker: str, period: int) -> list[OHLCVBar]:
-        import random
         price = 50000.0
         bars = []
         for i in range(period):

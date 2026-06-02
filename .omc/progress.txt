@@ -1,0 +1,59 @@
+# MQK-v2 빌드 진행 로그
+
+## 2026-06-02 - Phase 1~5 전체 초기 빌드 완료
+
+### 구현된 파일 (46개)
+- PROJECT_MASTER_SPEC.md: 프로젝트 단일 기준 문서 (한국어 전체 스펙)
+- config/settings.py: RiskConfig (8개 파라미터), ScannerConfig, LLMConfig, LogConfig
+- .env: API 자격증명 (gitignore 적용, 실전/모의 분리)
+
+**Agents (7개):**
+- agents/regime_agent.py: Regime 판단 (BULL/BEAR/SIDEWAYS/THEME/POLICY/EARNINGS)
+- agents/theme_agent.py: 주도 테마 + 대장주 분석
+- agents/news_agent.py: 뉴스 질 평가 (NEW_CATALYST/RECYCLED/RUMOR 등)
+- agents/disclosure_agent.py: 공시 해석 (CB/BW/유증/수주/공급계약)
+- agents/portfolio_manager.py: BUY/SELL/HOLD/WAIT 최종 판단 + counter_argument
+- agents/review_agent.py: 거래 복기 + journal.md 기록
+- agents/self_improvement_agent.py: 개선 제안 (auto_apply=False 강제)
+
+**Codes (8개):**
+- codes/market_data.py: OHLCV/스냅샷/지수 수집 인터페이스
+- codes/scanner.py: 5000→30종목 스코어링 필터
+- codes/technical.py: ATR/RSI/VCP/박스돌파/눌림목/52주신고가
+- codes/flow.py: 외국인/기관/프로그램 수급 분석
+- codes/risk_officer.py: 6개 규칙 검증 + 거부권 (RiskViolation)
+- codes/position_sizer.py: ATR 기반 수량 계산 (0.5% 리스크)
+- codes/stop_take_profit.py: 손절/1차/2차익절/트레일링
+- codes/order_manager.py: KIS API 연동 주문 실행
+
+**Broker:**
+- broker/kis_api.py: KIS REST API (실전 TTTC, 모의 VTTC tr_id 자동 분기)
+- broker/telegram.py: 매수 승인 요청 + 폴링 대기
+
+**기타:**
+- backtest/backtest_engine.py: 수익률/MDD/승률/손익비/샤프비율
+- orchestrator.py: 운영 플로우 오케스트레이터
+- llm/client.py: Anthropic Claude API 래퍼
+
+### 테스트 결과
+- 25/25 테스트 통과
+
+### API 자격증명 (env 적용됨)
+- KIS 실전: APP Key/Secret + 계좌 44187565-01
+- KIS 모의: APP Key/Secret + 계좌 50189814-01
+- OpenDART: acd92a44...
+- Naver News: 4_goPXbD...
+- Telegram: @superpowerstock_bot
+
+### 핵심 설계 결정
+1. KIS_MODE=paper (기본값) - 실전 전환 시 .env에서 KIS_MODE=real로 변경
+2. require_telegram_approval=True 고정 - 코드로 변경 불가
+3. allow_averaging_down=False 고정
+4. RiskOfficer는 6개 규칙 순서대로 검증 (먼저 걸리는 규칙이 우선)
+5. Scanner(Code) 통과 후 30종목 이하에만 LLM(Agent) 호출
+
+### 다음 단계 (사용자 결정 필요)
+1. git push -u origin main (수동 실행 필요)
+2. .env의 TELEGRAM_CHAT_ID 채우기 (텔레그램 봇 첫 메시지 후 채팅 ID 확인)
+3. .env의 ANTHROPIC_API_KEY 채우기
+4. 모의투자로 orchestrator.py 실행 테스트

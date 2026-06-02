@@ -5,8 +5,8 @@ LLM 미사용. 수익률/MDD/승률/손익비 계산.
 """
 from __future__ import annotations
 
+import statistics
 from dataclasses import dataclass, field
-from typing import Callable, Optional
 
 
 @dataclass
@@ -126,7 +126,6 @@ class BacktestEngine:
         if len(trades) < 2:
             return 0.0
         returns = [t.pnl_pct / 100 for t in trades]
-        import statistics
         avg_return = statistics.mean(returns)
         std_return = statistics.stdev(returns)
         if std_return == 0:

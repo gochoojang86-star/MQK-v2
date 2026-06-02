@@ -4,7 +4,7 @@ LLM 미사용. 순수 계산 로직.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
@@ -36,11 +36,7 @@ class PositionStatus:
     highest_price: float        # 진입 후 최고가 (트레일링용)
     target1_hit: bool = False
     trailing_active: bool = False
-    config: StopTakeProfitConfig = None
-
-    def __post_init__(self):
-        if self.config is None:
-            self.config = StopTakeProfitConfig()
+    config: StopTakeProfitConfig = field(default_factory=StopTakeProfitConfig)
 
 
 class StopTakeProfitManager:

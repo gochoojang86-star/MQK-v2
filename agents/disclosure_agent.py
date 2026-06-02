@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from config.settings import ModelTier
 from llm.client import LLMClient
 
 
@@ -85,7 +86,7 @@ class DisclosureAgent:
 
 이 공시를 해석하고 JSON으로 출력하세요."""
 
-        raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg)
+        raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.FAST)
         return DisclosureInterpretation(
             disclosure_type=DisclosureType(raw["disclosure_type"]),
             impact=DisclosureImpact(raw["impact"]),

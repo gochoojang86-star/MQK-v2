@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from config.settings import ModelTier
 from llm.client import LLMClient
 
 
@@ -78,7 +79,7 @@ class NewsAgent:
 
 이 뉴스의 질을 평가하고 JSON으로 출력하세요."""
 
-        raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg)
+        raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.FAST)
         return NewsEvaluation(
             quality=NewsQuality(raw["quality"]),
             confidence=int(raw["confidence"]),
