@@ -88,9 +88,10 @@ class MQKOrchestrator:
             "date": self._today,
             "kospi": index.kospi,
             "kosdaq": index.kosdaq,
+            "status": regime.status.value,
             "regime": regime.regime.value,
             "confidence": regime.confidence,
-            "risk_level": regime.risk_level,
+            "risk_notes": regime.risk_notes,
         }
         self._save_json("market_status.json", market_status)
         return market_status
@@ -123,12 +124,16 @@ class MQKOrchestrator:
             ],
         })
 
+        best_theme = theme.best
+        best_theme_name = best_theme.theme if best_theme else ""
+
         result = [
             {
                 "ticker": c.ticker,
                 "name": c.name,
                 "score": c.total_score,
-                "theme_match": c.sector == theme.theme,
+                "theme": best_theme_name,
+                "theme_match": bool(best_theme_name and c.sector == best_theme_name),
                 "passed": c.passed_filters,
             }
             for c in candidates
@@ -265,11 +270,11 @@ class MQKOrchestrator:
 
         if reviews:
             journal_summary = "\n".join(
-                f"- {r.ticker}: {', '.join(r.lessons[:2])}" for r in reviews
+                f"- {r.ticker}: {r.markdown[:200]}" for r in reviews
             )
             suggestions = self._si_agent.suggest(today_trades, journal_summary)
             for s in suggestions:
-                logger.info(f"[개선 제안] {s.title}: {s.description}")
+                logger.info(f"[개선 제안] {s.title}: {s.expected_effect}")
             logger.info("※ 개선안은 백테스트 검증 + 사용자 승인 후에만 실전 반영 가능")
 
     # ── 유틸 ────────────────────────────────────────────────────────────────
