@@ -36,6 +36,8 @@ from agents.portfolio_manager import PortfolioManagerAgent, Decision
 from agents.review_agent import ReviewAgent
 from agents.self_improvement_agent import SelfImprovementAgent
 from broker.telegram import TelegramApproval, ApprovalRequest
+from codes.news_fetcher import NaverNewsFetcher, KISNewsFetcher
+from broker.telegram_news import get_recent_news as get_telegram_news
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +66,8 @@ class MQKOrchestrator:
         self._si_agent = SelfImprovementAgent()
         self._telegram = TelegramApproval()
         self._order_manager = OrderManager(kis_api=kis_api, telegram=self._telegram)
+        self._naver_news = NaverNewsFetcher()
+        self._kis_news = KISNewsFetcher(kis_api=kis_api)
         self._today = datetime.now().strftime("%Y-%m-%d")
         self._log_dir = LOG_CONFIG.base_dir / self._today
         self._log_dir.mkdir(parents=True, exist_ok=True)
@@ -75,11 +79,17 @@ class MQKOrchestrator:
         logger.info("[08:00] 장전 시장 분석 시작")
         index = self._market_data.get_index_status()
 
+        # 시장 전반 뉴스 수집 (KIS → Naver 순 fallback)
+        market_news_items = self._kis_news.get_news(ticker="000000", limit=10)
+        if not market_news_items:
+            market_news_items = self._naver_news.search("코스피 코스닥 시장 주식", display=10)
+        market_news_summary = " | ".join(n.title for n in market_news_items[:5])
+
         # Regime Agent 호출 (LLM)
         market_ctx = {
             "kospi_change_pct": index.kospi_change_pct,
             "kosdaq_change_pct": index.kosdaq_change_pct,
-            "market_news_summary": "",
+            "market_news_summary": market_news_summary,
         }
         regime = self._regime_agent.judge(market_ctx)
         logger.info(f"Regime: {regime.regime.value} (확신도 {regime.confidence}%)")
@@ -115,9 +125,13 @@ class MQKOrchestrator:
         candidates = self._scanner.scan(snapshots, technicals, flows)
         logger.info(f"후보 {len(candidates)}종목 선발")
 
+        # 테마 뉴스 헤드라인 수집 (Naver 키워드 검색)
+        theme_news = self._naver_news.search("테마주 주도주 상한가 급등", display=10)
+        news_headlines = [n.title for n in theme_news]
+
         # Theme Agent 호출 (LLM) - 30종목 이하일 때만
         theme = self._theme_agent.analyze({
-            "news_headlines": [],
+            "news_headlines": news_headlines,
             "top_gainers": [
                 {"ticker": c.ticker, "name": c.name, "change_pct": c.change_pct, "sector": c.sector}
                 for c in candidates[:10]
@@ -156,7 +170,16 @@ class MQKOrchestrator:
         bars = self._market_data.get_ohlcv(ticker)
         tech = self._technical.analyze(ticker, bars) if bars else None
         flow = self._flow.analyze(ticker, [])
-        news = self._news_agent.evaluate(ticker, [])
+
+        # 뉴스 수집: KIS 종목 뉴스 + Naver 종목명 검색 + Telegram DB
+        kis_items = self._kis_news.get_news(ticker=ticker, limit=5)
+        naver_items = self._naver_news.search(name, display=5)
+        tg_items = [
+            {"title": n["title"], "content": "", "date": n["date"], "source": n["source"]}
+            for n in get_telegram_news(ticker=ticker, hours=2)
+        ]
+        raw_news = [n.to_dict() for n in kis_items + naver_items] + tg_items
+        news = self._news_agent.evaluate(ticker, raw_news)
 
         # Portfolio Manager Agent 호출 (핵심 LLM 호출)
         decision = self._pm_agent.decide(ticker, {

@@ -200,6 +200,34 @@ class KISApi:
                 error_msg=str(e),
             )
 
+    def get_news(self, ticker: str = "000000", limit: int = 20) -> list[dict]:
+        """종목별/시장 전반 뉴스 조회 (ticker='000000'이면 전체 시장)"""
+        url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/quotations/news-title"
+        params = {
+            "FID_NEWS_OFER_ENTP_CODE": "",
+            "FID_COND_MRKT_CLS_CODE": "",
+            "FID_INPUT_ISCD": ticker,
+            "FID_TITL_CNTT": "",
+            "FID_INPUT_DATE_1": "",
+            "FID_INPUT_HOUR_1": "",
+            "FID_RANK_SORT_CLS_CODE": "",
+            "FID_INPUT_SRNO": "",
+        }
+        try:
+            resp = requests.get(
+                url,
+                headers=self._headers("FHKST01011800"),
+                params=params,
+                timeout=5,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                return []
+            return data.get("output", [])[:limit]
+        except Exception:
+            return []
+
     def get_balance(self) -> dict:
         """잔고 조회"""
         url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"

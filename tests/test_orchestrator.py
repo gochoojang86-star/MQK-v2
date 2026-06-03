@@ -79,6 +79,14 @@ class FakeFlow:
         return None
 
 
+class FakeNewsFetcher:
+    def search(self, query, display=5):
+        return []
+
+    def get_news(self, ticker="000000", limit=20):
+        return []
+
+
 class FakeReviewAgent:
     def analyze(self, trade):
         return TradeReview(
@@ -113,6 +121,8 @@ def test_run_premarket_serializes_regime_status_and_risk_notes(tmp_path):
     orchestrator = make_orchestrator(tmp_path)
     orchestrator._market_data = FakeMarketData()
     orchestrator._regime_agent = FakeRegimeAgent()
+    orchestrator._kis_news = FakeNewsFetcher()
+    orchestrator._naver_news = FakeNewsFetcher()
 
     status = orchestrator.run_premarket()
 
@@ -128,6 +138,7 @@ def test_run_scan_uses_best_theme_for_theme_match(tmp_path):
     orchestrator._flow = FakeFlow()
     orchestrator._scanner = __import__("codes.scanner", fromlist=["Scanner"]).Scanner()
     orchestrator._theme_agent = FakeThemeAgent()
+    orchestrator._naver_news = FakeNewsFetcher()
 
     candidates = orchestrator.run_scan({"status": "GREEN"})
 
