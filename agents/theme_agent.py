@@ -21,6 +21,10 @@ class ThemeItem:
     leader_candidates: list[str]
     reason: str
     risk: str
+    theme_stage: str = ""           # 초입 / 중기 / 말기
+    entry_verdict: str = ""         # 진입가능 / 주의 / 과열
+    laggard_stocks: list[str] = field(default_factory=list)
+    junk_warning: bool = False
 
 
 @dataclass
@@ -64,6 +68,10 @@ class ThemeAgent:
                 leader_candidates=t.get("leader_candidates", []),
                 reason=t["reason"],
                 risk=t.get("risk", ""),
+                theme_stage=t.get("theme_stage", ""),
+                entry_verdict=t.get("entry_verdict", ""),
+                laggard_stocks=t.get("laggard_stocks", []),
+                junk_warning=bool(t.get("junk_warning", False)),
             )
             for t in raw.get("top_themes", [])
         ]
