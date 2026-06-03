@@ -51,9 +51,16 @@ class OrderManager:
     require_telegram_approval=True면 TelegramApproval 통과 없이 실행 불가.
     """
 
-    def __init__(self, kis_api=None, telegram=None, log_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        kis_api=None,
+        telegram=None,
+        dry_run: bool = False,
+        log_dir: Optional[Path] = None,
+    ):
         self._kis = kis_api         # KISApi 인스턴스
         self._telegram = telegram   # TelegramApproval 인스턴스
+        self._dry_run = dry_run
         self._log_dir = log_dir or LOG_CONFIG.base_dir
 
     def execute_buy(self, order: OrderRequest) -> ExecutionResult:
@@ -63,7 +70,7 @@ class OrderManager:
 
         self._log_order(order)
 
-        if self._kis is None:
+        if self._dry_run:
             logger.warning(f"[DRY RUN] BUY {order.ticker} {order.quantity}주 @ {order.price:,.0f}원")
             return ExecutionResult(
                 success=True,
@@ -74,6 +81,8 @@ class OrderManager:
                 order_no="DRY_RUN",
                 timestamp=datetime.now().isoformat(),
             )
+        if self._kis is None:
+            raise RuntimeError("KIS API is required for live buy execution. Pass dry_run=True for order dry-run.")
 
         if order.price == 0:
             result = self._kis.buy_market(order.ticker, order.quantity)
@@ -97,7 +106,7 @@ class OrderManager:
         """매도 주문 실행"""
         self._log_order(order)
 
-        if self._kis is None:
+        if self._dry_run:
             logger.warning(f"[DRY RUN] SELL {order.ticker} {order.quantity}주 @ {order.price:,.0f}원")
             return ExecutionResult(
                 success=True,
@@ -108,6 +117,8 @@ class OrderManager:
                 order_no="DRY_RUN",
                 timestamp=datetime.now().isoformat(),
             )
+        if self._kis is None:
+            raise RuntimeError("KIS API is required for live sell execution. Pass dry_run=True for order dry-run.")
 
         if order.price == 0:
             result = self._kis.sell_market(order.ticker, order.quantity)

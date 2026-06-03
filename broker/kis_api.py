@@ -8,7 +8,8 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Optional
 
 import requests
@@ -70,17 +71,24 @@ class KISApi:
     직접 호출 금지.
     """
 
-    def __init__(self, config: Optional[KISConfig] = None):
+    def __init__(self, config: Optional[KISConfig] = None, token_cache_path: Optional[Path] = None):
         self._cfg = config or KISConfig(
             mode=os.environ.get("KIS_MODE", KISMode.PAPER)
         )
         self._access_token: Optional[str] = None
         self._token_expires: float = 0
+        self._token_cache_path = token_cache_path or (
+            Path(__file__).parent.parent / "data" / "cache" / f"kis_token_{self._cfg.mode}.json"
+        )
 
     def _get_token(self) -> str:
         """액세스 토큰 발급 (만료 시 자동 재발급)"""
         if self._access_token and time.time() < self._token_expires:
             return self._access_token
+
+        cached = self._load_token_cache()
+        if cached:
+            return cached
 
         url = f"{self._cfg.base_url}/oauth2/tokenP"
         body = {
@@ -94,7 +102,32 @@ class KISApi:
         self._access_token = data["access_token"]
         # 토큰 유효기간 - 30분 여유
         self._token_expires = time.time() + data.get("expires_in", 86400) - 1800
+        self._save_token_cache()
         return self._access_token
+
+    def _load_token_cache(self) -> Optional[str]:
+        try:
+            data = json.loads(self._token_cache_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+
+        token = data.get("access_token")
+        expires_at = float(data.get("expires_at", 0))
+        if token and time.time() < expires_at:
+            self._access_token = token
+            self._token_expires = expires_at
+            return token
+        return None
+
+    def _save_token_cache(self) -> None:
+        self._token_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self._token_cache_path.write_text(
+            json.dumps({
+                "access_token": self._access_token,
+                "expires_at": self._token_expires,
+            }),
+            encoding="utf-8",
+        )
 
     def _headers(self, tr_id: str) -> dict:
         return {
@@ -108,35 +141,93 @@ class KISApi:
     def get_ohlcv(self, ticker: str, period: int = 60) -> list:
         """일봉 데이터 조회"""
         url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=max(period * 3, 30))
         params = {
             "FID_COND_MRKT_DIV_CODE": "J",
             "FID_INPUT_ISCD": ticker,
-            "FID_INPUT_DATE_1": "",
-            "FID_INPUT_DATE_2": datetime.now().strftime("%Y%m%d"),
+            "FID_INPUT_DATE_1": start_date.strftime("%Y%m%d"),
+            "FID_INPUT_DATE_2": end_date.strftime("%Y%m%d"),
             "FID_PERIOD_DIV_CODE": "D",
             "FID_ORG_ADJ_PRC": "0",
         }
-        resp = requests.get(
+        resp = self._get_with_retry(
             url,
             headers=self._headers("FHKST03010100"),
             params=params,
-            timeout=10
+            timeout=10,
         )
-        resp.raise_for_status()
-        return resp.json().get("output2", [])
+        return resp.json().get("output2", [])[:period]
 
     def get_snapshot(self, ticker: str) -> dict:
         """현재가 조회"""
         url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker}
-        resp = requests.get(
+        resp = self._get_with_retry(
             url,
             headers=self._headers("FHKST01010100"),
             params=params,
-            timeout=10
+            timeout=10,
         )
-        resp.raise_for_status()
         return resp.json().get("output", {})
+
+    def get_index_status(self) -> dict:
+        """KOSPI/KOSDAQ 지수 현황 조회."""
+        kospi = self._get_index_quote("0001")
+        kosdaq = self._get_index_quote("1001")
+        return {
+            "kospi": kospi.get("bstp_nmix_prpr") or kospi.get("bstp_nmix") or kospi.get("stck_prpr") or 0,
+            "kosdaq": kosdaq.get("bstp_nmix_prpr") or kosdaq.get("bstp_nmix") or kosdaq.get("stck_prpr") or 0,
+            "kospi_change_pct": kospi.get("bstp_nmix_prdy_ctrt") or kospi.get("prdy_ctrt") or 0,
+            "kosdaq_change_pct": kosdaq.get("bstp_nmix_prdy_ctrt") or kosdaq.get("prdy_ctrt") or 0,
+        }
+
+    def _get_index_quote(self, index_code: str) -> dict:
+        url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-index-price"
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "U",
+            "FID_INPUT_ISCD": index_code,
+        }
+        resp = self._get_with_retry(
+            url,
+            headers=self._headers("FHPUP02100000"),
+            params=params,
+            timeout=10,
+        )
+        data = resp.json()
+        if data.get("rt_cd") not in (None, "0"):
+            raise RuntimeError(f"KIS index quote failed: {data.get('msg1', data)}")
+        return data.get("output", {})
+
+    def _get_with_retry(self, url: str, headers: dict, params: dict, timeout: int):
+        last_error = None
+        for attempt in range(3):
+            try:
+                resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+                resp.raise_for_status()
+                return resp
+            except requests.HTTPError as exc:
+                last_error = exc
+                status = exc.response.status_code if exc.response is not None else None
+                if status is not None and status < 500:
+                    raise
+            except requests.RequestException as exc:
+                last_error = exc
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+        raise last_error
+
+    def get_universe(self) -> list[str]:
+        """운영 스캔 대상 종목 목록.
+
+        KIS 전체 종목 목록 adapter가 구현되기 전까지 운영 universe는
+        KIS_UNIVERSE=005930,000660 처럼 명시 설정한다.
+        """
+        raw = os.environ.get("KIS_UNIVERSE", "")
+        tickers = [t.strip() for t in raw.split(",") if t.strip()]
+        if not tickers:
+            raise RuntimeError("KIS_UNIVERSE must be set for live scanner universe.")
+        return tickers
 
     def buy_market(self, ticker: str, quantity: int) -> OrderResult:
         """시장가 매수"""

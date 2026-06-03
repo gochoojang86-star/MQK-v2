@@ -4,6 +4,7 @@ MQK-v2 전역 설정 - 단일 기준 파일
 """
 from dataclasses import dataclass
 from enum import Enum
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent.parent
@@ -70,7 +71,15 @@ class LogConfig:
     journal_filename: str = "journal.md"
 
 
+@dataclass(frozen=True)
+class ExecutionConfig:
+    order_dry_run: bool = os.environ.get("ORDER_DRY_RUN", "false").lower() in {
+        "1", "true", "yes", "y", "on"
+    }
+
+
 RISK       = RiskConfig()
 SCANNER    = ScannerConfig()
 LLM_CONFIG = LLMConfig()
 LOG_CONFIG = LogConfig()
+EXECUTION  = ExecutionConfig()

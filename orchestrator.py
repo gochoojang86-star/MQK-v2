@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from config.settings import RISK, LOG_CONFIG
+from config.settings import RISK, LOG_CONFIG, EXECUTION
 from codes.market_data import MarketData
 from codes.scanner import Scanner
 from codes.technical import TechnicalAnalysis
@@ -49,7 +49,7 @@ logger = logging.getLogger("mqk_v2")
 class MQKOrchestrator:
     """MQK-v2 메인 오케스트레이터"""
 
-    def __init__(self, kis_api=None):
+    def __init__(self, kis_api=None, dry_run_orders: bool | None = None):
         self._market_data = MarketData(data_source=kis_api)
         self._scanner = Scanner()
         self._technical = TechnicalAnalysis()
@@ -65,9 +65,14 @@ class MQKOrchestrator:
         self._review_agent = ReviewAgent()
         self._si_agent = SelfImprovementAgent()
         self._telegram = TelegramApproval()
-        self._order_manager = OrderManager(kis_api=kis_api, telegram=self._telegram)
+        self._order_manager = OrderManager(
+            kis_api=kis_api,
+            telegram=self._telegram,
+            dry_run=EXECUTION.order_dry_run if dry_run_orders is None else dry_run_orders,
+        )
         self._naver_news = NaverNewsFetcher()
         self._kis_news = KISNewsFetcher(kis_api=kis_api)
+        self._current_theme: str = ""   # run_scan()에서 갱신, evaluate_candidate()에서 사용
         self._today = datetime.now().strftime("%Y-%m-%d")
         self._log_dir = LOG_CONFIG.base_dir / self._today
         self._log_dir.mkdir(parents=True, exist_ok=True)
@@ -79,10 +84,8 @@ class MQKOrchestrator:
         logger.info("[08:00] 장전 시장 분석 시작")
         index = self._market_data.get_index_status()
 
-        # 시장 전반 뉴스 수집 (KIS → Naver 순 fallback)
-        market_news_items = self._kis_news.get_news(ticker="000000", limit=10)
-        if not market_news_items:
-            market_news_items = self._naver_news.search("코스피 코스닥 시장 주식", display=10)
+        # 시장 전반 뉴스 수집 — KIS API는 개별종목만 지원, 시장뉴스는 Naver 사용
+        market_news_items = self._naver_news.search("코스피 코스닥 시장 주식", display=10)
         market_news_summary = " | ".join(n.title for n in market_news_items[:5])
 
         # Regime Agent 호출 (LLM)
@@ -125,13 +128,14 @@ class MQKOrchestrator:
         candidates = self._scanner.scan(snapshots, technicals, flows)
         logger.info(f"후보 {len(candidates)}종목 선발")
 
-        # 테마 뉴스 헤드라인 수집 (Naver 키워드 검색)
-        theme_news = self._naver_news.search("테마주 주도주 상한가 급등", display=10)
-        news_headlines = [n.title for n in theme_news]
+        # 1차 검색: 스캐너 상위 종목명으로 동적 쿼리 생성 (고정 키워드 대신)
+        top_names = " ".join(c.name for c in candidates[:3]) if candidates else ""
+        initial_query = f"{top_names} 급등 테마" if top_names else "테마주 주도주 상한가 급등"
+        initial_news = self._naver_news.search(initial_query, display=10)
 
         # Theme Agent 호출 (LLM) - 30종목 이하일 때만
         theme = self._theme_agent.analyze({
-            "news_headlines": news_headlines,
+            "news_headlines": [n.title for n in initial_news],
             "top_gainers": [
                 {"ticker": c.ticker, "name": c.name, "change_pct": c.change_pct, "sector": c.sector}
                 for c in candidates[:10]
@@ -140,6 +144,17 @@ class MQKOrchestrator:
 
         best_theme = theme.best
         best_theme_name = best_theme.theme if best_theme else ""
+
+        # 2차 검색: Theme Agent가 식별한 테마명으로 Naver 재검색 (추가 LLM 호출 없음)
+        if best_theme_name:
+            targeted_news = self._naver_news.search(f"{best_theme_name} 테마 대장주", display=10)
+            news_headlines = [n.title for n in targeted_news] if targeted_news else [n.title for n in initial_news]
+        else:
+            news_headlines = [n.title for n in initial_news]
+
+        # 이후 evaluate_candidate()에서 재사용
+        self._current_theme = best_theme_name
+        logger.info(f"주도 테마: {best_theme_name or '미식별'}")
 
         result = [
             {
@@ -171,9 +186,10 @@ class MQKOrchestrator:
         tech = self._technical.analyze(ticker, bars) if bars else None
         flow = self._flow.analyze(ticker, [])
 
-        # 뉴스 수집: KIS 종목 뉴스 + Naver 종목명 검색 + Telegram DB
+        # 뉴스 수집: KIS 종목 뉴스 + Naver 종목명+테마 검색 + Telegram DB
         kis_items = self._kis_news.get_news(ticker=ticker, limit=5)
-        naver_items = self._naver_news.search(name, display=5)
+        naver_query = f"{name} {self._current_theme}".strip() if self._current_theme else name
+        naver_items = self._naver_news.search(naver_query, display=5)
         tg_items = [
             {"title": n["title"], "content": "", "date": n["date"], "source": n["source"]}
             for n in get_telegram_news(ticker=ticker, hours=2)

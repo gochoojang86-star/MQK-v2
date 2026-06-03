@@ -20,14 +20,21 @@ def make_order(**kwargs):
 
 
 def test_buy_without_telegram_approval_raises(tmp_path):
-    manager = OrderManager(kis_api=None, log_dir=tmp_path)
+    manager = OrderManager(kis_api=None, dry_run=True, log_dir=tmp_path)
     order = make_order(approved_by="manual")  # telegram 아님
     with pytest.raises(PermissionError):
         manager.execute_buy(order)
 
 
-def test_buy_dry_run_succeeds(tmp_path):
+def test_buy_without_kis_requires_explicit_dry_run(tmp_path):
     manager = OrderManager(kis_api=None, log_dir=tmp_path)
+    order = make_order(approved_by="telegram")
+    with pytest.raises(RuntimeError, match="dry_run"):
+        manager.execute_buy(order)
+
+
+def test_buy_dry_run_succeeds(tmp_path):
+    manager = OrderManager(kis_api=None, dry_run=True, log_dir=tmp_path)
     order = make_order(approved_by="telegram")
     result = manager.execute_buy(order)
     assert result.success is True
@@ -36,7 +43,7 @@ def test_buy_dry_run_succeeds(tmp_path):
 
 
 def test_sell_dry_run_succeeds(tmp_path):
-    manager = OrderManager(kis_api=None, log_dir=tmp_path)
+    manager = OrderManager(kis_api=None, dry_run=True, log_dir=tmp_path)
     order = make_order(side="SELL", approved_by="telegram")
     result = manager.execute_sell(order)
     assert result.success is True
@@ -44,7 +51,7 @@ def test_sell_dry_run_succeeds(tmp_path):
 
 
 def test_buy_logs_to_file(tmp_path):
-    manager = OrderManager(kis_api=None, log_dir=tmp_path)
+    manager = OrderManager(kis_api=None, dry_run=True, log_dir=tmp_path)
     order = make_order(approved_by="telegram")
     manager.execute_buy(order)
     from datetime import datetime

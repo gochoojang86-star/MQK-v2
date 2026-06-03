@@ -77,24 +77,50 @@ class NaverNewsFetcher:
 
 
 class KISNewsFetcher:
-    """KIS API 뉴스 조회 — 종목별 / 시장 전반 (ticker="000000")"""
+    """KIS API 뉴스 조회 — 종목별 / 시장 전반 (ticker="000000")
+
+    - 뉴스 데이터는 모의(paper) API에 없으므로 항상 실전(real) 엔드포인트 사용
+    - 기존 kis_api 토큰을 재사용하면 토큰 발급 속도제한(1분/1회) 회피 가능
+    - FID_INPUT_DATE_1=오늘날짜 필수 — 없으면 output 0건
+    """
 
     _PATH = "/uapi/domestic-stock/v1/quotations/news-title"
+    _REAL_URL = "https://openapi.koreainvestment.com:9443"
 
     def __init__(self, kis_api=None) -> None:
-        self._kis = kis_api  # broker.kis_api.KISApi 인스턴스
+        self._kis = kis_api          # 토큰 재사용용 (KISApi 인스턴스)
+        self._real_app_key = os.environ.get("KIS_REAL_APP_KEY", "")
+        self._real_app_secret = os.environ.get("KIS_REAL_APP_SECRET", "")
+
+    def _get_token(self) -> str:
+        """기존 kis_api 토큰 재사용 → 없으면 실전 자격증명으로 신규 발급."""
+        if self._kis is not None:
+            return self._kis._get_token()
+        if not self._real_app_key or not self._real_app_secret:
+            raise RuntimeError("KIS_REAL_APP_KEY / KIS_REAL_APP_SECRET 미설정")
+        resp = requests.post(
+            f"{self._REAL_URL}/oauth2/tokenP",
+            json={
+                "grant_type": "client_credentials",
+                "appkey": self._real_app_key,
+                "appsecret": self._real_app_secret,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()["access_token"]
 
     def get_news(self, ticker: str = "000000", limit: int = 20) -> list[NewsItem]:
-        if self._kis is None:
+        if not self._real_app_key:
             return []
         try:
-            token = self._kis._get_token()
-            url = f"{self._kis._cfg.base_url}{self._PATH}"
+            from datetime import datetime as _dt
+            token = self._get_token()
             headers = {
                 "content-type": "application/json",
                 "authorization": f"Bearer {token}",
-                "appkey": self._kis._cfg.app_key,
-                "appsecret": self._kis._cfg.app_secret,
+                "appkey": self._real_app_key,
+                "appsecret": self._real_app_secret,
                 "tr_id": "FHKST01011800",
             }
             params = {
@@ -102,12 +128,17 @@ class KISNewsFetcher:
                 "FID_COND_MRKT_CLS_CODE": "",
                 "FID_INPUT_ISCD": ticker,
                 "FID_TITL_CNTT": "",
-                "FID_INPUT_DATE_1": "",
+                "FID_INPUT_DATE_1": _dt.now().strftime("%Y%m%d"),  # 필수
                 "FID_INPUT_HOUR_1": "",
                 "FID_RANK_SORT_CLS_CODE": "",
                 "FID_INPUT_SRNO": "",
             }
-            resp = requests.get(url, headers=headers, params=params, timeout=5)
+            resp = requests.get(
+                f"{self._REAL_URL}{self._PATH}",
+                headers=headers,
+                params=params,
+                timeout=5,
+            )
             resp.raise_for_status()
             data = resp.json()
             if data.get("rt_cd") != "0":
@@ -115,15 +146,15 @@ class KISNewsFetcher:
             articles = data.get("output", [])[:limit]
             return [
                 NewsItem(
-                    title=a.get("HDON_TITL_CNTT", ""),
-                    description="",
+                    title=a.get("hts_pbnt_titl_cntt", ""),
+                    description=a.get("dorg", ""),   # 출처 언론사
                     url="",
-                    pub_date=f"{a.get('DATA_DT', '')} {a.get('DATA_TM', '')}".strip(),
+                    pub_date=f"{a.get('data_dt', '')} {a.get('data_tm', '')}".strip(),
                     source="kis",
-                    ticker=ticker if ticker != "000000" else "",
+                    ticker=a.get("iscd1") or (ticker if ticker != "000000" else ""),
                 )
                 for a in articles
-                if a.get("HDON_TITL_CNTT")
+                if a.get("hts_pbnt_titl_cntt")
             ]
         except Exception:
             return []

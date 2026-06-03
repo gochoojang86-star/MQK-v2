@@ -5,11 +5,10 @@ LLM 미사용. KIS API / 데이터 소스 연동.
 from __future__ import annotations
 
 import json
-import random
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 @dataclass
@@ -45,6 +44,10 @@ class IndexStatus:
     market_date: str = field(default_factory=lambda: date.today().isoformat())
 
 
+class MarketDataSourceRequired(RuntimeError):
+    """Raised when production market data is requested without a real data source."""
+
+
 class MarketData:
     """
     시장 데이터 수집기.
@@ -58,29 +61,35 @@ class MarketData:
     def get_ohlcv(self, ticker: str, period: int = 60) -> list[OHLCVBar]:
         """일봉 OHLCV 데이터 조회 (최근 period일)"""
         if self._source is None:
-            return self._mock_ohlcv(ticker, period)
-        return self._source.get_ohlcv(ticker, period)
+            raise MarketDataSourceRequired("MarketData requires a real data_source for get_ohlcv().")
+        return [self._coerce_ohlcv_bar(row) for row in self._source.get_ohlcv(ticker, period)]
 
     def get_snapshot(self, ticker: str) -> MarketSnapshot:
         """현재가 스냅샷 조회"""
         if self._source is None:
-            return self._mock_snapshot(ticker)
-        return self._source.get_snapshot(ticker)
+            raise MarketDataSourceRequired("MarketData requires a real data_source for get_snapshot().")
+        return self._coerce_snapshot(ticker, self._source.get_snapshot(ticker))
 
     def get_index_status(self) -> IndexStatus:
         """지수 현황 조회"""
         if self._source is None:
-            return IndexStatus(
-                kospi=2500.0, kosdaq=750.0,
-                kospi_change_pct=0.5, kosdaq_change_pct=0.8
-            )
-        return self._source.get_index_status()
+            raise MarketDataSourceRequired("MarketData requires a real data_source for get_index_status().")
+        return self._coerce_index_status(self._source.get_index_status())
 
     def get_universe(self) -> list[str]:
         """전체 종목 코드 목록 (약 5000종목)"""
         if self._source is None:
-            return []
-        return self._source.get_universe()
+            raise MarketDataSourceRequired("MarketData requires a real data_source for get_universe().")
+        raw = self._source.get_universe()
+        result = []
+        for item in raw:
+            if isinstance(item, str):
+                result.append(item)
+            elif isinstance(item, dict):
+                code = item.get("ticker") or item.get("code") or item.get("pdno") or item.get("mksc_shrn_iscd")
+                if code:
+                    result.append(str(code))
+        return result
 
     def save_market_status(self, output_path: Path, index: IndexStatus) -> None:
         """market_status.json 저장"""
@@ -93,34 +102,55 @@ class MarketData:
         }
         output_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # ── Mock (개발/테스트용) ──────────────────────────────────────────────────
-
-    def _mock_ohlcv(self, ticker: str, period: int) -> list[OHLCVBar]:
-        price = 50000.0
-        bars = []
-        for i in range(period):
-            change = random.uniform(-0.03, 0.03)
-            close = price * (1 + change)
-            bars.append(OHLCVBar(
-                date=f"2026-{(i // 30 + 1):02d}-{(i % 30 + 1):02d}",
-                open=price * (1 + random.uniform(-0.01, 0.01)),
-                high=max(price, close) * 1.01,
-                low=min(price, close) * 0.99,
-                close=close,
-                volume=random.randint(100000, 1000000),
-                trading_value=close * random.randint(100000, 1000000),
-            ))
-            price = close
-        return bars
-
-    def _mock_snapshot(self, ticker: str) -> MarketSnapshot:
-        return MarketSnapshot(
-            ticker=ticker,
-            name=f"종목_{ticker}",
-            current_price=50000.0,
-            change_pct=1.5,
-            volume=500000,
-            trading_value=25_000_000_000,
-            foreign_net=1_000_000_000,
-            institution_net=-500_000_000,
+    def _coerce_ohlcv_bar(self, row: Any) -> OHLCVBar:
+        if isinstance(row, OHLCVBar):
+            return row
+        if not isinstance(row, dict):
+            raise TypeError(f"Unsupported OHLCV row type: {type(row).__name__}")
+        return OHLCVBar(
+            date=str(row.get("date") or row.get("stck_bsop_date") or ""),
+            open=self._to_float(row.get("open") or row.get("stck_oprc")),
+            high=self._to_float(row.get("high") or row.get("stck_hgpr")),
+            low=self._to_float(row.get("low") or row.get("stck_lwpr")),
+            close=self._to_float(row.get("close") or row.get("stck_clpr")),
+            volume=self._to_int(row.get("volume") or row.get("acml_vol")),
+            trading_value=self._to_float(row.get("trading_value") or row.get("acml_tr_pbmn")),
         )
+
+    def _coerce_snapshot(self, ticker: str, row: Any) -> MarketSnapshot:
+        if isinstance(row, MarketSnapshot):
+            return row
+        if not isinstance(row, dict):
+            raise TypeError(f"Unsupported snapshot type: {type(row).__name__}")
+        return MarketSnapshot(
+            ticker=str(row.get("ticker") or row.get("mksc_shrn_iscd") or ticker),
+            name=str(row.get("name") or row.get("hts_kor_isnm") or row.get("prdt_abrv_name") or ticker),
+            current_price=self._to_float(row.get("current_price") or row.get("stck_prpr")),
+            change_pct=self._to_float(row.get("change_pct") or row.get("prdy_ctrt")),
+            volume=self._to_int(row.get("volume") or row.get("acml_vol")),
+            trading_value=self._to_float(row.get("trading_value") or row.get("acml_tr_pbmn")),
+            foreign_net=self._to_float(row.get("foreign_net") or row.get("frgn_ntby_qty")),
+            institution_net=self._to_float(row.get("institution_net") or row.get("orgn_ntby_qty")),
+        )
+
+    def _coerce_index_status(self, row: Any) -> IndexStatus:
+        if isinstance(row, IndexStatus):
+            return row
+        if not isinstance(row, dict):
+            raise TypeError(f"Unsupported index status type: {type(row).__name__}")
+        return IndexStatus(
+            kospi=self._to_float(row.get("kospi")),
+            kosdaq=self._to_float(row.get("kosdaq")),
+            kospi_change_pct=self._to_float(row.get("kospi_change_pct")),
+            kosdaq_change_pct=self._to_float(row.get("kosdaq_change_pct")),
+        )
+
+    def _to_float(self, value) -> float:
+        if value in (None, ""):
+            return 0.0
+        return float(str(value).replace(",", ""))
+
+    def _to_int(self, value) -> int:
+        if value in (None, ""):
+            return 0
+        return int(float(str(value).replace(",", "")))
