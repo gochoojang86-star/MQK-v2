@@ -51,13 +51,34 @@ class RegimeAgent:
         self._llm = llm or LLMClient()
 
     def judge(self, market_context: dict[str, Any]) -> RegimeJudgment:
-        user_msg = f"""현재 시장 데이터:
+        prev_kospi_tv = market_context.get('prev_kospi_trading_value', 0)
+        prev_kosdaq_tv = market_context.get('prev_kosdaq_trading_value', 0)
+        prev_tv_note = (
+            f"{prev_kospi_tv / 1e8:.0f}억 / {prev_kosdaq_tv / 1e8:.0f}억"
+            if prev_kospi_tv or prev_kosdaq_tv else "데이터 없음"
+        )
+
+        user_msg = f"""장전 시장 데이터 (08:00 기준):
+
+[전일 확정 데이터]
+- 전일 코스피 등락률: {market_context.get('prev_kospi_change_pct', 0):.2f}%
+- 전일 코스닥 등락률: {market_context.get('prev_kosdaq_change_pct', 0):.2f}%
+- 전일 코스피/코스닥 거래대금: {prev_tv_note}
+
+[당일 실시간 데이터 — 장전이면 0이 정상]
 - 코스피 등락률: {market_context.get('kospi_change_pct', 0):.2f}%
 - 코스닥 등락률: {market_context.get('kosdaq_change_pct', 0):.2f}%
+- 코스피 거래대금: {market_context.get('kospi_trading_value', 0) / 1e8:.1f}억원
+- 코스닥 거래대금: {market_context.get('kosdaq_trading_value', 0) / 1e8:.1f}억원
+- 코스피 상승/하락 종목 수: {market_context.get('kospi_advancers', 0)} / {market_context.get('kospi_decliners', 0)}
+- 코스닥 상승/하락 종목 수: {market_context.get('kosdaq_advancers', 0)} / {market_context.get('kosdaq_decliners', 0)}
+
+[기타]
 - 시장 뉴스 요약: {market_context.get('market_news_summary', '없음')}
 - 섹터 성과: {market_context.get('sector_performance', {})}
 
-현재 시장 체제와 매매 가능 여부를 판단하고 JSON으로 출력하세요."""
+전일 확정 데이터를 주요 근거로, 당일 실시간 데이터를 보조 참고로 사용하여
+시장 체제와 매매 가능 여부를 판단하고 JSON으로 출력하세요."""
 
         raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.STANDARD)
         return RegimeJudgment(

@@ -51,6 +51,20 @@ class KISConfig:
             return "https://openapi.koreainvestment.com:9443"
         return "https://openapivts.koreainvestment.com:29443"
 
+    def app_key_for(self, mode: str) -> str:
+        return os.environ["KIS_REAL_APP_KEY"] if mode == KISMode.REAL else os.environ["KIS_PAPER_APP_KEY"]
+
+    def app_secret_for(self, mode: str) -> str:
+        return os.environ["KIS_REAL_APP_SECRET"] if mode == KISMode.REAL else os.environ["KIS_PAPER_APP_SECRET"]
+
+    def account_no_for(self, mode: str) -> str:
+        return os.environ["KIS_REAL_ACCOUNT"] if mode == KISMode.REAL else os.environ["KIS_PAPER_ACCOUNT"]
+
+    def base_url_for(self, mode: str) -> str:
+        if mode == KISMode.REAL:
+            return "https://openapi.koreainvestment.com:9443"
+        return "https://openapivts.koreainvestment.com:29443"
+
 
 @dataclass
 class OrderResult:
@@ -75,72 +89,106 @@ class KISApi:
         self._cfg = config or KISConfig(
             mode=os.environ.get("KIS_MODE", KISMode.PAPER)
         )
-        self._access_token: Optional[str] = None
-        self._token_expires: float = 0
+        # 주문은 KIS_MODE(기본 paper), 데이터는 KIS_DATA_MODE(기본 real)를 사용한다.
+        self._data_mode = os.environ.get(
+            "KIS_DATA_MODE",
+            KISMode.REAL if config is None else self._cfg.mode,
+        )
+        self._access_tokens: dict[str, Optional[str]] = {}
+        self._token_expires: dict[str, float] = {}
+        self._stock_info_cache: dict[str, dict] = {}
         self._token_cache_path = token_cache_path or (
             Path(__file__).parent.parent / "data" / "cache" / f"kis_token_{self._cfg.mode}.json"
         )
 
-    def _get_token(self) -> str:
+    def _get_token(self, mode: str | None = None) -> str:
         """액세스 토큰 발급 (만료 시 자동 재발급)"""
-        if self._access_token and time.time() < self._token_expires:
-            return self._access_token
+        mode = mode or self._cfg.mode
+        if self._access_tokens.get(mode) and time.time() < self._token_expires.get(mode, 0):
+            return self._access_tokens[mode] or ""
 
-        cached = self._load_token_cache()
+        cached = self._load_token_cache(mode)
         if cached:
             return cached
 
-        url = f"{self._cfg.base_url}/oauth2/tokenP"
+        url = f"{self._base_url_for(mode)}/oauth2/tokenP"
         body = {
             "grant_type": "client_credentials",
-            "appkey": self._cfg.app_key,
-            "appsecret": self._cfg.app_secret,
+            "appkey": self._app_key_for(mode),
+            "appsecret": self._app_secret_for(mode),
         }
         resp = requests.post(url, json=body, timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        self._access_token = data["access_token"]
+        self._access_tokens[mode] = data["access_token"]
         # 토큰 유효기간 - 30분 여유
-        self._token_expires = time.time() + data.get("expires_in", 86400) - 1800
-        self._save_token_cache()
-        return self._access_token
+        self._token_expires[mode] = time.time() + data.get("expires_in", 86400) - 1800
+        self._save_token_cache(mode)
+        return self._access_tokens[mode] or ""
 
-    def _load_token_cache(self) -> Optional[str]:
+    def _token_cache_file(self, mode: str) -> Path:
+        if mode == self._cfg.mode:
+            return self._token_cache_path
+        return self._token_cache_path.with_name(f"kis_token_{mode}.json")
+
+    def _load_token_cache(self, mode: str) -> Optional[str]:
         try:
-            data = json.loads(self._token_cache_path.read_text(encoding="utf-8"))
+            data = json.loads(self._token_cache_file(mode).read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return None
 
         token = data.get("access_token")
         expires_at = float(data.get("expires_at", 0))
         if token and time.time() < expires_at:
-            self._access_token = token
-            self._token_expires = expires_at
+            self._access_tokens[mode] = token
+            self._token_expires[mode] = expires_at
             return token
         return None
 
-    def _save_token_cache(self) -> None:
-        self._token_cache_path.parent.mkdir(parents=True, exist_ok=True)
-        self._token_cache_path.write_text(
+    def _save_token_cache(self, mode: str) -> None:
+        path = self._token_cache_file(mode)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
             json.dumps({
-                "access_token": self._access_token,
-                "expires_at": self._token_expires,
+                "access_token": self._access_tokens.get(mode),
+                "expires_at": self._token_expires.get(mode, 0),
             }),
             encoding="utf-8",
         )
 
-    def _headers(self, tr_id: str) -> dict:
+    def _headers(self, tr_id: str, mode: str | None = None) -> dict:
+        mode = mode or self._cfg.mode
         return {
             "content-type": "application/json",
-            "authorization": f"Bearer {self._get_token()}",
-            "appkey": self._cfg.app_key,
-            "appsecret": self._cfg.app_secret,
+            "authorization": f"Bearer {self._get_token(mode)}",
+            "appkey": self._app_key_for(mode),
+            "appsecret": self._app_secret_for(mode),
             "tr_id": tr_id,
         }
 
+    def _app_key_for(self, mode: str) -> str:
+        if hasattr(self._cfg, "app_key_for"):
+            return self._cfg.app_key_for(mode)
+        return self._cfg.app_key
+
+    def _app_secret_for(self, mode: str) -> str:
+        if hasattr(self._cfg, "app_secret_for"):
+            return self._cfg.app_secret_for(mode)
+        return self._cfg.app_secret
+
+    def _account_no_for(self, mode: str) -> str:
+        if hasattr(self._cfg, "account_no_for"):
+            return self._cfg.account_no_for(mode)
+        return self._cfg.account_no
+
+    def _base_url_for(self, mode: str) -> str:
+        if hasattr(self._cfg, "base_url_for"):
+            return self._cfg.base_url_for(mode)
+        return self._cfg.base_url
+
     def get_ohlcv(self, ticker: str, period: int = 60) -> list:
         """일봉 데이터 조회"""
-        url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+        url = f"{self._base_url_for(self._data_mode)}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
         end_date = datetime.now()
         start_date = end_date - timedelta(days=max(period * 3, 30))
         params = {
@@ -153,44 +201,178 @@ class KISApi:
         }
         resp = self._get_with_retry(
             url,
-            headers=self._headers("FHKST03010100"),
+            headers=self._headers("FHKST03010100", mode=self._data_mode),
             params=params,
             timeout=10,
         )
         return resp.json().get("output2", [])[:period]
 
     def get_snapshot(self, ticker: str) -> dict:
-        """현재가 조회"""
-        url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
+        """현재가 조회.
+
+        현재가 API에는 투자자별 순매수 필드가 안정적으로 포함되지 않으므로
+        별도 investor endpoint 결과를 병합해 MarketData의 flow 입력을 채운다.
+        """
+        url = f"{self._base_url_for(self._data_mode)}/uapi/domestic-stock/v1/quotations/inquire-price"
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker}
         resp = self._get_with_retry(
             url,
-            headers=self._headers("FHKST01010100"),
+            headers=self._headers("FHKST01010100", mode=self._data_mode),
             params=params,
             timeout=10,
         )
-        return resp.json().get("output", {})
+        snapshot = resp.json().get("output", {})
+        snapshot.update(self.get_stock_info(ticker))
+        snapshot.update(self.get_investor_flow(ticker))
+        return snapshot
+
+    def get_stock_info(self, ticker: str) -> dict:
+        """국내주식 기본정보 조회.
+
+        KIS 문서 기준 `search-stock-info`는 실전만 지원된다. 데이터 모드는
+        기본 real이므로 종목명/업종/상장주식수 보강에 사용한다.
+        """
+        if ticker in self._stock_info_cache:
+            return dict(self._stock_info_cache[ticker])
+        if self._data_mode != KISMode.REAL:
+            return {}
+
+        url = f"{self._base_url_for(self._data_mode)}/uapi/domestic-stock/v1/quotations/search-stock-info"
+        params = {
+            "PRDT_TYPE_CD": "300",
+            "PDNO": ticker,
+        }
+        try:
+            resp = self._get_with_retry(
+                url,
+                headers=self._headers("CTPF1002R", mode=self._data_mode),
+                params=params,
+                timeout=10,
+            )
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                return {}
+            out = data.get("output", {}) or {}
+            info = {
+                "name": out.get("prdt_abrv_name") or out.get("prdt_name"),
+                "sector": (
+                    out.get("idx_bztp_scls_cd_name")
+                    or out.get("idx_bztp_mcls_cd_name")
+                    or out.get("std_idst_clsf_cd_name")
+                ),
+                "listed_shares": out.get("lstg_stqt"),
+                "market_id": out.get("mket_id_cd"),
+                "security_group": out.get("scty_grp_id_cd"),
+                "trading_halted": out.get("tr_stop_yn") == "Y",
+                "administrative_issue": out.get("admn_item_yn") == "Y",
+            }
+            self._stock_info_cache[ticker] = {k: v for k, v in info.items() if v not in (None, "")}
+            return dict(self._stock_info_cache[ticker])
+        except Exception:
+            return {}
 
     def get_index_status(self) -> dict:
-        """KOSPI/KOSDAQ 지수 현황 조회."""
+        """KOSPI/KOSDAQ 지수 현황 조회.
+
+        실시간 데이터(inquire-index-price)와 일봉 데이터(inquire-daily-indexchartprice)를
+        병합한다. 장전(08:00)에는 실시간 상승/하락 종목 수가 0이므로,
+        전일 확정 등락률·거래대금을 추가로 제공해 Regime Agent 판단 품질을 높인다.
+        """
         kospi = self._get_index_quote("0001")
         kosdaq = self._get_index_quote("1001")
+
+        # 전일 일봉 데이터 (가장 최근 확정 영업일 = output2[0])
+        prev_kospi = self._get_prev_index_day("0001")
+        prev_kosdaq = self._get_prev_index_day("1001")
+
         return {
             "kospi": kospi.get("bstp_nmix_prpr") or kospi.get("bstp_nmix") or kospi.get("stck_prpr") or 0,
             "kosdaq": kosdaq.get("bstp_nmix_prpr") or kosdaq.get("bstp_nmix") or kosdaq.get("stck_prpr") or 0,
             "kospi_change_pct": kospi.get("bstp_nmix_prdy_ctrt") or kospi.get("prdy_ctrt") or 0,
             "kosdaq_change_pct": kosdaq.get("bstp_nmix_prdy_ctrt") or kosdaq.get("prdy_ctrt") or 0,
+            "kospi_trading_value": self._million_krw(kospi, ["acml_tr_pbmn", "bstp_nmix_acml_tr_pbmn"]),
+            "kosdaq_trading_value": self._million_krw(kosdaq, ["acml_tr_pbmn", "bstp_nmix_acml_tr_pbmn"]),
+            "kospi_advancers": self._first(kospi, ["ascn_issu_cnt", "rise_issu_cnt", "up_issu_cnt"]),
+            "kospi_decliners": self._first(kospi, ["down_issu_cnt", "decl_issu_cnt", "dn_issu_cnt"]),
+            "kosdaq_advancers": self._first(kosdaq, ["ascn_issu_cnt", "rise_issu_cnt", "up_issu_cnt"]),
+            "kosdaq_decliners": self._first(kosdaq, ["down_issu_cnt", "decl_issu_cnt", "dn_issu_cnt"]),
+            # ── 전일 확정 데이터 ──────────────────────────────────────────────
+            "prev_kospi_change_pct": self._to_float_safe(
+                prev_kospi.get("bstp_nmix_prdy_ctrt") or prev_kospi.get("prdy_ctrt")
+            ),
+            "prev_kosdaq_change_pct": self._to_float_safe(
+                prev_kosdaq.get("bstp_nmix_prdy_ctrt") or prev_kosdaq.get("prdy_ctrt")
+            ),
+            "prev_kospi_trading_value": self._million_krw(
+                prev_kospi, ["acml_tr_pbmn", "bstp_nmix_acml_tr_pbmn"]
+            ),
+            "prev_kosdaq_trading_value": self._million_krw(
+                prev_kosdaq, ["acml_tr_pbmn", "bstp_nmix_acml_tr_pbmn"]
+            ),
         }
 
+    def _get_prev_index_day(self, index_code: str) -> dict:
+        """지수 일봉 API에서 가장 최근 확정 영업일 데이터 반환.
+
+        장전(08:00)에 호출하면 전날 종가·거래대금이 들어 있어
+        당일 실시간 API(inquire-index-price)의 0값 문제를 보완한다.
+        실패 시 빈 dict 반환.
+        """
+        url = (
+            f"{self._base_url_for(self._data_mode)}"
+            "/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice"
+        )
+        end = datetime.now()
+        start = end - timedelta(days=10)   # 휴장일 포함 여유
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "U",
+            "FID_INPUT_ISCD": index_code,
+            "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+            "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
+            "FID_PERIOD_DIV_CODE": "D",
+        }
+        try:
+            resp = self._get_with_retry(
+                url,
+                headers=self._headers("FHKUP03500100", mode=self._data_mode),
+                params=params,
+                timeout=10,
+            )
+            rows = resp.json().get("output2", [])
+            return rows[0] if rows else {}
+        except Exception:
+            return {}
+
+    def _to_float_safe(self, value) -> float:
+        if value in (None, ""):
+            return 0.0
+        try:
+            return float(str(value).replace(",", ""))
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _first(self, row: dict, keys: list[str]):
+        for key in keys:
+            value = row.get(key)
+            if value not in (None, ""):
+                return value
+        return 0
+
+    def _million_krw(self, row: dict, keys: list[str]) -> float:
+        value = self._first(row, keys)
+        if value in (None, ""):
+            return 0.0
+        return float(str(value).replace(",", "")) * 1_000_000
+
     def _get_index_quote(self, index_code: str) -> dict:
-        url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-index-price"
+        url = f"{self._base_url_for(self._data_mode)}/uapi/domestic-stock/v1/quotations/inquire-index-price"
         params = {
             "FID_COND_MRKT_DIV_CODE": "U",
             "FID_INPUT_ISCD": index_code,
         }
         resp = self._get_with_retry(
             url,
-            headers=self._headers("FHPUP02100000"),
+            headers=self._headers("FHPUP02100000", mode=self._data_mode),
             params=params,
             timeout=10,
         )
@@ -220,14 +402,121 @@ class KISApi:
     def get_universe(self) -> list[str]:
         """운영 스캔 대상 종목 목록.
 
-        KIS 전체 종목 목록 adapter가 구현되기 전까지 운영 universe는
-        KIS_UNIVERSE=005930,000660 처럼 명시 설정한다.
+        우선순위:
+        1. KIS_UNIVERSE=005930,000660 직접 지정
+        2. KIS_UNIVERSE_FILE=data/universe.csv 파일 지정
         """
         raw = os.environ.get("KIS_UNIVERSE", "")
         tickers = [t.strip() for t in raw.split(",") if t.strip()]
         if not tickers:
-            raise RuntimeError("KIS_UNIVERSE must be set for live scanner universe.")
+            tickers = self._load_universe_file(os.environ.get("KIS_UNIVERSE_FILE", "data/universe.csv"))
+        if not tickers:
+            raise RuntimeError("KIS_UNIVERSE or KIS_UNIVERSE_FILE must be set for live scanner universe.")
         return tickers
+
+    def _load_universe_file(self, file_path: str) -> list[str]:
+        if not file_path:
+            return []
+        path = Path(file_path)
+        if not path.is_absolute():
+            path = Path(__file__).parent.parent / path
+        if not path.exists():
+            raise RuntimeError(f"KIS_UNIVERSE_FILE not found: {path}")
+        tickers: list[str] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            code = line.split(",")[0].strip()
+            if code and code.lower() not in {"ticker", "code", "종목코드"}:
+                tickers.append(code)
+        return tickers
+
+    def get_theme_seed_tickers(self, limit: int = 60) -> list[str]:
+        """테마/대장주 탐색용 seed 종목.
+
+        수천 종목 전수 조회 대신 KIS 순위 API의 상승률 상위와 거래대금 상위를
+        합쳐 오늘 돈이 몰리는 후보군을 만든다.
+        """
+        rows = (
+            self.get_fluctuation_rank(limit=30)
+            + self.get_trading_value_rank(limit=30)
+        )
+        tickers: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            ticker = str(
+                row.get("ticker")
+                or row.get("stck_shrn_iscd")
+                or row.get("mksc_shrn_iscd")
+                or ""
+            ).strip()
+            if ticker and ticker not in seen:
+                seen.add(ticker)
+                tickers.append(ticker)
+            if len(tickers) >= limit:
+                break
+        return tickers
+
+    def get_fluctuation_rank(self, limit: int = 30) -> list[dict]:
+        """국내주식 등락률 순위. 실전 데이터 전용."""
+        if self._data_mode != KISMode.REAL:
+            return []
+        url = f"{self._base_url_for(self._data_mode)}/uapi/domestic-stock/v1/ranking/fluctuation"
+        params = {
+            "fid_cond_mrkt_div_code": "J",
+            "fid_cond_scr_div_code": "20170",
+            "fid_input_iscd": "0000",
+            "fid_rank_sort_cls_code": "0",
+            "fid_input_cnt_1": "0",
+            "fid_prc_cls_code": "0",
+            "fid_input_price_1": "",
+            "fid_input_price_2": "",
+            "fid_vol_cnt": "",
+            "fid_trgt_cls_code": "0",
+            "fid_trgt_exls_cls_code": "0",
+            "fid_div_cls_code": "0",
+            "fid_rsfl_rate1": "",
+            "fid_rsfl_rate2": "",
+        }
+        return self._rank_request(url, "FHPST01700000", params, limit)
+
+    def get_trading_value_rank(self, limit: int = 30) -> list[dict]:
+        """국내주식 거래대금 순위. volume-rank API의 거래금액순 정렬."""
+        if self._data_mode != KISMode.REAL:
+            return []
+        url = f"{self._base_url_for(self._data_mode)}/uapi/domestic-stock/v1/quotations/volume-rank"
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_COND_SCR_DIV_CODE": "20171",
+            "FID_INPUT_ISCD": "0000",
+            "FID_DIV_CLS_CODE": "0",
+            "FID_BLNG_CLS_CODE": "3",
+            "FID_TRGT_CLS_CODE": "111111111",
+            "FID_TRGT_EXLS_CLS_CODE": "1111111111",
+            "FID_INPUT_PRICE_1": "",
+            "FID_INPUT_PRICE_2": "",
+            "FID_VOL_CNT": "",
+            "FID_INPUT_DATE_1": "0",
+        }
+        return self._rank_request(url, "FHPST01710000", params, limit)
+
+    def _rank_request(self, url: str, tr_id: str, params: dict, limit: int) -> list[dict]:
+        try:
+            resp = self._get_with_retry(
+                url,
+                headers=self._headers(tr_id, mode=self._data_mode),
+                params=params,
+                timeout=10,
+            )
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                return []
+            output = data.get("output", [])
+            rows = output if isinstance(output, list) else [output]
+            return rows[:limit]
+        except Exception:
+            return []
 
     def buy_market(self, ticker: str, quantity: int) -> OrderResult:
         """시장가 매수"""
@@ -248,14 +537,15 @@ class KISApi:
     def _place_order(
         self, ticker: str, quantity: int, price: float, side: str, market: bool
     ) -> OrderResult:
-        url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/trading/order-cash"
+        order_mode = self._cfg.mode
+        url = f"{self._base_url_for(order_mode)}/uapi/domestic-stock/v1/trading/order-cash"
         # 실전/모의 tr_id 분기
         if side == "BUY":
-            tr_id = "TTTC0802U" if self._cfg.mode == KISMode.REAL else "VTTC0802U"
+            tr_id = "TTTC0802U" if order_mode == KISMode.REAL else "VTTC0802U"
         else:
-            tr_id = "TTTC0801U" if self._cfg.mode == KISMode.REAL else "VTTC0801U"
+            tr_id = "TTTC0801U" if order_mode == KISMode.REAL else "VTTC0801U"
 
-        acct_parts = self._cfg.account_no.split("-")
+        acct_parts = self._account_no_for(order_mode).split("-")
         body = {
             "CANO": acct_parts[0],
             "ACNT_PRDT_CD": acct_parts[1],
@@ -265,7 +555,7 @@ class KISApi:
             "ORD_UNPR": "0" if market else str(int(price)),
         }
         try:
-            resp = requests.post(url, headers=self._headers(tr_id), json=body, timeout=10)
+            resp = requests.post(url, headers=self._headers(tr_id, mode=order_mode), json=body, timeout=10)
             resp.raise_for_status()
             data = resp.json()
             success = data.get("rt_cd") == "0"
@@ -294,10 +584,10 @@ class KISApi:
     def get_investor_flow(self, ticker: str) -> dict:
         """종목별 당일 투자자 순매수 조회 (외국인/기관/개인).
 
-        반환: {"foreign_net": float, "institution_net": float, "individual_net": float}
+        반환: {"foreign_net": float, "institution_net": float, "individual_net": float, "program_net": float}
         데이터 없거나 오류 시 0으로 채워 반환 (호출자가 빈 체크 불필요).
         """
-        url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-investor"
+        url = f"{self._base_url_for(self._data_mode)}/uapi/domestic-stock/v1/quotations/inquire-investor"
         params = {
             "FID_COND_MRKT_DIV_CODE": "J",
             "FID_INPUT_ISCD": ticker,
@@ -305,25 +595,154 @@ class KISApi:
         try:
             resp = self._get_with_retry(
                 url,
-                headers=self._headers("FHKST01010900"),
+                headers=self._headers("FHKST01010900", mode=self._data_mode),
                 params=params,
                 timeout=5,
             )
-            out = resp.json().get("output", {})
-            def _f(key: str) -> float:
-                v = out.get(key, "0") or "0"
-                return float(str(v).replace(",", ""))
+            output = resp.json().get("output", {})
+            rows = output if isinstance(output, list) else [output]
+            rows = [row for row in rows if row]
+            if not rows:
+                return {
+                    "foreign_net": 0.0,
+                    "institution_net": 0.0,
+                    "individual_net": 0.0,
+                    "program_net": 0.0,
+                }
+            rows.sort(key=lambda row: str(row.get("stck_bsop_date") or row.get("date") or ""))
+            flow = self._coerce_flow_row(ticker, rows[-1])
             return {
-                "foreign_net":      _f("frgn_ntby_qty"),
-                "institution_net":  _f("orgn_ntby_qty"),
-                "individual_net":   _f("indv_ntby_qty"),
+                "foreign_net": flow["foreign_net"],
+                "institution_net": flow["institution_net"],
+                "individual_net": flow["individual_net"],
+                "program_net": flow["program_net"],
             }
         except Exception:
-            return {"foreign_net": 0.0, "institution_net": 0.0, "individual_net": 0.0}
+            return {
+                "foreign_net": 0.0,
+                "institution_net": 0.0,
+                "individual_net": 0.0,
+                "program_net": 0.0,
+            }
+
+    def get_investor_flow_history(self, ticker: str, days: int = 3) -> list[dict]:
+        """최근 N거래일 투자자 순매수 히스토리 조회.
+
+        KIS 응답 형태가 계정/엔드포인트별로 다를 수 있어 output이 list이면
+        그대로 파싱하고, 단일 dict이면 당일 1건으로 반환한다.
+        """
+        url = f"{self._base_url_for(self._data_mode)}/uapi/domestic-stock/v1/quotations/inquire-investor"
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": ticker,
+        }
+        try:
+            resp = self._get_with_retry(
+                url,
+                headers=self._headers("FHKST01010900", mode=self._data_mode),
+                params=params,
+                timeout=5,
+            )
+            output = resp.json().get("output", [])
+            rows = output if isinstance(output, list) else [output]
+            records = [self._coerce_flow_row(ticker, row) for row in rows if row]
+            records.sort(key=lambda r: r["date"])
+            records = records[-days:]
+            program_by_date = {
+                r["date"]: r
+                for r in self.get_program_trade_history(ticker, days=days)
+            }
+            for record in records:
+                program = program_by_date.get(record["date"])
+                if program:
+                    record["program_net"] = program["program_net"]
+                    if not record["trading_value"]:
+                        record["trading_value"] = program["trading_value"]
+            return records
+        except Exception:
+            return []
+
+    def get_program_trade_history(self, ticker: str, days: int = 3) -> list[dict]:
+        """최근 N거래일 종목별 프로그램 순매수 금액 조회.
+
+        KIS 문서 기준 `/program-trade-by-stock-daily`는 실전만 지원된다.
+        모의투자에서는 빈 리스트를 반환해 호출자가 명시적으로 0 처리한다.
+        """
+        if self._data_mode != KISMode.REAL:
+            return []
+
+        url = f"{self._base_url_for(self._data_mode)}/uapi/domestic-stock/v1/quotations/program-trade-by-stock-daily"
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": ticker,
+            "FID_INPUT_DATE_1": datetime.now().strftime("%Y%m%d"),
+        }
+        try:
+            resp = self._get_with_retry(
+                url,
+                headers=self._headers("FHPPG04650201", mode=self._data_mode),
+                params=params,
+                timeout=5,
+            )
+            output = resp.json().get("output", [])
+            rows = output if isinstance(output, list) else [output]
+            records = [self._coerce_program_row(ticker, row) for row in rows if row]
+            records.sort(key=lambda r: r["date"])
+            return records[-days:]
+        except Exception:
+            return []
+
+    def _coerce_flow_row(self, ticker: str, row: dict) -> dict:
+        def _f(*keys: str) -> float:
+            for key in keys:
+                value = row.get(key)
+                if value not in (None, ""):
+                    return float(str(value).replace(",", ""))
+            return 0.0
+
+        def _million_krw(*keys: str, fallback_keys: tuple[str, ...] = ()) -> float:
+            for key in keys:
+                value = row.get(key)
+                if value not in (None, ""):
+                    return float(str(value).replace(",", "")) * 1_000_000
+            return _f(*fallback_keys)
+
+        trading_value = _f("trading_value", "acml_tr_pbmn")
+        if not trading_value:
+            trading_value = (
+                _million_krw("prsn_shnu_tr_pbmn")
+                + _million_krw("frgn_shnu_tr_pbmn")
+                + _million_krw("orgn_shnu_tr_pbmn")
+            )
+
+        return {
+            "date": str(row.get("date") or row.get("stck_bsop_date") or datetime.now().strftime("%Y%m%d")),
+            "ticker": str(row.get("ticker") or row.get("mksc_shrn_iscd") or ticker),
+            "foreign_net": _million_krw("frgn_ntby_tr_pbmn", fallback_keys=("foreign_net", "frgn_ntby_qty")),
+            "institution_net": _million_krw("orgn_ntby_tr_pbmn", fallback_keys=("institution_net", "orgn_ntby_qty")),
+            "individual_net": _million_krw("prsn_ntby_tr_pbmn", fallback_keys=("individual_net", "prsn_ntby_qty", "indv_ntby_qty")),
+            "program_net": _f("program_net"),
+            "trading_value": trading_value,
+        }
+
+    def _coerce_program_row(self, ticker: str, row: dict) -> dict:
+        def _f(*keys: str) -> float:
+            for key in keys:
+                value = row.get(key)
+                if value not in (None, ""):
+                    return float(str(value).replace(",", ""))
+            return 0.0
+
+        return {
+            "date": str(row.get("date") or row.get("stck_bsop_date") or datetime.now().strftime("%Y%m%d")),
+            "ticker": str(row.get("ticker") or row.get("mksc_shrn_iscd") or ticker),
+            "program_net": _f("program_net", "whol_smtn_ntby_tr_pbmn"),
+            "trading_value": _f("trading_value", "acml_tr_pbmn"),
+        }
 
     def get_news(self, ticker: str = "000000", limit: int = 20) -> list[dict]:
         """종목별/시장 전반 뉴스 조회 (ticker='000000'이면 전체 시장)"""
-        url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/quotations/news-title"
+        url = f"{self._base_url_for(self._data_mode)}/uapi/domestic-stock/v1/quotations/news-title"
         params = {
             "FID_NEWS_OFER_ENTP_CODE": "",
             "FID_COND_MRKT_CLS_CODE": "",
@@ -337,7 +756,7 @@ class KISApi:
         try:
             resp = requests.get(
                 url,
-                headers=self._headers("FHKST01011800"),
+                headers=self._headers("FHKST01011800", mode=self._data_mode),
                 params=params,
                 timeout=5,
             )
@@ -351,9 +770,10 @@ class KISApi:
 
     def get_balance(self) -> dict:
         """잔고 조회"""
-        url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
-        tr_id = "TTTC8434R" if self._cfg.mode == KISMode.REAL else "VTTC8434R"
-        acct_parts = self._cfg.account_no.split("-")
+        account_mode = self._data_mode
+        url = f"{self._base_url_for(account_mode)}/uapi/domestic-stock/v1/trading/inquire-balance"
+        tr_id = "TTTC8434R" if account_mode == KISMode.REAL else "VTTC8434R"
+        acct_parts = self._account_no_for(account_mode).split("-")
         params = {
             "CANO": acct_parts[0],
             "ACNT_PRDT_CD": acct_parts[1],
@@ -367,6 +787,6 @@ class KISApi:
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
         }
-        resp = requests.get(url, headers=self._headers(tr_id), params=params, timeout=10)
+        resp = requests.get(url, headers=self._headers(tr_id, mode=account_mode), params=params, timeout=10)
         resp.raise_for_status()
         return resp.json()

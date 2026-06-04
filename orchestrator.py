@@ -212,6 +212,10 @@ class MQKOrchestrator:
             "kospi_decliners": index.kospi_decliners,
             "kosdaq_advancers": index.kosdaq_advancers,
             "kosdaq_decliners": index.kosdaq_decliners,
+            "prev_kospi_change_pct": index.prev_kospi_change_pct,
+            "prev_kosdaq_change_pct": index.prev_kosdaq_change_pct,
+            "prev_kospi_trading_value": index.prev_kospi_trading_value,
+            "prev_kosdaq_trading_value": index.prev_kosdaq_trading_value,
             "market_news_summary": market_news_summary,
             "sector_performance": self._sector_performance,  # 전날 scan 결과 재사용
         }
@@ -229,6 +233,10 @@ class MQKOrchestrator:
             "kospi_decliners": index.kospi_decliners,
             "kosdaq_advancers": index.kosdaq_advancers,
             "kosdaq_decliners": index.kosdaq_decliners,
+            "prev_kospi_change_pct": index.prev_kospi_change_pct,
+            "prev_kosdaq_change_pct": index.prev_kosdaq_change_pct,
+            "prev_kospi_trading_value": index.prev_kospi_trading_value,
+            "prev_kosdaq_trading_value": index.prev_kosdaq_trading_value,
             "status": regime.status.value,
             "regime": regime.regime.value,
             "confidence": regime.confidence,
@@ -251,7 +259,7 @@ class MQKOrchestrator:
             self._save_jsonl("candidate_scores.jsonl", [])
             return []
 
-        tickers = self._market_data.get_universe()
+        tickers = self._get_scan_seed_tickers()
         snapshots = [self._market_data.get_snapshot(t) for t in tickers]
 
         technicals = {}
@@ -334,7 +342,8 @@ class MQKOrchestrator:
                 "ticker": c.ticker,
                 "name": c.name,
                 "score": c.total_score,
-                "rank": rank,
+                "rank": c.market_rank or rank,
+                "theme_rank": c.theme_rank,
                 "theme": best_theme_name,
                 "theme_match": bool(best_theme_name and c.sector == best_theme_name),
                 "sector": c.sector,
@@ -344,8 +353,9 @@ class MQKOrchestrator:
                 "new_high_score": c.new_high_score,
                 "technical_score": c.technical_score,
                 "flow_score": c.flow_score,
+                "leadership_score": c.leadership_score,
                 "trading_value_rank": flow_signals.trading_value_rank if flow_signals else None,
-                "is_theme_leader": is_leader,
+                "is_theme_leader": is_leader or c.is_theme_leader,
                 "is_laggard": is_laggard,
                 "theme_news": news_headlines[:3],
                 "passed": c.passed_filters,
@@ -355,6 +365,15 @@ class MQKOrchestrator:
         self._candidate_context = candidate_context
         self._save_jsonl("candidate_scores.jsonl", result)
         return result
+
+    def _get_scan_seed_tickers(self) -> list[str]:
+        kis_api = getattr(self, "_kis_api", None)
+        if kis_api is not None and hasattr(kis_api, "get_theme_seed_tickers"):
+            tickers = kis_api.get_theme_seed_tickers(limit=60)
+            if tickers:
+                logger.info(f"[SCAN SEED] KIS 랭킹 API seed {len(tickers)}개 사용")
+                return tickers
+        return self._market_data.get_universe()
 
     # ── 장중 의사결정 ───────────────────────────────────────────────────────
 
@@ -441,12 +460,25 @@ class MQKOrchestrator:
 
         if decision.decision == Decision.BUY and decision.confidence >= 70:
             return self._process_buy_signal(
-                ticker, name, current_price, decision, tech, portfolio_state
+                ticker,
+                name,
+                current_price,
+                decision,
+                tech,
+                portfolio_state,
+                support_stop_price=self._estimate_support_stop(bars, current_price),
             )
         return {"action": "SKIP", "ticker": ticker, "reason": decision.reason}
 
     def _process_buy_signal(
-        self, ticker, name, current_price, decision, tech, portfolio_state
+        self,
+        ticker,
+        name,
+        current_price,
+        decision,
+        tech,
+        portfolio_state,
+        support_stop_price: float | None = None,
     ) -> dict:
         """매수 신호 처리: Risk → Size → Telegram → Order"""
         if tech is None:
@@ -454,11 +486,12 @@ class MQKOrchestrator:
 
         # Position Sizer
         try:
-            sizing = self._position_sizer.calculate(
+            sizing = self._position_sizer.calculate_flexible_stop(
                 ticker=ticker,
                 entry_price=current_price,
                 atr=tech.atr,
                 total_capital=portfolio_state.total_capital,
+                support_stop_price=support_stop_price,
             )
         except ValueError as e:
             self._append_jsonl("risk_checks.jsonl", {
@@ -486,7 +519,9 @@ class MQKOrchestrator:
 
         self._append_jsonl("risk_checks.jsonl", {
             "ticker": ticker, "blocked": False,
-            "risk_pct": sizing.risk_pct, "quantity": sizing.quantity
+            "risk_pct": sizing.risk_pct,
+            "quantity": sizing.quantity,
+            "stop_method": sizing.stop_method,
         })
 
         # Telegram 승인
@@ -539,10 +574,43 @@ class MQKOrchestrator:
         if signal == ExitSignal.HOLD:
             return {"action": "HOLD", "ticker": position.ticker}
 
+        if signal in {ExitSignal.TARGET_1, ExitSignal.TARGET_2}:
+            if self._should_extend_profit_hold(position, name, current_price, signal):
+                protected_stop = self._protective_stop_for_extension(position, signal)
+                journal = getattr(self, "_journal", None)
+                if hasattr(journal, "update_position_management"):
+                    journal.update_position_management(
+                        ticker=position.ticker,
+                        stop_loss_price=protected_stop,
+                        highest_price=position.highest_price,
+                        target1_hit=True,
+                    )
+                self._append_jsonl("exit_signals.jsonl", {
+                    "ticker": position.ticker,
+                    "signal": signal.value,
+                    "action": "HOLD_EXTENDED",
+                    "price": current_price,
+                    "protected_stop": protected_stop,
+                })
+                return {
+                    "action": "HOLD_EXTENDED",
+                    "ticker": position.ticker,
+                    "signal": signal.value,
+                    "protected_stop": protected_stop,
+                }
+
         sell_quantity = position.quantity
         if signal == ExitSignal.TARGET_1:
             sell_quantity = max(1, int(position.quantity * position.config.partial_exit_pct))
             position.target1_hit = True
+            journal = getattr(self, "_journal", None)
+            if hasattr(journal, "update_position_management"):
+                journal.update_position_management(
+                    ticker=position.ticker,
+                    stop_loss_price=max(position.stop_loss_price, position.entry_price),
+                    highest_price=position.highest_price,
+                    target1_hit=True,
+                )
 
         order = OrderRequest(
             ticker=position.ticker,
@@ -590,6 +658,7 @@ class MQKOrchestrator:
                     float(row.get("highest_price") or row["entry_price"]),
                     snapshot.current_price,
                 ),
+                target1_hit=bool(row.get("target1_hit")),
             )
             results.append(
                 self.process_position_exit(
@@ -599,6 +668,51 @@ class MQKOrchestrator:
                 )
             )
         return results
+
+    def _should_extend_profit_hold(
+        self,
+        position: PositionStatus,
+        name: str,
+        current_price: float,
+        signal: ExitSignal,
+    ) -> bool:
+        """익절 신호에서만 LLM의 보유 연장 판단을 허용한다."""
+        try:
+            decision = self._pm_agent.decide(position.ticker, {
+                "name": name,
+                "current_price": current_price,
+                "is_in_portfolio": True,
+                "exit_signal": signal.value,
+                "position": {
+                    "entry_price": position.entry_price,
+                    "stop_loss_price": position.stop_loss_price,
+                    "pnl_pct": (
+                        (current_price - position.entry_price)
+                        / position.entry_price
+                        * 100
+                        if position.entry_price
+                        else 0
+                    ),
+                    "target1_hit": position.target1_hit,
+                },
+            })
+        except Exception as exc:
+            logger.warning(f"[EXIT LLM FALLBACK] {position.ticker}: {exc}")
+            return False
+        return decision.decision in {Decision.HOLD, Decision.WAIT} and decision.confidence >= 60
+
+    def _protective_stop_for_extension(
+        self,
+        position: PositionStatus,
+        signal: ExitSignal,
+    ) -> float:
+        """보유 연장 시 손절가를 올려 수익을 보호한다."""
+        if signal == ExitSignal.TARGET_1:
+            return max(position.stop_loss_price, position.entry_price)
+        trailing_stop = position.highest_price - (
+            position.atr * position.config.trailing_atr_multiplier
+        )
+        return max(position.stop_loss_price, position.entry_price, trailing_stop)
 
     # ── 장마감 복기 ─────────────────────────────────────────────────────────
 
@@ -689,6 +803,14 @@ class MQKOrchestrator:
         logger.info(f"[ATR 워밍] 보유 종목 {len(open_pos)}개 ATR 사전 계산")
         for row in open_pos:
             self._estimate_atr(row["ticker"])  # 캐시 미스 → API 호출 후 저장
+
+    def _estimate_support_stop(self, bars, current_price: float) -> float | None:
+        """최근 20봉 저점 하단을 차트 무효화 손절 후보로 사용."""
+        recent = bars[-20:] if bars else []
+        if not recent:
+            return None
+        support_stop = min(b.low for b in recent) * 0.99
+        return support_stop if 0 < support_stop < current_price else None
 
     def _build_reaction_context(self, snapshot, bars) -> dict:
         """뉴스/공시 이후 반응 판단에 필요한 가격·거래대금 요약."""

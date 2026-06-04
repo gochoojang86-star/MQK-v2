@@ -32,8 +32,12 @@ class MarketSnapshot:
     trading_value: float    # 거래대금 (원)
     foreign_net: float      # 외국인 순매수
     institution_net: float  # 기관 순매수
+    program_net: float = 0.0 # 프로그램 순매수
     market_cap: float = 0.0 # 시가총액 (원)
     sector: str = ""        # 업종명 (bstp_kor_isnm)
+    listed_shares: int = 0
+    trading_halted: bool = False
+    administrative_issue: bool = False
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
@@ -43,6 +47,17 @@ class IndexStatus:
     kosdaq: float
     kospi_change_pct: float
     kosdaq_change_pct: float
+    kospi_trading_value: float = 0.0
+    kosdaq_trading_value: float = 0.0
+    kospi_advancers: int = 0
+    kospi_decliners: int = 0
+    kosdaq_advancers: int = 0
+    kosdaq_decliners: int = 0
+    # ── 전일 확정 데이터 (장전 08:00 호출 시 실시간 API의 0값 문제 보완) ──
+    prev_kospi_change_pct: float = 0.0      # 전일 코스피 등락률
+    prev_kosdaq_change_pct: float = 0.0     # 전일 코스닥 등락률
+    prev_kospi_trading_value: float = 0.0   # 전일 코스피 거래대금 (억원)
+    prev_kosdaq_trading_value: float = 0.0  # 전일 코스닥 거래대금 (억원)
     market_date: str = field(default_factory=lambda: date.today().isoformat())
 
 
@@ -133,9 +148,25 @@ class MarketData:
             trading_value=self._to_float(row.get("trading_value") or row.get("acml_tr_pbmn")),
             foreign_net=self._to_float(row.get("foreign_net") or row.get("frgn_ntby_qty")),
             institution_net=self._to_float(row.get("institution_net") or row.get("orgn_ntby_qty")),
-            market_cap=self._to_float(row.get("market_cap") or row.get("hts_avls") or row.get("stck_avls")),
+            program_net=self._to_float(row.get("program_net")),
+            market_cap=self._coerce_market_cap(row),
             sector=str(row.get("sector") or row.get("bstp_kor_isnm") or ""),
+            listed_shares=self._to_int(row.get("listed_shares") or row.get("lstg_stqt")),
+            trading_halted=bool(row.get("trading_halted")) or row.get("tr_stop_yn") == "Y",
+            administrative_issue=bool(row.get("administrative_issue")) or row.get("admn_item_yn") == "Y",
         )
+
+    def _coerce_market_cap(self, row: dict) -> float:
+        if row.get("market_cap") not in (None, ""):
+            return self._to_float(row.get("market_cap"))
+        if row.get("hts_avls") not in (None, ""):
+            # KIS hts_avls는 HTS 시가총액으로 억원 단위다.
+            return self._to_float(row.get("hts_avls")) * 100_000_000
+        if row.get("listed_shares") not in (None, "") and row.get("stck_prpr") not in (None, ""):
+            return self._to_float(row.get("listed_shares")) * self._to_float(row.get("stck_prpr"))
+        if row.get("lstg_stqt") not in (None, "") and row.get("stck_prpr") not in (None, ""):
+            return self._to_float(row.get("lstg_stqt")) * self._to_float(row.get("stck_prpr"))
+        return self._to_float(row.get("stck_avls"))
 
     def _coerce_index_status(self, row: Any) -> IndexStatus:
         if isinstance(row, IndexStatus):
@@ -147,6 +178,16 @@ class MarketData:
             kosdaq=self._to_float(row.get("kosdaq")),
             kospi_change_pct=self._to_float(row.get("kospi_change_pct")),
             kosdaq_change_pct=self._to_float(row.get("kosdaq_change_pct")),
+            kospi_trading_value=self._to_float(row.get("kospi_trading_value")),
+            kosdaq_trading_value=self._to_float(row.get("kosdaq_trading_value")),
+            kospi_advancers=self._to_int(row.get("kospi_advancers")),
+            kospi_decliners=self._to_int(row.get("kospi_decliners")),
+            kosdaq_advancers=self._to_int(row.get("kosdaq_advancers")),
+            kosdaq_decliners=self._to_int(row.get("kosdaq_decliners")),
+            prev_kospi_change_pct=self._to_float(row.get("prev_kospi_change_pct")),
+            prev_kosdaq_change_pct=self._to_float(row.get("prev_kosdaq_change_pct")),
+            prev_kospi_trading_value=self._to_float(row.get("prev_kospi_trading_value")),
+            prev_kosdaq_trading_value=self._to_float(row.get("prev_kosdaq_trading_value")),
         )
 
     def _to_float(self, value) -> float:
