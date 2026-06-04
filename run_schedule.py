@@ -6,6 +6,8 @@ PM2 cron_restart로 각 단계별 실행.
 MQK_PHASE 환경변수로 실행 단계 구분:
   premarket  - 08:00 장전 분석
   scan       - 08:30 후보 스캔
+  intraday   - 09:00~15:20 장중 루프 (5분 간격)
+               보유 포지션 손절/익절 점검 + 상위 후보 진입 평가
   close      - 15:30 장마감 복기
 """
 from __future__ import annotations
@@ -60,6 +62,60 @@ def run_scan() -> None:
     logger.info(f"스캔 완료: {len(candidates)}개 후보")
 
 
+def run_intraday() -> None:
+    """장중 루프: 포지션 STP 점검 + 상위 후보 진입 평가"""
+    from config.settings import LOG_CONFIG
+    from broker.kis_api import KISApi
+    from orchestrator import MQKOrchestrator
+    from codes.risk_officer import PortfolioState
+    from datetime import datetime
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    candidates_path = LOG_CONFIG.base_dir / today / "candidate_scores.jsonl"
+
+    kis = KISApi()
+    orch = MQKOrchestrator(kis_api=kis)
+
+    # ── 1. 보유 포지션 손절/익절 점검 ──────────────────────────────────────
+    exit_results = orch.run_position_exit_check()
+    for r in exit_results:
+        if r.get("action") != "HOLD":
+            logger.info(f"[STP] {r.get('ticker')} → {r.get('action')} ({r.get('signal', '')})")
+
+    # ── 2. 후보 종목 진입 평가 ──────────────────────────────────────────────
+    if not candidates_path.exists():
+        logger.warning("candidate_scores.jsonl 없음 — scan 단계를 먼저 실행하세요.")
+        return
+
+    candidates = [
+        json.loads(line)
+        for line in candidates_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    open_pos = orch._journal.get_open_positions()
+    portfolio_state = PortfolioState(
+        total_capital=float(os.environ.get("MQK_CAPITAL", "50000000")),
+        daily_pnl=sum(float(p.get("pnl") or 0) for p in open_pos),
+        open_positions=open_pos,
+        theme_exposure={},
+    )
+
+    for cand in candidates[:5]:
+        try:
+            result = orch.evaluate_candidate(
+                ticker=cand["ticker"],
+                name=cand["name"],
+                current_price=orch._market_data.get_snapshot(cand["ticker"]).current_price,
+                portfolio_state=portfolio_state,
+            )
+            logger.info(f"[장중] {cand['name']}({cand['ticker']}) → {result.get('action')}")
+        except Exception as e:
+            logger.warning(f"[장중] {cand['ticker']} 평가 실패: {e}")
+
+    logger.info("장중 루프 완료")
+
+
 def run_close() -> None:
     """장마감 복기: 거래 복기 및 자기개선"""
     from broker.kis_api import KISApi
@@ -74,6 +130,7 @@ def run_close() -> None:
 _RUNNERS = {
     "premarket": run_premarket,
     "scan": run_scan,
+    "intraday": run_intraday,
     "close": run_close,
 }
 

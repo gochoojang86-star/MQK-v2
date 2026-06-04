@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -71,15 +72,29 @@ class MQKOrchestrator:
         self._si_agent = SelfImprovementAgent()
         self._telegram = TelegramApproval()
         self._journal = TradeJournal()
+        # KIS_USE_MCP=true + MCP 서버 가동 시 OrderManager가 MCP 경로로 주문
+        order_api = kis_api
+        if os.environ.get("KIS_USE_MCP", "false").lower() in {"1", "true", "yes"}:
+            from broker.kis_mcp_client import KISMCPClient
+            mcp = KISMCPClient()
+            if mcp.available:
+                logger.info("[OrderManager] KIS MCP 서버 감지 → MCP 주문 경로 사용")
+                order_api = mcp
+            else:
+                logger.info("[OrderManager] KIS MCP 서버 미실행 → KIS API 폴백")
         self._order_manager = OrderManager(
-            kis_api=kis_api,
+            kis_api=order_api,
             telegram=self._telegram,
             dry_run=EXECUTION.order_dry_run if dry_run_orders is None else dry_run_orders,
             journal=self._journal,
         )
         self._naver_news = NaverNewsFetcher()
+        if not self._naver_news.available:
+            logger.warning("NAVER_CLIENT_ID/SECRET 미설정 — Naver 뉴스 비활성화")
         self._kis_news = KISNewsFetcher(kis_api=kis_api)
         self._dart = DARTFetcher()
+        if not self._dart.available:
+            logger.warning("DART_AUTH_KEY 미설정 — 공시 수집 비활성화")
         self._improvement_mgr = ImprovementManager(telegram=self._telegram)
         self._current_theme: str = ""       # run_scan()에서 갱신
         self._last_regime = None            # run_premarket()에서 갱신 → PM Agent에 전달
@@ -227,19 +242,18 @@ class MQKOrchestrator:
             bars = self._market_data.get_ohlcv(snap.ticker)
             if bars:
                 technicals[snap.ticker] = self._technical.analyze(snap.ticker, bars)
-            # snapshot의 당일 외국인/기관 데이터로 FlowRecord 구성
-            flow_records = [FlowRecord(
-                date=self._today,
-                ticker=snap.ticker,
-                foreign_net=snap.foreign_net,
-                institution_net=snap.institution_net,
-                program_net=0.0,
-                trading_value=snap.trading_value,
-            )] if (snap.foreign_net or snap.institution_net) else []
+            flow_records = self._get_flow_records(snap.ticker, snap)
             flows[snap.ticker] = self._flow.analyze(snap.ticker, flow_records)
 
         candidates = self._scanner.scan(snapshots, technicals, flows)
         logger.info(f"후보 {len(candidates)}종목 선발")
+
+        # 거래대금 순위를 FlowSignals.trading_value_rank에 반영
+        sorted_by_tv = sorted(snapshots, key=lambda s: s.trading_value, reverse=True)
+        tv_rank = {s.ticker: i + 1 for i, s in enumerate(sorted_by_tv)}
+        for ticker, flow_signals in flows.items():
+            if flow_signals is not None:
+                flow_signals.trading_value_rank = tv_rank.get(ticker)
 
         # 1차 검색: 스캐너 상위 종목명으로 동적 쿼리 생성 (고정 키워드 대신)
         top_names = " ".join(c.name for c in candidates[:3]) if candidates else ""
@@ -313,15 +327,7 @@ class MQKOrchestrator:
         bars = self._market_data.get_ohlcv(ticker)
         tech = self._technical.analyze(ticker, bars) if bars else None
 
-        # snapshot 당일 수급 데이터로 FlowRecord 구성 (빈 리스트 방지)
-        flow_records = [FlowRecord(
-            date=self._today,
-            ticker=ticker,
-            foreign_net=snap.foreign_net,
-            institution_net=snap.institution_net,
-            program_net=0.0,
-            trading_value=snap.trading_value,
-        )] if (snap.foreign_net or snap.institution_net) else []
+        flow_records = self._get_flow_records(ticker, snap)
         flow = self._flow.analyze(ticker, flow_records)
 
         # 뉴스 수집: KIS 종목 뉴스 + Naver 종목명+테마 검색 + Telegram DB
@@ -340,6 +346,7 @@ class MQKOrchestrator:
         if self._dart.available:
             dart_item = self._dart.get_latest(ticker, days=7)
             if dart_item:
+                dart_item = self._dart.enrich_content(dart_item)
                 disc_result = self._disclosure_agent.interpret(
                     ticker,
                     {**dart_item.to_dict(), "market_cap": snap.market_cap},
@@ -507,6 +514,32 @@ class MQKOrchestrator:
             "success": result.success,
         }
 
+    def run_position_exit_check(self) -> list[dict]:
+        """저널의 미청산 포지션을 조회해 손절/익절 조건을 점검."""
+        results = []
+        for row in self._journal.get_open_positions():
+            ticker = row["ticker"]
+            snapshot = self._market_data.get_snapshot(ticker)
+            position = PositionStatus(
+                ticker=ticker,
+                entry_price=float(row["entry_price"]),
+                stop_loss_price=float(row["stop_loss_price"]),
+                quantity=int(row["quantity"]),
+                atr=self._estimate_atr(ticker),
+                highest_price=max(
+                    float(row.get("highest_price") or row["entry_price"]),
+                    snapshot.current_price,
+                ),
+            )
+            results.append(
+                self.process_position_exit(
+                    position=position,
+                    name=row.get("name") or ticker,
+                    current_price=snapshot.current_price,
+                )
+            )
+        return results
+
     # ── 장마감 복기 ─────────────────────────────────────────────────────────
 
     def run_close_review(self) -> None:
@@ -548,6 +581,40 @@ class MQKOrchestrator:
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+    def _get_flow_records(self, ticker: str, snapshot=None) -> list[FlowRecord]:
+        kis_api = getattr(self, "_kis_api", None)
+        if kis_api is not None and hasattr(kis_api, "get_investor_flow_history"):
+            records = kis_api.get_investor_flow_history(ticker, days=3)
+            if records:
+                return [
+                    FlowRecord(
+                        date=str(r.get("date", "")),
+                        ticker=str(r.get("ticker", ticker)),
+                        foreign_net=self._number(r.get("foreign_net")),
+                        institution_net=self._number(r.get("institution_net")),
+                        program_net=self._number(r.get("program_net")),
+                        trading_value=self._number(r.get("trading_value")),
+                    )
+                    for r in records
+                ]
+
+        if snapshot and (snapshot.foreign_net or snapshot.institution_net or snapshot.program_net):
+            return [FlowRecord(
+                date=self._today,
+                ticker=ticker,
+                foreign_net=snapshot.foreign_net,
+                institution_net=snapshot.institution_net,
+                program_net=snapshot.program_net,
+                trading_value=snapshot.trading_value,
+            )]
+        return []
+
+    def _estimate_atr(self, ticker: str) -> float:
+        bars = self._market_data.get_ohlcv(ticker)
+        if not bars:
+            return 0.0
+        return self._technical.calculate_atr(bars)
+
     def _first_number(self, row: dict, keys: list[str]) -> float:
         for key in keys:
             value = row.get(key)
@@ -558,6 +625,14 @@ class MQKOrchestrator:
             except ValueError:
                 continue
         return 0.0
+
+    def _number(self, value) -> float:
+        if value in (None, ""):
+            return 0.0
+        try:
+            return float(str(value).replace(",", "").strip())
+        except ValueError:
+            return 0.0
 
 
 if __name__ == "__main__":

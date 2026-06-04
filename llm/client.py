@@ -87,4 +87,11 @@ class LLMClient:
         elif "```" in raw:
             raw = raw.split("```")[1].split("```")[0].strip()
 
-        return json.loads(raw)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"LLM이 유효한 JSON을 반환하지 않았습니다. "
+                f"모델={self._cfg.model_for(tier)}, 오류={e}, "
+                f"응답(앞 200자)={raw[:200]!r}"
+            ) from e

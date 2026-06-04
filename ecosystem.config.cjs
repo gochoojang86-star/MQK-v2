@@ -20,6 +20,15 @@ module.exports = {
       autorestart: false,
     },
     {
+      name: "mqk-intraday",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "intraday" },
+      cron_restart: "*/5 9-15 * * 1-5",  // 평일 09:00~15:55 매 5분
+      autorestart: false,
+    },
+    {
       name: "mqk-close",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule.py",
