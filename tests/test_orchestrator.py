@@ -5,6 +5,8 @@ from agents.review_agent import TradeReview
 from agents.self_improvement_agent import ChangeType, ImprovementProposal
 from agents.theme_agent import ThemeAnalysis, ThemeItem
 from codes.market_data import IndexStatus, MarketSnapshot
+from codes.order_manager import OrderManager
+from codes.stop_take_profit import PositionStatus
 from orchestrator import MQKOrchestrator
 
 
@@ -12,6 +14,10 @@ def make_orchestrator(tmp_path: Path) -> MQKOrchestrator:
     orchestrator = MQKOrchestrator.__new__(MQKOrchestrator)
     orchestrator._today = "2026-06-03"
     orchestrator._log_dir = tmp_path
+    orchestrator._sector_performance = {}
+    orchestrator._last_regime = None
+    orchestrator._last_theme = None
+    orchestrator._current_theme = ""
     return orchestrator
 
 
@@ -117,6 +123,36 @@ class FakeSelfImprovementAgent:
         ]
 
 
+class FakeBalanceApi:
+    def get_balance(self):
+        return {
+            "output1": [
+                {
+                    "pdno": "005930",
+                    "prdt_name": "삼성전자",
+                    "hldg_qty": "10",
+                    "pchs_avg_pric": "70000",
+                    "prpr": "72000",
+                    "evlu_amt": "720000",
+                },
+                {
+                    "pdno": "000660",
+                    "prdt_name": "SK하이닉스",
+                    "hldg_qty": "5",
+                    "pchs_avg_pric": "150000",
+                    "prpr": "160000",
+                    "evlu_amt": "800000",
+                },
+            ],
+            "output2": [
+                {
+                    "tot_evlu_amt": "10000000",
+                    "thdt_evlu_pfls_amt": "-50000",
+                }
+            ],
+        }
+
+
 def test_run_premarket_serializes_regime_status_and_risk_notes(tmp_path):
     orchestrator = make_orchestrator(tmp_path)
     orchestrator._market_data = FakeMarketData()
@@ -129,6 +165,23 @@ def test_run_premarket_serializes_regime_status_and_risk_notes(tmp_path):
     assert status["status"] == "GREEN"
     assert status["risk_notes"] == ["watch volatility"]
     assert (tmp_path / "market_status.json").exists()
+
+
+def test_build_portfolio_state_from_kis_balance(tmp_path):
+    orchestrator = make_orchestrator(tmp_path)
+    orchestrator._kis_api = FakeBalanceApi()
+
+    state = orchestrator.build_portfolio_state({
+        "005930": "반도체",
+        "000660": "반도체",
+    })
+
+    assert state.total_capital == 10_000_000
+    assert state.daily_pnl == -50_000
+    assert len(state.open_positions) == 2
+    assert state.open_positions[0]["ticker"] == "005930"
+    assert state.open_positions[0]["quantity"] == 10
+    assert state.theme_exposure["반도체"] == 15.2
 
 
 def test_run_scan_uses_best_theme_for_theme_match(tmp_path):
@@ -154,14 +207,51 @@ def test_run_close_review_summarizes_markdown_and_logs_expected_effect(tmp_path,
     orchestrator._review_agent = FakeReviewAgent()
     orchestrator._si_agent = FakeSelfImprovementAgent()
 
-    orchestrator.run_close_review([
-        {
-            "ticker": "005930",
-            "entry_price": 70000.0,
-            "exit_price": 71000.0,
-            "quantity": 1,
-        }
-    ])
+    # Mock journal to return trades
+    class FakeJournal:
+        def get_closed_trades(self, days=1):
+            return [
+                {
+                    "ticker": "005930",
+                    "entry_price": 70000.0,
+                    "exit_price": 71000.0,
+                    "quantity": 1,
+                }
+            ]
 
-    assert "lesson: follow volume" in orchestrator._si_agent.journal_summary
-    assert "fewer weak entries" in caplog.text
+    # Mock improvement manager
+    class FakeImprovementManager:
+        def save(self, proposal):
+            return 1
+
+    orchestrator._journal = FakeJournal()
+    orchestrator._improvement_mgr = FakeImprovementManager()
+
+    orchestrator.run_close_review()
+
+    assert "005930: WIN +1.00%" in orchestrator._si_agent.journal_summary
+    assert "[개선 제안]" in caplog.text
+    assert "Tighten filter" in caplog.text
+
+
+def test_process_position_exit_executes_sell_on_stop_loss(tmp_path):
+    orchestrator = make_orchestrator(tmp_path)
+    orchestrator._order_manager = OrderManager(kis_api=None, dry_run=True, log_dir=tmp_path)
+    orchestrator._stp_manager = __import__(
+        "codes.stop_take_profit", fromlist=["StopTakeProfitManager"]
+    ).StopTakeProfitManager()
+    position = PositionStatus(
+        ticker="005930",
+        entry_price=50000,
+        stop_loss_price=47000,
+        quantity=10,
+        atr=1000,
+        highest_price=50000,
+    )
+
+    result = orchestrator.process_position_exit(position, "삼성전자", current_price=46900)
+
+    assert result["action"] == "SELL_EXECUTED"
+    assert result["signal"] == "STOP_LOSS"
+    assert result["quantity"] == 10
+    assert (tmp_path / "exit_signals.jsonl").exists()

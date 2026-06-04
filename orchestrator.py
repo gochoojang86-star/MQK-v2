@@ -29,6 +29,7 @@ from codes.position_sizer import PositionSizer
 from codes.order_manager import OrderManager, OrderRequest
 from codes.trade_journal import TradeJournal
 from codes.stop_take_profit import StopTakeProfitManager, PositionStatus, ExitSignal
+from codes.improvement_manager import ImprovementManager
 from agents.regime_agent import RegimeAgent
 from agents.theme_agent import ThemeAgent
 from agents.news_agent import NewsAgent
@@ -79,6 +80,7 @@ class MQKOrchestrator:
         self._naver_news = NaverNewsFetcher()
         self._kis_news = KISNewsFetcher(kis_api=kis_api)
         self._dart = DARTFetcher()
+        self._improvement_mgr = ImprovementManager(telegram=self._telegram)
         self._current_theme: str = ""       # run_scan()에서 갱신
         self._last_regime = None            # run_premarket()에서 갱신 → PM Agent에 전달
         self._last_theme = None             # run_scan()에서 갱신 → PM Agent에 전달
@@ -509,26 +511,26 @@ class MQKOrchestrator:
 
     def run_close_review(self) -> None:
         """장마감 복기 및 자기개선"""
+        logger.info("[장마감] 거래 복기 시작")
         today_trades = self._journal.get_closed_trades(days=1)
         if not today_trades:
             logger.info("[장마감] 오늘 청산 거래 없음")
             return
 
-        logger.info("[장마감] 거래 복기 시작")
         reviews = []
         for trade in today_trades:
             review = self._review_agent.analyze(trade)
             reviews.append(review)
             logger.info(f"복기: {review.ticker} {review.result} {review.pnl_pct:+.2f}%")
 
-        if reviews:
-            journal_summary = "\n".join(
-                f"- {r.ticker}: {r.markdown[:200]}" for r in reviews
-            )
-            suggestions = self._si_agent.suggest(today_trades, journal_summary)
-            for s in suggestions:
-                logger.info(f"[개선 제안] {s.title}: {s.expected_effect}")
-            logger.info("※ 개선안은 백테스트 검증 + 사용자 승인 후에만 실전 반영 가능")
+        journal_summary = "\n".join(
+            f"- {r.ticker}: {r.result} {r.pnl_pct:+.2f}%" for r in reviews
+        )
+        proposals = self._si_agent.suggest(today_trades, journal_summary)
+        for p in proposals:
+            pid = self._improvement_mgr.save(p)
+            logger.info(f"[개선 제안] #{pid} {p.title} → 텔레그램 통보 완료")
+        logger.info("※ 승인된 제안만 수동으로 config/settings.py에 반영 가능")
 
     # ── 유틸 ────────────────────────────────────────────────────────────────
 
