@@ -60,8 +60,8 @@ module.exports = {
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
       args: "-m broker.telegram_news",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
-      autorestart: true,
-      restart_delay: 5000,
+      cron_restart: "0 21 * * *",  // UTC 21:00 = KST 06:00 매일 재시작 (메모리 초기화)
+      autorestart: false,           // 21:00 KST 운영 종료 후 재시작 안 함
     },
   ],
 };

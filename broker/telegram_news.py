@@ -18,8 +18,12 @@ import asyncio
 import os
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+_KST = timezone(timedelta(hours=9))
+_OPERATE_START = 6   # KST 06:00
+_OPERATE_END   = 21  # KST 21:00 (이 시각 이후 종료)
 
 # ── 모니터링 채널 ──────────────────────────────────────────────────────────────
 CHANNELS = [
@@ -203,9 +207,30 @@ async def _run() -> None:
                      datetime.now().isoformat()),
                 )
 
-    print(f"[TelegramNews] 수집 시작. 채널: {CHANNELS}")
+    # 시작 시점 운영 시간 확인 (06:00~21:00 KST)
+    kst_now = datetime.now(_KST)
+    if not (_OPERATE_START <= kst_now.hour < _OPERATE_END):
+        print(f"[TelegramNews] 운영 시간 외({kst_now.strftime('%H:%M')} KST) — 시작 안 함")
+        return
+
+    print(f"[TelegramNews] 수집 시작. 채널: {CHANNELS} ({kst_now.strftime('%H:%M')} KST)")
     await client.start()
-    await client.run_until_disconnected()
+
+    # 운영 시간 감시 태스크 (1분마다 체크, 21:00 이후 자동 종료)
+    async def _watch_hours() -> None:
+        while True:
+            await asyncio.sleep(60)
+            h = datetime.now(_KST).hour
+            if h >= _OPERATE_END or h < _OPERATE_START:
+                print(f"[TelegramNews] 운영 시간 종료({h}:xx KST) — 연결 해제")
+                await client.disconnect()
+                return
+
+    await asyncio.gather(
+        client.run_until_disconnected(),
+        _watch_hours(),
+        return_exceptions=True,
+    )
 
 
 def run() -> None:
