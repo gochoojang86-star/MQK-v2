@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
@@ -86,18 +87,40 @@ class KISNewsFetcher:
 
     _PATH = "/uapi/domestic-stock/v1/quotations/news-title"
     _REAL_URL = "https://openapi.koreainvestment.com:9443"
+    _CACHE_PATH = Path(__file__).parent.parent / "data" / "cache" / "kis_token_real.json"
 
     def __init__(self, kis_api=None) -> None:
         self._kis = kis_api          # 토큰 재사용용 (KISApi 인스턴스)
         self._real_app_key = os.environ.get("KIS_REAL_APP_KEY", "")
         self._real_app_secret = os.environ.get("KIS_REAL_APP_SECRET", "")
+        self._access_token: str = ""
+        self._token_expires: float = 0
 
     def _get_token(self) -> str:
-        """기존 kis_api 토큰 재사용 → 없으면 실전 자격증명으로 신규 발급."""
+        """기존 kis_api 토큰 재사용 → 없으면 캐시 확인 → 신규 발급."""
         if self._kis is not None:
             return self._kis._get_token()
         if not self._real_app_key or not self._real_app_secret:
             raise RuntimeError("KIS_REAL_APP_KEY / KIS_REAL_APP_SECRET 미설정")
+
+        import time, json
+        # 인메모리 캐시
+        if self._access_token and time.time() < self._token_expires:
+            return self._access_token
+
+        # 파일 캐시 (KISApi와 동일한 캐시 파일 공유)
+        try:
+            data = json.loads(self._CACHE_PATH.read_text(encoding="utf-8"))
+            token = data.get("access_token", "")
+            expires_at = float(data.get("expires_at", 0))
+            if token and time.time() < expires_at:
+                self._access_token = token
+                self._token_expires = expires_at
+                return token
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
+
+        # 신규 발급
         resp = requests.post(
             f"{self._REAL_URL}/oauth2/tokenP",
             json={
@@ -108,7 +131,21 @@ class KISNewsFetcher:
             timeout=10,
         )
         resp.raise_for_status()
-        return resp.json()["access_token"]
+        data = resp.json()
+        if "access_token" not in data:
+            raise RuntimeError(f"KIS 토큰 발급 실패 (속도제한 또는 오류): {data}")
+        self._access_token = data["access_token"]
+        self._token_expires = time.time() + data.get("expires_in", 86400) - 1800
+        # 파일 캐시 저장
+        try:
+            self._CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self._CACHE_PATH.write_text(
+                json.dumps({"access_token": self._access_token, "expires_at": self._token_expires}),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        return self._access_token
 
     def get_news(self, ticker: str = "000000", limit: int = 20) -> list[NewsItem]:
         if not self._real_app_key:

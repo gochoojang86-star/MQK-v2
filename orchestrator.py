@@ -37,6 +37,7 @@ from agents.review_agent import ReviewAgent
 from agents.self_improvement_agent import SelfImprovementAgent
 from broker.telegram import TelegramApproval, ApprovalRequest
 from codes.news_fetcher import NaverNewsFetcher, KISNewsFetcher
+from codes.disclosure_fetcher import DARTFetcher
 from broker.telegram_news import get_recent_news as get_telegram_news
 
 logging.basicConfig(
@@ -72,6 +73,7 @@ class MQKOrchestrator:
         )
         self._naver_news = NaverNewsFetcher()
         self._kis_news = KISNewsFetcher(kis_api=kis_api)
+        self._dart = DARTFetcher()
         self._current_theme: str = ""   # run_scan()에서 갱신, evaluate_candidate()에서 사용
         self._today = datetime.now().strftime("%Y-%m-%d")
         self._log_dir = LOG_CONFIG.base_dir / self._today
@@ -197,6 +199,21 @@ class MQKOrchestrator:
         raw_news = [n.to_dict() for n in kis_items + naver_items] + tg_items
         news = self._news_agent.evaluate(ticker, raw_news)
 
+        # 공시 수집 + Disclosure Agent 해석
+        disc_result = None
+        if self._dart.available:
+            dart_item = self._dart.get_latest(ticker, days=7)
+            if dart_item:
+                snap = self._market_data.get_snapshot(ticker)
+                market_cap = getattr(snap, "market_cap", 0)
+                disc_result = self._disclosure_agent.interpret(
+                    ticker,
+                    {**dart_item.to_dict(), "market_cap": market_cap},
+                )
+                logger.info(
+                    f"[공시] {name}({ticker}): {dart_item.title[:40]} → {disc_result.impact.value}"
+                )
+
         # Portfolio Manager Agent 호출 (핵심 LLM 호출)
         decision = self._pm_agent.decide(ticker, {
             "name": name,
@@ -204,6 +221,7 @@ class MQKOrchestrator:
             "technical": tech,
             "flow": flow,
             "news_evaluations": news,
+            "disclosure": disc_result,
             "is_in_portfolio": any(
                 p["ticker"] == ticker for p in portfolio_state.open_positions
             ),

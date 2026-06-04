@@ -299,7 +299,7 @@ class KISApi:
             "FID_COND_MRKT_CLS_CODE": "",
             "FID_INPUT_ISCD": ticker,
             "FID_TITL_CNTT": "",
-            "FID_INPUT_DATE_1": "",
+            "FID_INPUT_DATE_1": datetime.now().strftime("%Y%m%d"),  # 필수 — 없으면 0건
             "FID_INPUT_HOUR_1": "",
             "FID_RANK_SORT_CLS_CODE": "",
             "FID_INPUT_SRNO": "",
