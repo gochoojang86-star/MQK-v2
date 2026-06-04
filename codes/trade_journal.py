@@ -51,9 +51,38 @@ class TradeJournal:
                     pnl             REAL,
                     pnl_pct         REAL,
                     result          TEXT,
+                    highest_price   REAL,
+                    target1_hit     INTEGER DEFAULT 0,
+                    trailing_active INTEGER DEFAULT 0,
                     created_at      TEXT DEFAULT (datetime('now','localtime'))
                 )
             """)
+            self._ensure_column(conn, "highest_price", "REAL")
+            self._ensure_column(conn, "target1_hit", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "trailing_active", "INTEGER DEFAULT 0")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS trade_executions (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id        INTEGER NOT NULL,
+                    ticker          TEXT NOT NULL,
+                    side            TEXT NOT NULL,
+                    exec_date       TEXT NOT NULL,
+                    price           REAL NOT NULL,
+                    quantity        INTEGER NOT NULL,
+                    reason          TEXT,
+                    realized_pnl    REAL DEFAULT 0,
+                    realized_pnl_pct REAL DEFAULT 0,
+                    created_at      TEXT DEFAULT (datetime('now','localtime'))
+                )
+            """)
+
+    def _ensure_column(self, conn, name: str, ddl: str) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(trades)").fetchall()
+        }
+        if name not in columns:
+            conn.execute(f"ALTER TABLE trades ADD COLUMN {name} {ddl}")
 
     def open_trade(
         self,
@@ -71,8 +100,9 @@ class TradeJournal:
             cur = conn.execute(
                 """INSERT INTO trades
                    (ticker, name, entry_date, entry_price, quantity,
-                    stop_loss_price, entry_reason, confidence, order_no)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                    stop_loss_price, entry_reason, confidence, order_no,
+                    highest_price, target1_hit, trailing_active)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     ticker,
                     name,
@@ -83,6 +113,9 @@ class TradeJournal:
                     entry_reason,
                     confidence,
                     order_no,
+                    entry_price,
+                    0,
+                    0,
                 ),
             )
             return cur.lastrowid
@@ -93,6 +126,7 @@ class TradeJournal:
         exit_date: str,
         exit_price: float,
         exit_reason: str,
+        quantity: int | None = None,
     ) -> None:
         with self._conn() as conn:
             row = conn.execute(
@@ -102,11 +136,45 @@ class TradeJournal:
             ).fetchone()
             if not row:
                 raise ValueError(f"{ticker}: 청산할 미결 포지션이 없습니다.")
-            pnl = (exit_price - row["entry_price"]) * row["quantity"]
-            pnl_pct = (
+            close_quantity = int(quantity or row["quantity"])
+            if close_quantity <= 0:
+                raise ValueError(f"{ticker}: 청산 수량은 1 이상이어야 합니다.")
+            if close_quantity > int(row["quantity"]):
+                raise ValueError(f"{ticker}: 청산 수량이 보유 수량을 초과합니다.")
+
+            realized_pnl = (exit_price - row["entry_price"]) * close_quantity
+            realized_pnl_pct = (
                 (exit_price - row["entry_price"]) / row["entry_price"] * 100
             )
-            result = "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "BREAKEVEN")
+            self._record_execution(
+                conn=conn,
+                trade_id=row["id"],
+                ticker=ticker,
+                side="SELL",
+                exec_date=exit_date,
+                price=exit_price,
+                quantity=close_quantity,
+                reason=exit_reason,
+                realized_pnl=realized_pnl,
+                realized_pnl_pct=realized_pnl_pct,
+            )
+
+            if close_quantity < int(row["quantity"]):
+                conn.execute(
+                    """UPDATE trades SET quantity=?, target1_hit=1
+                       WHERE id=?""",
+                    (int(row["quantity"]) - close_quantity, row["id"]),
+                )
+                return
+
+            realized_total = self._realized_total(conn, row["id"])
+            realized_quantity = self._realized_quantity(conn, row["id"])
+            realized_pnl_pct = (
+                realized_total / (float(row["entry_price"]) * realized_quantity) * 100
+                if realized_quantity
+                else 0.0
+            )
+            result = "WIN" if realized_total > 0 else ("LOSS" if realized_total < 0 else "BREAKEVEN")
             conn.execute(
                 """UPDATE trades SET exit_date=?, exit_price=?, exit_reason=?,
                    pnl=?, pnl_pct=?, result=? WHERE id=?""",
@@ -114,11 +182,116 @@ class TradeJournal:
                     exit_date,
                     exit_price,
                     exit_reason,
-                    round(pnl, 0),
-                    round(pnl_pct, 2),
+                    round(realized_total, 0),
+                    round(realized_pnl_pct, 2),
                     result,
                     row["id"],
                 ),
+            )
+
+    def _record_execution(
+        self,
+        conn,
+        trade_id: int,
+        ticker: str,
+        side: str,
+        exec_date: str,
+        price: float,
+        quantity: int,
+        reason: str,
+        realized_pnl: float = 0.0,
+        realized_pnl_pct: float = 0.0,
+    ) -> None:
+        conn.execute(
+            """INSERT INTO trade_executions
+               (trade_id, ticker, side, exec_date, price, quantity, reason,
+                realized_pnl, realized_pnl_pct)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                trade_id,
+                ticker,
+                side,
+                exec_date,
+                price,
+                quantity,
+                reason,
+                round(realized_pnl, 0),
+                round(realized_pnl_pct, 2),
+            ),
+        )
+
+    def _realized_total(self, conn, trade_id: int) -> float:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(realized_pnl), 0) AS total "
+            "FROM trade_executions WHERE trade_id=?",
+            (trade_id,),
+        ).fetchone()
+        return float(row["total"] or 0)
+
+    def _realized_quantity(self, conn, trade_id: int) -> int:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(quantity), 0) AS quantity "
+            "FROM trade_executions WHERE trade_id=?",
+            (trade_id,),
+        ).fetchone()
+        return int(row["quantity"] or 0)
+
+    def get_trade_executions(self, ticker: str | None = None) -> list[dict]:
+        with self._conn() as conn:
+            if ticker:
+                rows = conn.execute(
+                    "SELECT * FROM trade_executions WHERE ticker=? ORDER BY id",
+                    (ticker,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM trade_executions ORDER BY id"
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_position_management(
+        self,
+        ticker: str,
+        stop_loss_price: float | None = None,
+        highest_price: float | None = None,
+        target1_hit: bool | None = None,
+        trailing_active: bool | None = None,
+    ) -> None:
+        """보유 포지션의 보호 스탑/최고가/1차익절 상태를 갱신한다.
+
+        손절가는 절대 낮추지 않는다.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id, stop_loss_price, highest_price FROM trades "
+                "WHERE ticker=? AND exit_date IS NULL ORDER BY id DESC LIMIT 1",
+                (ticker,),
+            ).fetchone()
+            if not row:
+                return
+
+            updates = []
+            params = []
+            if stop_loss_price is not None:
+                protected_stop = max(float(row["stop_loss_price"]), float(stop_loss_price))
+                updates.append("stop_loss_price=?")
+                params.append(protected_stop)
+            if highest_price is not None:
+                previous_high = float(row["highest_price"] or 0)
+                updates.append("highest_price=?")
+                params.append(max(previous_high, float(highest_price)))
+            if target1_hit is not None:
+                updates.append("target1_hit=?")
+                params.append(1 if target1_hit else 0)
+            if trailing_active is not None:
+                updates.append("trailing_active=?")
+                params.append(1 if trailing_active else 0)
+            if not updates:
+                return
+            params.append(row["id"])
+            conn.execute(
+                f"UPDATE trades SET {', '.join(updates)} WHERE id=?",
+                params,
             )
 
     def get_open_positions(self) -> list[dict]:

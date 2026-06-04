@@ -58,6 +58,10 @@ class NewsAgent:
 뉴스 내용: {news.get('content', '')[:500]}
 날짜: {news.get('date', '')}
 출처: {news.get('source', '')}
+관련 테마: {news.get('related_theme', '') or '미상'}
+당일 가격 반응: {news.get('price_reaction_pct', 0):.2f}%
+현재 거래대금: {news.get('current_trading_value', 0) / 1e8:.1f}억원
+20일 평균 거래대금 대비: {news.get('trading_value_ratio_20d', 0):.2f}배
 
 이 뉴스의 품질을 평가하고 JSON으로 출력하세요."""
 

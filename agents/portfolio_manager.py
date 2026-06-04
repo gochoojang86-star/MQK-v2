@@ -74,11 +74,56 @@ class PortfolioManagerAgent:
         flow   = ctx.get("flow")
         news   = ctx.get("news_evaluations", [])
         disc   = ctx.get("disclosure")
+        candidate = ctx.get("candidate") or {}
+        reaction = ctx.get("reaction") or {}
+        position = ctx.get("position") or {}
+        exit_signal = ctx.get("exit_signal")
 
         lines = [
             f"## 종목: {ctx.get('name', '')} ({ticker})",
             f"현재가: {ctx.get('current_price', 0):,.0f}원",
             f"포트폴리오 보유: {'예' if ctx.get('is_in_portfolio') else '아니오'}",
+            "",
+            "### 후보 스캐너",
+        ]
+        if candidate:
+            lines += [
+                f"- 후보 순위: {candidate.get('rank', '-')}",
+                f"- 테마/섹터 내 순위: {candidate.get('theme_rank') or '-'}",
+                f"- 스캐너 점수: {candidate.get('score', 0)}",
+                f"- 대장주 점수: {candidate.get('leadership_score', 0)}",
+                f"- 섹터: {candidate.get('sector', '')}",
+                f"- 등락률: {candidate.get('change_pct', 0):.2f}%",
+                f"- 거래대금: {candidate.get('trading_value', 0) / 1e8:.1f}억원",
+                f"- 거래대금 순위: {candidate.get('trading_value_rank') or '-'}",
+                f"- 통과 필터: {', '.join(candidate.get('passed', [])) or '없음'}",
+                f"- 테마 대장 후보 여부: {'예' if candidate.get('is_theme_leader') else '아니오'}",
+                f"- 후발주/소외주 경고: {'예' if candidate.get('is_laggard') else '아니오'}",
+            ]
+
+        if reaction:
+            lines += [
+                "",
+                "### 가격·거래대금 반응",
+                f"- 당일 가격 반응: {reaction.get('price_reaction_pct', 0):.2f}%",
+                f"- 현재 거래대금: {reaction.get('current_trading_value', 0) / 1e8:.1f}억원",
+                f"- 20일 평균 거래대금 대비: {reaction.get('trading_value_ratio_20d', 0):.2f}배",
+            ]
+
+        if position or exit_signal:
+            lines += [
+                "",
+                "### 보유/익절 관리",
+                f"- 청산 신호: {exit_signal or '없음'}",
+                f"- 진입가: {position.get('entry_price', 0):,.0f}원",
+                f"- 현재 손절가: {position.get('stop_loss_price', 0):,.0f}원",
+                f"- 수익률: {position.get('pnl_pct', 0):.2f}%",
+                f"- 1차익절 여부: {'예' if position.get('target1_hit') else '아니오'}",
+                "손절/트레일링 스탑은 코드가 강제한다. 익절 신호에서만 HOLD 연장을 검토하라.",
+                "HOLD를 선택하면 코드는 손절가를 올려 수익을 보호한다.",
+            ]
+
+        lines += [
             "",
             "### 시장 체제",
         ]
@@ -94,6 +139,11 @@ class PortfolioManagerAgent:
             lines += [
                 f"- 주도 테마: {b.theme} (강도 {b.strength})",
                 f"- 대장 후보: {', '.join(b.leader_candidates[:3])}",
+                f"- 테마 단계: {b.theme_stage or '미상'}",
+                f"- 테마 진입판단: {b.entry_verdict or '미상'}",
+                f"- 후발주 후보: {', '.join(b.laggard_stocks[:5]) or '없음'}",
+                f"- 잡주/과열 경고: {'예' if b.junk_warning else '아니오'}",
+                f"- 테마 리스크: {b.risk or '없음'}",
             ]
 
         lines += ["", "### 기술적 분석"]
@@ -111,6 +161,7 @@ class PortfolioManagerAgent:
             lines += [
                 f"- 외국인 3일: {flow.foreign_net_3d / 1e8:.1f}억원",
                 f"- 기관 3일: {flow.institution_net_3d / 1e8:.1f}억원",
+                f"- 프로그램 3일: {flow.program_net_3d / 1e8:.1f}억원",
                 f"- 강한 수급: {'예' if flow.is_strong_inflow else '아니오'}",
             ]
 

@@ -3,7 +3,12 @@ from codes.scanner import Scanner, CandidateScore
 from codes.market_data import MarketSnapshot
 
 
-def make_snapshot(ticker: str, trading_value: float, change_pct: float = 1.0) -> MarketSnapshot:
+def make_snapshot(
+    ticker: str,
+    trading_value: float,
+    change_pct: float = 1.0,
+    sector: str = "",
+) -> MarketSnapshot:
     return MarketSnapshot(
         ticker=ticker,
         name=f"종목_{ticker}",
@@ -13,6 +18,7 @@ def make_snapshot(ticker: str, trading_value: float, change_pct: float = 1.0) ->
         trading_value=trading_value,
         foreign_net=0,
         institution_net=0,
+        sector=sector,
     )
 
 
@@ -24,6 +30,22 @@ def test_trading_value_filter_removes_low_volume():
     tickers = [c.ticker for c in result]
     assert "A001" not in tickers
     assert "A002" in tickers
+
+
+def test_scanner_removes_halted_or_administrative_issues():
+    scanner = Scanner()
+    halted = make_snapshot("HALT", trading_value=50_000_000_000)
+    halted.trading_halted = True
+    admin = make_snapshot("ADMIN", trading_value=50_000_000_000)
+    admin.administrative_issue = True
+    normal = make_snapshot("OK", trading_value=50_000_000_000)
+
+    result = scanner.scan([halted, admin, normal], {}, {})
+    tickers = [c.ticker for c in result]
+
+    assert "HALT" not in tickers
+    assert "ADMIN" not in tickers
+    assert "OK" in tickers
 
 
 def test_candidate_count_capped_at_30():
@@ -49,3 +71,18 @@ def test_score_ordering():
     high = make_snapshot("HIGH", trading_value=200_000_000_000)
     result = scanner.scan([low, high], {}, {})
     assert result[0].total_score >= result[-1].total_score
+
+
+def test_scanner_marks_sector_leaders_first():
+    scanner = Scanner()
+    a1 = make_snapshot("A1", trading_value=100_000_000_000, sector="A")
+    a2 = make_snapshot("A2", trading_value=60_000_000_000, sector="A")
+    b1 = make_snapshot("B1", trading_value=70_000_000_000, sector="B")
+
+    result = scanner.scan([a2, b1, a1], {}, {})
+    leaders = [c for c in result if c.is_theme_leader]
+
+    assert {c.ticker for c in leaders} == {"A1", "B1"}
+    assert next(c for c in result if c.ticker == "A1").theme_rank == 1
+    assert next(c for c in result if c.ticker == "A2").theme_rank == 2
+    assert "섹터대장" in next(c for c in result if c.ticker == "A1").passed_filters

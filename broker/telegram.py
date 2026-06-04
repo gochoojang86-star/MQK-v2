@@ -59,36 +59,47 @@ class TelegramApproval:
         매수 신호를 텔레그램으로 전송하고 승인을 기다린다.
         timeout_sec 내에 응답 없으면 자동 거부.
         """
+        if not self._token or not self._chat_id:
+            return ApprovalResult(
+                approved=False,
+                request_id="",
+                responded_at=datetime.now().isoformat(),
+                responder_note="텔레그램 토큰 또는 채팅 ID 미설정",
+            )
+
         # UUID 기반 고유 코드 — ticker/시간 기반 코드보다 예측 불가
         request_id = str(uuid.uuid4())
-        approval_code = request_id[:8].upper()  # e.g. "A3F7C2D1"
 
         # 신규 요청 전 기존 누적 메시지 소진 (이전 응답 재사용 방지)
         self._flush_updates()
 
         msg_text = self._format_message(req, request_id)
-        self._send_message(msg_text)
+        self._send_message(msg_text, reply_markup=self._approval_keyboard(request_id))
 
         # 승인 대기 (polling)
         start = time.time()
         while time.time() - start < timeout_sec:
             updates = self._get_updates()
             for update in updates:
-                msg = update.get("message", {})
-                # chat_id 검증: 등록된 채널의 메시지만 수락
+                callback = update.get("callback_query", {})
+                if not callback:
+                    continue
+                msg = callback.get("message", {})
                 if not self._is_expected_chat(msg):
                     continue
-                text = msg.get("text", "").strip().upper()
-                # approval_code 정확 매칭 (부분 포함이 아닌 단어 단위)
-                if approval_code not in text.split():
+                action, callback_request_id = self._parse_callback_data(
+                    callback.get("data", "")
+                )
+                if callback_request_id != request_id:
                     continue
-                if "승인" in text or "YES" in text or text.endswith(" Y"):
+                self._answer_callback(callback.get("id", ""))
+                if action == "approve":
                     return ApprovalResult(
                         approved=True,
                         request_id=request_id,
                         responded_at=datetime.now().isoformat(),
                     )
-                if "거부" in text or "NO" in text or text.endswith(" N"):
+                if action == "reject":
                     return ApprovalResult(
                         approved=False,
                         request_id=request_id,
@@ -130,19 +141,44 @@ class TelegramApproval:
 
 ---
 코드: {request_id[:8].upper()}
-승인: "{request_id[:8].upper()} 승인" 또는 "{request_id[:8].upper()} Y"
-거부: "{request_id[:8].upper()} 거부" 또는 "{request_id[:8].upper()} N"
+아래 버튼으로 승인 또는 거부하세요.
 """
 
-    def _send_message(self, text: str) -> None:
+    def _send_message(self, text: str, reply_markup: dict | None = None) -> None:
         if not self._token or not self._chat_id:
             return
         url = f"{TELEGRAM_API}/sendMessage"
-        requests.post(url, json={
+        payload = {
             "chat_id": self._chat_id,
             "text": text,
             "parse_mode": "Markdown",
-        }, timeout=10)
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        requests.post(url, json=payload, timeout=10)
+
+    def _approval_keyboard(self, request_id: str) -> dict:
+        return {
+            "inline_keyboard": [[
+                {"text": "승인", "callback_data": f"approve:{request_id}"},
+                {"text": "거부", "callback_data": f"reject:{request_id}"},
+            ]]
+        }
+
+    def _parse_callback_data(self, data: str) -> tuple[str, str]:
+        action, sep, request_id = data.partition(":")
+        if sep != ":" or action not in {"approve", "reject"}:
+            return "", ""
+        return action, request_id
+
+    def _answer_callback(self, callback_query_id: str) -> None:
+        if not self._token or not callback_query_id:
+            return
+        url = f"{TELEGRAM_API}/answerCallbackQuery"
+        try:
+            requests.post(url, json={"callback_query_id": callback_query_id}, timeout=5)
+        except Exception:
+            pass
 
     def _get_updates(self) -> list:
         if not self._token:

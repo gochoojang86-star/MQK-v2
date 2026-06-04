@@ -38,8 +38,12 @@ class DisclosureAgent:
         self._llm = llm or LLMClient()
 
     def interpret(self, ticker: str, disclosure: dict[str, Any]) -> DisclosureResult:
+        market_cap = disclosure.get("market_cap") or 0
         user_msg = f"""종목: {ticker}
-시가총액: {disclosure.get('market_cap', 0) / 1e8:.0f}억원
+시가총액: {market_cap / 1e8:.0f}억원
+당일 가격 반응: {disclosure.get('price_reaction_pct', 0):.2f}%
+현재 거래대금: {disclosure.get('current_trading_value', 0) / 1e8:.1f}억원
+20일 평균 거래대금 대비: {disclosure.get('trading_value_ratio_20d', 0):.2f}배
 
 공시 제목: {disclosure.get('title', '')}
 공시 내용: {disclosure.get('content', '')[:1000]}

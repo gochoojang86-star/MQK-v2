@@ -79,6 +79,7 @@ class DARTFetcher:
     def __init__(self) -> None:
         self._api_key = os.environ.get("DART_AUTH_KEY", "")
         self._corp_codes: dict[str, str] = {}   # ticker → corp_code (in-memory)
+        self._document_cache: dict[str, str] = {}
         self._load_corp_code_cache()
 
     # ── corp_code 조회 ────────────────────────────────────────────────────────
@@ -201,11 +202,13 @@ class DARTFetcher:
         """DART 공시 원문을 다운로드해 XML 태그 제거 후 평문 반환."""
         if not self._api_key or not rcept_no:
             return ""
+        if rcept_no in self._document_cache:
+            return self._document_cache[rcept_no]
         try:
             resp = requests.get(
                 f"{_BASE}/document.xml",
                 params={"crtfc_key": self._api_key, "rcept_no": rcept_no},
-                timeout=10,
+                timeout=5,
             )
             resp.raise_for_status()
             with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
@@ -214,8 +217,11 @@ class DARTFetcher:
                     return ""
                 raw = zf.read(names[0])
             raw_text = raw.decode("utf-8", errors="ignore")
-            return _TAG_RE.sub(" ", raw_text)
+            plain = _TAG_RE.sub(" ", raw_text)
+            self._document_cache[rcept_no] = plain
+            return plain
         except Exception:
+            self._document_cache[rcept_no] = ""
             return ""
 
     @staticmethod

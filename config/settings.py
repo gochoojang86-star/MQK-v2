@@ -7,6 +7,8 @@ from enum import Enum
 import os
 from pathlib import Path
 
+from .runtime_overrides import load_runtime_overrides
+
 BASE_DIR = Path(__file__).parent.parent
 
 
@@ -76,8 +78,9 @@ class ExecutionConfig:
     }
 
 
-RISK       = RiskConfig()
-SCANNER    = ScannerConfig()
-LLM_CONFIG = LLMConfig()
+_RUNTIME_OVERRIDES = load_runtime_overrides()
+RISK       = RiskConfig(**_RUNTIME_OVERRIDES.get("RISK", {}))
+SCANNER    = ScannerConfig(**_RUNTIME_OVERRIDES.get("SCANNER", {}))
+LLM_CONFIG = LLMConfig(**_RUNTIME_OVERRIDES.get("LLM_CONFIG", {}))
 LOG_CONFIG = LogConfig()
 EXECUTION  = ExecutionConfig()

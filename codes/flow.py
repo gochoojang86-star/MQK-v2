@@ -56,7 +56,8 @@ class FlowAnalysis:
         is_strong = (
             foreign_net_3d > 0
             and institution_net_3d > 0
-            and foreign_consecutive >= 2
+            and foreign_consecutive >= 3
+            and institution_consecutive >= 3
         )
 
         return FlowSignals(

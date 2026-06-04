@@ -26,6 +26,11 @@ class RawKISSource:
             "hts_kor_isnm": "삼성전자",
             "frgn_ntby_qty": "1000",
             "orgn_ntby_qty": "2000",
+            "pgtr_ntby_qty": "3000",
+            "hts_avls": "815363",
+            "listed_shares": "5846278608",
+            "tr_stop_yn": "N",
+            "admn_item_yn": "N",
         }
 
     def get_index_status(self):
@@ -75,16 +80,20 @@ def test_market_data_converts_kis_raw_ohlcv_to_bars():
 def test_market_data_converts_kis_raw_snapshot():
     snapshot = MarketData(RawKISSource()).get_snapshot("005930")
 
-    assert snapshot == MarketSnapshot(
-        ticker="005930",
-        name="삼성전자",
-        current_price=71000.0,
-        change_pct=1.23,
-        volume=123456,
-        trading_value=8765432100.0,
-        foreign_net=1000.0,
-        institution_net=2000.0,
-    )
+    assert snapshot.ticker == "005930"
+    assert snapshot.name == "삼성전자"
+    assert snapshot.current_price == 71000.0
+    assert snapshot.change_pct == 1.23
+    assert snapshot.volume == 123456
+    assert snapshot.trading_value == 8765432100.0
+    assert snapshot.foreign_net == 1000.0
+    assert snapshot.institution_net == 2000.0
+    assert snapshot.program_net == 0.0
+    assert snapshot.market_cap == 81_536_300_000_000
+    assert snapshot.listed_shares == 5_846_278_608
+    assert snapshot.trading_halted is False
+    assert snapshot.administrative_issue is False
+    assert snapshot.timestamp
 
 
 def test_market_data_converts_raw_index_status_and_universe():

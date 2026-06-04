@@ -152,6 +152,7 @@ class OrderManager:
                     exit_date=order.entry_date,
                     exit_price=order.price,
                     exit_reason=order.reason,
+                    quantity=order.quantity,
                 )
             return execution
 
@@ -180,8 +181,78 @@ class OrderManager:
                 exit_date=order.entry_date,
                 exit_price=execution.executed_price,
                 exit_reason=order.reason,
+                quantity=order.quantity,
             )
         return execution
+
+    def list_open_orders(self, side: str | None = None) -> list[dict]:
+        """KIS 기준 미체결/정정취소 가능 주문 목록."""
+        if self._dry_run or self._kis is None or not hasattr(self._kis, "get_open_orders"):
+            return []
+        return self._kis.get_open_orders(side=side)
+
+    def cancel_order(
+        self,
+        order_no: str,
+        quantity: int = 0,
+        all_quantity: bool = True,
+        org_no: str = "",
+        price: float = 0,
+        order_type: str = "00",
+    ) -> ExecutionResult:
+        """미체결 주문 취소. 체결된 포지션 청산과는 별개다."""
+        if self._dry_run:
+            return ExecutionResult(
+                success=True,
+                ticker="",
+                side="CANCEL",
+                quantity=quantity,
+                executed_price=price,
+                order_no=order_no,
+                timestamp=datetime.now().isoformat(),
+            )
+        if self._kis is None or not hasattr(self._kis, "cancel_order"):
+            raise RuntimeError("KIS API with cancel_order is required for order cancellation.")
+
+        result = self._kis.cancel_order(
+            order_no=order_no,
+            quantity=quantity,
+            org_no=org_no,
+            price=price,
+            all_quantity=all_quantity,
+            order_type=order_type,
+        )
+        execution = ExecutionResult(
+            success=result.success,
+            ticker=result.ticker,
+            side=result.side,
+            quantity=result.quantity,
+            executed_price=result.price,
+            order_no=result.order_no,
+            timestamp=result.timestamp,
+            error_msg=result.error_msg,
+        )
+        self._log_execution(execution)
+        return execution
+
+    def cancel_stale_orders(self, side: str | None = None) -> list[ExecutionResult]:
+        """현재 취소 가능한 미체결 주문을 전량 취소한다."""
+        results: list[ExecutionResult] = []
+        for order in self.list_open_orders(side=side):
+            order_no = order.get("order_no", "")
+            if not order_no:
+                continue
+            results.append(
+                self.cancel_order(
+                    order_no=order_no,
+                    quantity=int(order.get("cancelable_quantity") or 0),
+                    all_quantity=True,
+                    org_no=order.get("org_no", ""),
+                    price=float(order.get("price") or 0),
+                    order_type=order.get("order_type") or "00",
+                )
+            )
+        return results
 
     def _append_log(self, record) -> None:
         log_path = self._log_dir / datetime.now().strftime("%Y-%m-%d") / "orders.jsonl"

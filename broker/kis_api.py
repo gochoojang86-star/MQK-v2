@@ -5,6 +5,7 @@ KIS API Broker - 한국투자증권 API 연동
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 class KISMode:
@@ -93,6 +96,10 @@ class KISApi:
         self._data_mode = os.environ.get(
             "KIS_DATA_MODE",
             KISMode.REAL if config is None else self._cfg.mode,
+        )
+        self._order_admin_mode = os.environ.get(
+            "KIS_ORDER_ADMIN_MODE",
+            KISMode.REAL if self._cfg.mode == KISMode.PAPER else self._cfg.mode,
         )
         self._access_tokens: dict[str, Optional[str]] = {}
         self._token_expires: dict[str, float] = {}
@@ -534,6 +541,101 @@ class KISApi:
         """지정가 매도"""
         return self._place_order(ticker, quantity, price, "SELL", market=False)
 
+    def get_open_orders(self, side: str | None = None) -> list[dict]:
+        """정정/취소 가능 미체결 주문 조회.
+
+        문서상 일부 모의투자 환경에서 지원이 제한될 수 있으므로 실패 시
+        빈 리스트를 반환한다. 실제 주문 상태의 source of truth는 KIS다.
+        """
+        order_mode = self._order_admin_mode
+        url = f"{self._base_url_for(order_mode)}/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
+        acct_parts = self._account_no_for(order_mode).split("-")
+        side_code = {"SELL": "1", "BUY": "2"}.get((side or "").upper(), "0")
+        params = {
+            "CANO": acct_parts[0],
+            "ACNT_PRDT_CD": acct_parts[1],
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+            "INQR_DVSN_1": "0",
+            "INQR_DVSN_2": side_code,
+        }
+        tr_id = "TTTC0084R" if order_mode == KISMode.REAL else "VTTC0084R"
+        try:
+            resp = self._get_with_retry(
+                url,
+                headers=self._headers(tr_id, mode=order_mode),
+                params=params,
+                timeout=10,
+            )
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                logger.warning("KIS open order query failed: %s", data.get("msg1", ""))
+                return []
+            output = data.get("output", [])
+            rows = output if isinstance(output, list) else [output]
+            return [self._coerce_open_order(row) for row in rows if row]
+        except Exception as exc:
+            logger.warning("KIS open order query failed: %s", exc)
+            return []
+
+    def cancel_order(
+        self,
+        order_no: str,
+        quantity: int = 0,
+        org_no: str = "",
+        price: float = 0,
+        all_quantity: bool = True,
+        order_type: str = "00",
+    ) -> OrderResult:
+        """미체결 주문 취소."""
+        order_mode = self._order_admin_mode
+        url = f"{self._base_url_for(order_mode)}/uapi/domestic-stock/v1/trading/order-rvsecncl"
+        acct_parts = self._account_no_for(order_mode).split("-")
+        body = {
+            "CANO": acct_parts[0],
+            "ACNT_PRDT_CD": acct_parts[1],
+            "KRX_FWDG_ORD_ORGNO": org_no,
+            "ORGN_ODNO": order_no,
+            "ORD_DVSN": order_type,
+            "RVSE_CNCL_DVSN_CD": "02",
+            "ORD_QTY": "0" if all_quantity else str(int(quantity)),
+            "ORD_UNPR": str(int(price)),
+            "QTY_ALL_ORD_YN": "Y" if all_quantity else "N",
+        }
+        tr_id = "TTTC0013U" if order_mode == KISMode.REAL else "VTTC0013U"
+        try:
+            resp = requests.post(
+                url,
+                headers=self._headers(tr_id, mode=order_mode),
+                json=body,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            success = data.get("rt_cd") == "0"
+            output = data.get("output", {}) or {}
+            return OrderResult(
+                success=success,
+                order_no=output.get("ODNO") or output.get("odno") or order_no,
+                ticker="",
+                quantity=quantity,
+                price=price,
+                side="CANCEL",
+                timestamp=datetime.now().isoformat(),
+                error_msg="" if success else data.get("msg1", ""),
+            )
+        except Exception as exc:
+            return OrderResult(
+                success=False,
+                order_no=order_no,
+                ticker="",
+                quantity=quantity,
+                price=price,
+                side="CANCEL",
+                timestamp=datetime.now().isoformat(),
+                error_msg=str(exc),
+            )
+
     def _place_order(
         self, ticker: str, quantity: int, price: float, side: str, market: bool
     ) -> OrderResult:
@@ -611,6 +713,7 @@ class KISApi:
                 }
             rows.sort(key=lambda row: str(row.get("stck_bsop_date") or row.get("date") or ""))
             flow = self._coerce_flow_row(ticker, rows[-1])
+            self._sanitize_flow_record(flow)
             return {
                 "foreign_net": flow["foreign_net"],
                 "institution_net": flow["institution_net"],
@@ -658,6 +761,7 @@ class KISApi:
                     record["program_net"] = program["program_net"]
                     if not record["trading_value"]:
                         record["trading_value"] = program["trading_value"]
+                self._sanitize_flow_record(record)
             return records
         except Exception:
             return []
@@ -724,6 +828,68 @@ class KISApi:
             "program_net": _f("program_net"),
             "trading_value": trading_value,
         }
+
+    def _coerce_open_order(self, row: dict) -> dict:
+        def _s(*keys: str) -> str:
+            for key in keys:
+                value = row.get(key)
+                if value not in (None, ""):
+                    return str(value)
+            return ""
+
+        def _i(*keys: str) -> int:
+            value = _s(*keys)
+            return int(float(value.replace(",", ""))) if value else 0
+
+        def _f(*keys: str) -> float:
+            value = _s(*keys)
+            return float(value.replace(",", "")) if value else 0.0
+
+        return {
+            "order_no": _s("odno", "ODNO"),
+            "org_no": _s("ord_gno_brno", "KRX_FWDG_ORD_ORGNO"),
+            "ticker": _s("pdno", "PDNO"),
+            "name": _s("prdt_name", "PRDT_NAME"),
+            "side": {"01": "SELL", "02": "BUY"}.get(_s("sll_buy_dvsn_cd", "SLL_BUY_DVSN_CD"), ""),
+            "quantity": _i("ord_qty", "ORD_QTY"),
+            "filled_quantity": _i("tot_ccld_qty", "TOT_CCLD_QTY"),
+            "cancelable_quantity": _i("psbl_qty", "PSBL_QTY"),
+            "price": _f("ord_unpr", "ORD_UNPR"),
+            "order_type": _s("ord_dvsn_cd", "ORD_DVSN_CD"),
+        }
+
+    def _sanitize_flow_record(self, record: dict) -> None:
+        """거래대금 대비 수급액 단위가 100만 배 튄 경우 보정한다."""
+        trading_value = float(record.get("trading_value") or 0)
+        if trading_value <= 0:
+            return
+
+        for key in ("foreign_net", "institution_net", "individual_net", "program_net"):
+            value = float(record.get(key) or 0)
+            if not value:
+                continue
+            if abs(value) <= trading_value * 3:
+                continue
+            corrected = value / 1_000_000
+            if abs(corrected) <= trading_value * 3:
+                logger.warning(
+                    "KIS flow unit adjusted: ticker=%s date=%s key=%s raw=%s corrected=%s",
+                    record.get("ticker"),
+                    record.get("date"),
+                    key,
+                    value,
+                    corrected,
+                )
+                record[key] = corrected
+            else:
+                logger.warning(
+                    "KIS flow amount looks abnormal: ticker=%s date=%s key=%s value=%s trading_value=%s",
+                    record.get("ticker"),
+                    record.get("date"),
+                    key,
+                    value,
+                    trading_value,
+                )
 
     def _coerce_program_row(self, ticker: str, row: dict) -> dict:
         def _f(*keys: str) -> float:

@@ -570,6 +570,7 @@ class MQKOrchestrator:
     ) -> dict:
         """보유 포지션 손절/익절 신호를 매도 주문으로 연결."""
         self._stp_manager.update_trailing(position, current_price)
+        self._sync_position_management(position)
         signal = self._stp_manager.evaluate(position, current_price)
         if signal == ExitSignal.HOLD:
             return {"action": "HOLD", "ticker": position.ticker}
@@ -584,6 +585,7 @@ class MQKOrchestrator:
                         stop_loss_price=protected_stop,
                         highest_price=position.highest_price,
                         target1_hit=True,
+                        trailing_active=position.trailing_active,
                     )
                 self._append_jsonl("exit_signals.jsonl", {
                     "ticker": position.ticker,
@@ -610,6 +612,7 @@ class MQKOrchestrator:
                     stop_loss_price=max(position.stop_loss_price, position.entry_price),
                     highest_price=position.highest_price,
                     target1_hit=True,
+                    trailing_active=position.trailing_active,
                 )
 
         order = OrderRequest(
@@ -659,6 +662,7 @@ class MQKOrchestrator:
                     snapshot.current_price,
                 ),
                 target1_hit=bool(row.get("target1_hit")),
+                trailing_active=bool(row.get("trailing_active")),
             )
             results.append(
                 self.process_position_exit(
@@ -668,6 +672,16 @@ class MQKOrchestrator:
                 )
             )
         return results
+
+    def _sync_position_management(self, position: PositionStatus) -> None:
+        journal = getattr(self, "_journal", None)
+        if hasattr(journal, "update_position_management"):
+            journal.update_position_management(
+                ticker=position.ticker,
+                highest_price=position.highest_price,
+                target1_hit=position.target1_hit,
+                trailing_active=position.trailing_active,
+            )
 
     def _should_extend_profit_hold(
         self,

@@ -41,6 +41,82 @@ def test_get_open_positions_empty(journal):
     assert journal.get_open_positions() == []
 
 
+def test_partial_close_keeps_remaining_position_and_marks_target1(journal):
+    journal.open_trade(
+        ticker="005930",
+        name="삼성전자",
+        entry_date="2026-06-04",
+        entry_price=75000,
+        quantity=10,
+        stop_loss_price=73000,
+        entry_reason="VCP 돌파",
+        confidence=80,
+    )
+
+    journal.close_trade(
+        ticker="005930",
+        exit_date="2026-06-05",
+        exit_price=78000,
+        exit_reason="TARGET_1",
+        quantity=5,
+    )
+
+    open_pos = journal.get_open_positions()
+    assert len(open_pos) == 1
+    assert open_pos[0]["quantity"] == 5
+    assert open_pos[0]["target1_hit"] == 1
+    assert journal.get_closed_trades(days=7) == []
+    executions = journal.get_trade_executions("005930")
+    assert len(executions) == 1
+    assert executions[0]["quantity"] == 5
+    assert executions[0]["realized_pnl"] == pytest.approx((78000 - 75000) * 5)
+
+
+def test_update_position_management_never_lowers_stop(journal):
+    journal.open_trade(
+        "005930",
+        "삼성전자",
+        "2026-06-04",
+        75000,
+        10,
+        73000,
+        "VCP 돌파",
+        80,
+    )
+
+    journal.update_position_management("005930", stop_loss_price=72000, highest_price=80000)
+    journal.update_position_management("005930", stop_loss_price=75000, highest_price=79000)
+
+    pos = journal.get_open_positions()[0]
+    assert pos["stop_loss_price"] == 75000
+    assert pos["highest_price"] == 80000
+
+
+def test_update_position_management_persists_trailing_state(journal):
+    journal.open_trade(
+        "005930",
+        "삼성전자",
+        "2026-06-04",
+        75000,
+        10,
+        73000,
+        "VCP 돌파",
+        80,
+    )
+
+    journal.update_position_management(
+        "005930",
+        highest_price=83000,
+        target1_hit=True,
+        trailing_active=True,
+    )
+
+    pos = journal.get_open_positions()[0]
+    assert pos["highest_price"] == 83000
+    assert pos["target1_hit"] == 1
+    assert pos["trailing_active"] == 1
+
+
 def test_daily_summary(journal):
     journal.open_trade(
         "000660",

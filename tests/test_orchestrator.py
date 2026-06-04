@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from agents.regime_agent import MarketStatus, Regime, RegimeJudgment
+from agents.portfolio_manager import Decision, PortfolioDecision
 from agents.review_agent import TradeReview
 from agents.self_improvement_agent import ChangeType, ImprovementProposal
 from agents.theme_agent import ThemeAnalysis, ThemeItem
@@ -129,6 +130,17 @@ class FakeSelfImprovementAgent:
         ]
 
 
+class FakeHoldPM:
+    def decide(self, ticker, context):
+        return PortfolioDecision(
+            ticker=ticker,
+            decision=Decision.HOLD,
+            confidence=75,
+            reason="leader still strong",
+            counter_argument="could reverse",
+        )
+
+
 class FakeBalanceApi:
     def get_balance(self):
         return {
@@ -166,6 +178,11 @@ class FakeFlowHistoryApi:
             {"date": "20260602", "ticker": ticker, "foreign_net": 4, "institution_net": 5, "program_net": 6, "trading_value": 20},
             {"date": "20260603", "ticker": ticker, "foreign_net": 7, "institution_net": 8, "program_net": 9, "trading_value": 30},
         ]
+
+
+class FakeSeedApi:
+    def get_theme_seed_tickers(self, limit=60):
+        return ["005930", "000660"]
 
 
 def test_run_premarket_serializes_regime_status_and_risk_notes(tmp_path):
@@ -217,6 +234,19 @@ def test_run_scan_uses_best_theme_for_theme_match(tmp_path):
     assert candidates[0]["is_theme_leader"] is True
     assert orchestrator._candidate_context["005930"]["score"] == candidates[0]["score"]
     assert (tmp_path / "candidate_scores.jsonl").exists()
+
+
+def test_get_scan_seed_tickers_prefers_kis_ranking_api(tmp_path):
+    orchestrator = make_orchestrator(tmp_path)
+    orchestrator._kis_api = FakeSeedApi()
+
+    class ShouldNotUseUniverse:
+        def get_universe(self):
+            raise AssertionError("ranking seed should be preferred")
+
+    orchestrator._market_data = ShouldNotUseUniverse()
+
+    assert orchestrator._get_scan_seed_tickers() == ["005930", "000660"]
 
 
 def test_build_reaction_context_uses_snapshot_and_average_trading_value(tmp_path):
@@ -327,6 +357,69 @@ def test_process_position_exit_executes_sell_on_stop_loss(tmp_path):
     assert result["signal"] == "STOP_LOSS"
     assert result["quantity"] == 10
     assert (tmp_path / "exit_signals.jsonl").exists()
+
+
+def test_profit_target_can_be_extended_with_protected_stop(tmp_path):
+    orchestrator = make_orchestrator(tmp_path)
+    orchestrator._stp_manager = __import__(
+        "codes.stop_take_profit", fromlist=["StopTakeProfitManager"]
+    ).StopTakeProfitManager()
+    orchestrator._pm_agent = FakeHoldPM()
+
+    class FakeJournal:
+        def __init__(self):
+            self.update = None
+
+        def update_position_management(self, **kwargs):
+            self.update = kwargs
+
+    orchestrator._journal = FakeJournal()
+    position = PositionStatus(
+        ticker="005930",
+        entry_price=50000,
+        stop_loss_price=47000,
+        quantity=10,
+        atr=1000,
+        highest_price=55000,
+    )
+
+    result = orchestrator.process_position_exit(position, "삼성전자", current_price=55000)
+
+    assert result["action"] == "HOLD_EXTENDED"
+    assert result["signal"] == "TARGET_1"
+    assert result["protected_stop"] == 50000
+    assert orchestrator._journal.update["stop_loss_price"] == 50000
+    assert orchestrator._journal.update["target1_hit"] is True
+
+
+def test_hold_exit_check_syncs_highest_price_and_trailing_state(tmp_path):
+    orchestrator = make_orchestrator(tmp_path)
+    orchestrator._stp_manager = __import__(
+        "codes.stop_take_profit", fromlist=["StopTakeProfitManager"]
+    ).StopTakeProfitManager()
+
+    class FakeJournal:
+        def __init__(self):
+            self.update = None
+
+        def update_position_management(self, **kwargs):
+            self.update = kwargs
+
+    orchestrator._journal = FakeJournal()
+    position = PositionStatus(
+        ticker="005930",
+        entry_price=50000,
+        stop_loss_price=47000,
+        quantity=10,
+        atr=1000,
+        highest_price=50000,
+    )
+
+    result = orchestrator.process_position_exit(position, "삼성전자", current_price=53000)
+
+    assert result["action"] == "HOLD"
+    assert orchestrator._journal.update["highest_price"] == 53000
+    assert orchestrator._journal.update["trailing_active"] is False
 
 
 def test_run_position_exit_check_reads_open_positions(tmp_path):

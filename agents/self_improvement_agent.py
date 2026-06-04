@@ -7,7 +7,7 @@ LLM 사용.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -34,6 +34,7 @@ class ImprovementProposal:
     expected_effect: str
     risk: str
     requires_backtest: bool
+    settings_patch: list[dict[str, Any]] = field(default_factory=list)
     auto_apply: bool = False  # 항상 False — 예외 없음
 
 
@@ -67,6 +68,7 @@ class SelfImprovementAgent:
                 expected_effect=p.get("expected_effect", ""),
                 risk=p.get("risk", ""),
                 requires_backtest=p.get("requires_backtest", True),
+                settings_patch=p.get("settings_patch", []),
                 auto_apply=False,  # 절대 자동 반영 금지
             ))
         return proposals
@@ -99,4 +101,12 @@ class SelfImprovementAgent:
 
 위 데이터를 분석하여 전략 개선안을 JSON으로 제안하세요.
 모든 제안은 백테스트 검증 + 사용자 승인 후 반영됨을 전제로 합니다.
-auto_apply는 항상 false입니다."""
+auto_apply는 항상 false입니다.
+
+각 제안이 실제 설정 변경으로 연결될 수 있다면 settings_patch를 포함하세요.
+형식:
+"settings_patch": [
+  {"section": "RISK|SCANNER|LLM_CONFIG|EXECUTION", "key": "필드명", "value": 값}
+]
+
+허용되지 않은 키는 넣지 마세요."""

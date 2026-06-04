@@ -6,13 +6,48 @@ auto_apply는 항상 False — 예외 없음
 from __future__ import annotations
 
 import sqlite3
+import json
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from agents.self_improvement_agent import ImprovementProposal
+from config.runtime_overrides import write_runtime_overrides
 
 _DEFAULT_DB = Path(__file__).parent.parent / "data" / "improvements.db"
+_DEFAULT_OVERRIDE_PATH = Path(__file__).parent.parent / "data" / "approved_settings.json"
+_ALLOWED_PATCH_KEYS = {
+    "RISK": {
+        "risk_per_trade_pct",
+        "max_daily_loss_pct",
+        "max_positions",
+        "max_theme_exposure_pct",
+        "max_single_position_pct",
+        "stop_loss_method",
+        "atr_multiplier",
+        "max_stop_loss_pct",
+        "allow_averaging_down",
+        "require_telegram_approval",
+    },
+    "SCANNER": {
+        "universe_size",
+        "candidate_count",
+        "final_candidates",
+        "min_trading_value_krw",
+    },
+    "LLM_CONFIG": {
+        "model_reasoning",
+        "model_standard",
+        "model_fast",
+        "max_tokens",
+        "temperature",
+        "max_llm_calls_per_day",
+    },
+    "EXECUTION": {
+        "order_dry_run",
+    },
+}
 
 
 class ImprovementManager:
@@ -42,6 +77,7 @@ class ImprovementManager:
                     change_type     TEXT,
                     expected_effect TEXT,
                     risk            TEXT,
+                    settings_patch  TEXT DEFAULT '[]',
                     requires_backtest INTEGER DEFAULT 1,
                     status          TEXT DEFAULT 'PENDING',
                     reject_reason   TEXT,
@@ -54,10 +90,11 @@ class ImprovementManager:
         with self._conn() as conn:
             cur = conn.execute(
                 """INSERT INTO proposals
-                   (title, hypothesis, change_type, expected_effect, risk, requires_backtest)
-                   VALUES (?,?,?,?,?,?)""",
+                   (title, hypothesis, change_type, expected_effect, risk, settings_patch, requires_backtest)
+                   VALUES (?,?,?,?,?,?,?)""",
                 (proposal.title, proposal.hypothesis, proposal.change_type.value,
                  proposal.expected_effect, proposal.risk,
+                 json.dumps(proposal.settings_patch, ensure_ascii=False),
                  int(proposal.requires_backtest)),
             )
             pid = cur.lastrowid
@@ -80,6 +117,7 @@ class ImprovementManager:
                 "UPDATE proposals SET status='APPROVED', updated_at=? WHERE id=?",
                 (datetime.now().isoformat(), proposal_id),
             )
+        self.apply_approved_settings()
 
     def reject(self, proposal_id: int, reason: str = "") -> None:
         with self._conn() as conn:
@@ -87,6 +125,7 @@ class ImprovementManager:
                 "UPDATE proposals SET status='REJECTED', reject_reason=?, updated_at=? WHERE id=?",
                 (reason, datetime.now().isoformat(), proposal_id),
             )
+        self.apply_approved_settings()
 
     def get_pending(self) -> list[dict]:
         with self._conn() as conn:
@@ -101,3 +140,33 @@ class ImprovementManager:
                 "SELECT * FROM proposals WHERE status='APPROVED' ORDER BY updated_at DESC"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def apply_approved_settings(self, path: Path | None = None) -> Path:
+        """승인된 개선안 중 실제 설정으로 해석 가능한 것만 JSON override로 저장한다."""
+        override_path = Path(path or _DEFAULT_OVERRIDE_PATH)
+        overrides: dict[str, dict[str, Any]] = {
+            "RISK": {},
+            "SCANNER": {},
+            "LLM_CONFIG": {},
+            "EXECUTION": {},
+        }
+        for proposal in self.get_approved():
+            patches = proposal.get("settings_patch") or "[]"
+            try:
+                patch_items = json.loads(patches)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(patch_items, list):
+                continue
+            for item in patch_items:
+                if not isinstance(item, dict):
+                    continue
+                section = str(item.get("section", "")).strip()
+                key = str(item.get("key", "")).strip()
+                if section not in _ALLOWED_PATCH_KEYS or key not in _ALLOWED_PATCH_KEYS[section]:
+                    continue
+                overrides.setdefault(section, {})[key] = item.get("value")
+
+        cleaned = {section: values for section, values in overrides.items() if values}
+        write_runtime_overrides(cleaned, path=override_path)
+        return override_path

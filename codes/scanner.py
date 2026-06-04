@@ -27,9 +27,13 @@ class CandidateScore:
     new_high_score: float
     technical_score: float
     flow_score: float
+    leadership_score: float
     sector: str
     change_pct: float
     trading_value: float
+    market_rank: int = 0
+    theme_rank: int = 0
+    is_theme_leader: bool = False
     passed_filters: list[str] = field(default_factory=list)
     failed_filters: list[str] = field(default_factory=list)
 
@@ -61,11 +65,36 @@ class Scanner:
             if score is not None:
                 candidates.append(score)
 
-        # 스코어 내림차순 정렬 후 상위 N개
+        self._apply_leader_ranking(candidates)
+
+        # 대장주 우선, 그 다음 총점 순으로 상위 N개 선발
         candidates.sort(key=lambda c: c.total_score, reverse=True)
-        result = candidates[: self._cfg.candidate_count]
+        leaders = [c for c in candidates if c.is_theme_leader]
+        non_leaders = [c for c in candidates if not c.is_theme_leader]
+        result = (leaders + non_leaders)[: self._cfg.candidate_count]
 
         return result
+
+    def _apply_leader_ranking(self, candidates: list[CandidateScore]) -> None:
+        """섹터/테마 프록시 단위 대장주 랭킹을 점수에 반영한다."""
+        candidates.sort(key=lambda c: c.total_score, reverse=True)
+        for rank, candidate in enumerate(candidates, start=1):
+            candidate.market_rank = rank
+
+        by_sector: dict[str, list[CandidateScore]] = {}
+        for candidate in candidates:
+            sector = candidate.sector or "UNKNOWN"
+            by_sector.setdefault(sector, []).append(candidate)
+
+        for sector_candidates in by_sector.values():
+            sector_candidates.sort(key=lambda c: c.total_score, reverse=True)
+            for rank, candidate in enumerate(sector_candidates, start=1):
+                candidate.theme_rank = rank
+                candidate.is_theme_leader = rank == 1
+                candidate.leadership_score = max(0.0, 20.0 - ((rank - 1) * 5.0))
+                candidate.total_score = round(candidate.total_score + candidate.leadership_score, 2)
+                if rank == 1:
+                    candidate.passed_filters.append("섹터대장")
 
     def _score(
         self,
@@ -78,6 +107,14 @@ class Scanner:
         failed = []
 
         # ── 필수 필터 ────────────────────────────────────────────────────────
+        if snap.trading_halted:
+            failed.append("거래정지")
+            return None
+
+        if snap.administrative_issue:
+            failed.append("관리종목")
+            return None
+
         if snap.trading_value < self._cfg.min_trading_value_krw:
             failed.append("거래대금_미달")
             return None  # 거래대금 미달은 즉시 탈락
@@ -123,6 +160,7 @@ class Scanner:
             new_high_score=new_high_score,
             technical_score=round(technical_score, 2),
             flow_score=round(flow_score, 2),
+            leadership_score=0.0,
             sector=snap.sector,
             change_pct=snap.change_pct,
             trading_value=snap.trading_value,
@@ -139,6 +177,8 @@ class Scanner:
                 "name": c.name,
                 "total_score": c.total_score,
                 "trading_value": c.trading_value,
+                "theme_rank": c.theme_rank,
+                "is_theme_leader": c.is_theme_leader,
                 "passed": c.passed_filters,
             }, ensure_ascii=False))
         output_path.write_text("\n".join(lines), encoding="utf-8")

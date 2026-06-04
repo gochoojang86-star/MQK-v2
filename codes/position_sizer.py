@@ -18,6 +18,7 @@ class SizingResult:
     risk_pct: float             # 자본 대비 리스크 비율 (%)
     position_value: float       # 포지션 총가치 (원)
     atr_used: float
+    stop_method: str = "ATR"
 
 
 class PositionSizer:
@@ -45,14 +46,24 @@ class PositionSizer:
         if self._cfg.allow_averaging_down is False:
             pass  # 외부에서 이미 RiskOfficer가 체크
 
+        if atr <= 0:
+            raise ValueError(f"{ticker}: ATR은 0보다 커야 합니다.")
+        if total_capital <= 0:
+            raise ValueError(f"{ticker}: 총 자본금은 0보다 커야 합니다.")
+
         stop_distance = atr * self._cfg.atr_multiplier
         stop_loss_price = entry_price - stop_distance
 
         risk_budget = total_capital * (self._cfg.risk_per_trade_pct / 100)
         raw_quantity = risk_budget / stop_distance
+        if raw_quantity < 1:
+            raise ValueError(
+                f"{ticker}: 리스크 예산({risk_budget:,.0f}원)으로 1주 리스크"
+                f"({stop_distance:,.0f}원)를 감당할 수 없습니다."
+            )
 
         # 주식은 정수 단위, 보수적으로 내림
-        quantity = max(1, int(raw_quantity))
+        quantity = int(raw_quantity)
 
         # 내림으로 인한 실제 리스크가 예산을 초과하지 않는지 검증
         actual_risk = stop_distance * quantity
@@ -67,7 +78,41 @@ class PositionSizer:
             risk_pct=round(actual_risk_pct, 4),
             position_value=round(entry_price * quantity, 0),
             atr_used=round(atr, 2),
+            stop_method="ATR",
         )
+
+    def calculate_flexible_stop(
+        self,
+        ticker: str,
+        entry_price: float,
+        atr: float,
+        total_capital: float,
+        support_stop_price: float | None = None,
+    ) -> SizingResult:
+        """ATR와 차트 지지선 후보 중 유효한 손절폭을 선택해 수량을 계산.
+
+        손절폭은 종목 변동성/차트 구조에 맞게 유연하게 잡되,
+        계좌 기준 손실한도는 `risk_per_trade_pct`로 고정한다.
+        """
+        atr_stop = entry_price - (atr * self._cfg.atr_multiplier)
+        stop_price = atr_stop
+        stop_method = "ATR"
+
+        if support_stop_price and support_stop_price < entry_price:
+            support_risk_pct = (entry_price - support_stop_price) / entry_price * 100
+            atr_risk_pct = (entry_price - atr_stop) / entry_price * 100
+            if atr_risk_pct < support_risk_pct <= self._cfg.max_stop_loss_pct:
+                stop_price = support_stop_price
+                stop_method = "SUPPORT"
+
+        result = self.calculate_from_fixed_stop(
+            ticker=ticker,
+            entry_price=entry_price,
+            stop_loss_price=round(stop_price, 0),
+            total_capital=total_capital,
+        )
+        result.stop_method = stop_method
+        return result
 
     def calculate_from_fixed_stop(
         self,
@@ -80,9 +125,17 @@ class PositionSizer:
         stop_distance = entry_price - stop_loss_price
         if stop_distance <= 0:
             raise ValueError(f"{ticker}: 손절가({stop_loss_price})가 진입가({entry_price}) 이상")
+        if total_capital <= 0:
+            raise ValueError(f"{ticker}: 총 자본금은 0보다 커야 합니다.")
 
         risk_budget = total_capital * (self._cfg.risk_per_trade_pct / 100)
-        quantity = max(1, int(risk_budget / stop_distance))
+        raw_quantity = risk_budget / stop_distance
+        if raw_quantity < 1:
+            raise ValueError(
+                f"{ticker}: 리스크 예산({risk_budget:,.0f}원)으로 1주 리스크"
+                f"({stop_distance:,.0f}원)를 감당할 수 없습니다."
+            )
+        quantity = int(raw_quantity)
 
         actual_risk = stop_distance * quantity
         actual_risk_pct = (actual_risk / total_capital) * 100
@@ -97,4 +150,5 @@ class PositionSizer:
             risk_pct=round(actual_risk_pct, 4),
             position_value=round(entry_price * quantity, 0),
             atr_used=round(atr_equivalent, 2),
+            stop_method="FIXED",
         )

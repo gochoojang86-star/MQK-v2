@@ -89,3 +89,60 @@ def test_execute_sell_closes_journal(tmp_path):
     assert len(journal.get_open_positions()) == 0
     closed = journal.get_closed_trades(days=1)
     assert closed[0]["result"] == "WIN"
+
+
+def test_list_open_orders_delegates_to_kis(tmp_path):
+    class FakeKis:
+        def __init__(self):
+            self.side = None
+
+        def get_open_orders(self, side=None):
+            self.side = side
+            return [{"order_no": "123456", "ticker": "005930"}]
+
+    kis = FakeKis()
+    manager = OrderManager(kis_api=kis, log_dir=tmp_path)
+
+    orders = manager.list_open_orders(side="BUY")
+
+    assert kis.side == "BUY"
+    assert orders[0]["order_no"] == "123456"
+
+
+def test_cancel_stale_orders_delegates_cancelable_orders(tmp_path):
+    class FakeResult:
+        success = True
+        ticker = ""
+        side = "CANCEL"
+        quantity = 10
+        price = 75000
+        order_no = "123456"
+        timestamp = "2026-06-04T09:00:00"
+        error_msg = ""
+
+    class FakeKis:
+        def __init__(self):
+            self.cancel_call = None
+
+        def get_open_orders(self, side=None):
+            return [{
+                "order_no": "123456",
+                "org_no": "00000",
+                "cancelable_quantity": 10,
+                "price": 75000,
+                "order_type": "00",
+            }]
+
+        def cancel_order(self, **kwargs):
+            self.cancel_call = kwargs
+            return FakeResult()
+
+    kis = FakeKis()
+    manager = OrderManager(kis_api=kis, log_dir=tmp_path)
+
+    results = manager.cancel_stale_orders()
+
+    assert len(results) == 1
+    assert results[0].success is True
+    assert kis.cancel_call["order_no"] == "123456"
+    assert kis.cancel_call["all_quantity"] is True
