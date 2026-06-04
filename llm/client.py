@@ -2,40 +2,53 @@
 LLM 클라이언트 유틸리티
 모든 Agent가 공통으로 사용하는 API 래퍼.
 Agent에서만 사용 — Code에서는 절대 호출 금지.
+
+인증 우선순위:
+  1. OPENAI_API_KEY 환경변수
+  2. ~/.codex/auth.json OAuth 토큰 (Hermes/Codex 로그인)
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
-# ── OpenAI (현재 사용) ────────────────────────────────────────────────────────
 from openai import OpenAI
 
-# ── Anthropic (원복용 주석) ───────────────────────────────────────────────────
-# import anthropic
-
 from config.settings import LLM_CONFIG, ModelTier
+from llm.oauth_loader import load_openai_token
 
+logger = logging.getLogger(__name__)
 
 # o-series 모델은 temperature 미지원, max_completion_tokens 사용
 _REASONING_MODELS = {"o1", "o1-mini", "o3", "o3-mini", "o4-mini", "o1-preview"}
+
+
+def _resolve_api_key() -> str:
+    """OPENAI_API_KEY → OAuth 토큰 순으로 인증 키를 결정."""
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if key:
+        return key
+    oauth = load_openai_token()
+    if oauth:
+        return oauth
+    raise RuntimeError(
+        "OpenAI 인증 수단 없음. OPENAI_API_KEY 설정 또는 "
+        "Codex CLI 로그인(codex auth login) 후 재시도하세요."
+    )
 
 
 class LLMClient:
     """
     OpenAI API 클라이언트.
     tier 인자로 모델을 선택한다 — 직접 model 문자열을 넘기지 않는다.
+    OPENAI_API_KEY 미설정 시 Hermes/Codex OAuth 토큰을 자동으로 사용.
     """
 
     def __init__(self, config=None):
         self._cfg = config or LLM_CONFIG
-        # ── OpenAI ───────────────────────────────────────────────────────────
-        self._client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
-        # ── Anthropic (원복용 주석) ───────────────────────────────────────────
-        # self._client = anthropic.Anthropic(
-        #     api_key=os.environ.get("ANTHROPIC_API_KEY", "")
-        # )
+        self._client = OpenAI(api_key=_resolve_api_key())
 
     def call(
         self,

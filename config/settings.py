@@ -25,6 +25,7 @@ class RiskConfig:
     max_single_position_pct: float = 20.0  # 단일 종목 최대 20%
     stop_loss_method: str = "ATR"
     atr_multiplier: float = 1.5
+    max_stop_loss_pct: float = 10.0          # 손절폭은 유연하되 진입가 대비 최대 10%
     allow_averaging_down: bool = False
     require_telegram_approval: bool = True
 
@@ -39,16 +40,13 @@ class ScannerConfig:
 
 @dataclass(frozen=True)
 class LLMConfig:
-    # ── OpenAI 모델 배치 (현재 사용) ─────────────────────────────────────────
+    # ── OpenAI 모델 배치 (Hermes/Codex OAuth 인증) ───────────────────────────
     # REASONING: 핵심 투자 판단 (PortfolioManager, SelfImprovement)
-    model_reasoning: str = "o4-mini"
+    model_reasoning: str = "gpt-5.4"
     # STANDARD: 복합 해석 (Regime, Theme, Review)
-    model_standard: str = "gpt-4o"
+    model_standard: str = "gpt-5.4"
     # FAST: 단순 분류 패턴 (News, Disclosure)
-    model_fast: str = "gpt-4o-mini"
-
-    # ── Anthropic 단일 모델 (원복용 주석) ────────────────────────────────────
-    # model: str = "claude-opus-4-8"
+    model_fast: str = "gpt-5.4-mini"
 
     max_tokens: int = 2048
     # o-series는 temperature 미지원 — LLMClient에서 모델별 자동 처리
