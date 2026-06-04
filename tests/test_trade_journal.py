@@ -1,5 +1,3 @@
-import os
-import tempfile
 import pytest
 from pathlib import Path
 from codes.trade_journal import TradeJournal
@@ -60,3 +58,5 @@ def test_daily_summary(journal):
     assert summary["total_trades"] == 1
     assert summary["win_trades"] == 0
     assert summary["total_pnl"] < 0
+    closed = journal.get_closed_trades(days=7)
+    assert closed[0]["result"] == "LOSS"

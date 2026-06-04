@@ -66,9 +66,9 @@ class TradeJournal:
         entry_reason: str,
         confidence: int,
         order_no: str = "",
-    ) -> None:
+    ) -> int:
         with self._conn() as conn:
-            conn.execute(
+            cur = conn.execute(
                 """INSERT INTO trades
                    (ticker, name, entry_date, entry_price, quantity,
                     stop_loss_price, entry_reason, confidence, order_no)
@@ -85,6 +85,7 @@ class TradeJournal:
                     order_no,
                 ),
             )
+            return cur.lastrowid
 
     def close_trade(
         self,
@@ -100,7 +101,7 @@ class TradeJournal:
                 (ticker,),
             ).fetchone()
             if not row:
-                return
+                raise ValueError(f"{ticker}: 청산할 미결 포지션이 없습니다.")
             pnl = (exit_price - row["entry_price"]) * row["quantity"]
             pnl_pct = (
                 (exit_price - row["entry_price"]) / row["entry_price"] * 100
@@ -144,11 +145,13 @@ class TradeJournal:
         trades = [dict(r) for r in rows]
         wins = [t for t in trades if t.get("result") == "WIN"]
         losses = [t for t in trades if t.get("result") == "LOSS"]
+        breakeven = [t for t in trades if t.get("result") == "BREAKEVEN"]
         return {
             "date": date,
             "total_trades": len(trades),
             "win_trades": len(wins),
             "loss_trades": len(losses),
+            "breakeven_trades": len(breakeven),
             "total_pnl": sum(t.get("pnl", 0) for t in trades),
             "win_rate": (
                 round(len(wins) / len(trades) * 100, 1) if trades else 0.0
