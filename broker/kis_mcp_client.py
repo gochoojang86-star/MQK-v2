@@ -9,8 +9,10 @@ KIS MCP 서버(/home/gochoojang/kis-mcp-source)가 SSE 모드로 실행되어야
 from __future__ import annotations
 
 import os
+import socket
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -27,10 +29,14 @@ class KISMCPClient:
 
     @property
     def available(self) -> bool:
+        """소켓 연결로 서버 가동 여부 확인 (/health 엔드포인트 불필요)."""
+        parsed = urlparse(self.base_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 80
         try:
-            resp = requests.get(f"{self.base_url}/health", timeout=2)
-            return resp.status_code == 200
-        except Exception:
+            with socket.create_connection((host, port), timeout=2):
+                return True
+        except (OSError, ConnectionRefusedError):
             return False
 
     def call_tool(self, category: str, method: str, params: dict[str, Any]) -> dict:

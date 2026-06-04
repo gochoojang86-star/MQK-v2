@@ -38,6 +38,15 @@ module.exports = {
       autorestart: false,
     },
     {
+      name: "mqk-kis-mcp",
+      script: "/home/gochoojang/kis-mcp-source/MCP/Kis Trading MCP/.venv/bin/python",
+      args: "server.py",
+      cwd: "/home/gochoojang/kis-mcp-source/MCP/Kis Trading MCP",
+      env: { ENV: "mqk" },
+      autorestart: true,
+      restart_delay: 3000,
+    },
+    {
       name: "mqk-telegram-news",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
       args: "-m broker.telegram_news",
