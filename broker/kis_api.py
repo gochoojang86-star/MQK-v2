@@ -291,6 +291,36 @@ class KISApi:
                 error_msg=str(e),
             )
 
+    def get_investor_flow(self, ticker: str) -> dict:
+        """종목별 당일 투자자 순매수 조회 (외국인/기관/개인).
+
+        반환: {"foreign_net": float, "institution_net": float, "individual_net": float}
+        데이터 없거나 오류 시 0으로 채워 반환 (호출자가 빈 체크 불필요).
+        """
+        url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/quotations/inquire-investor"
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": ticker,
+        }
+        try:
+            resp = self._get_with_retry(
+                url,
+                headers=self._headers("FHKST01010900"),
+                params=params,
+                timeout=5,
+            )
+            out = resp.json().get("output", {})
+            def _f(key: str) -> float:
+                v = out.get(key, "0") or "0"
+                return float(str(v).replace(",", ""))
+            return {
+                "foreign_net":      _f("frgn_ntby_qty"),
+                "institution_net":  _f("orgn_ntby_qty"),
+                "individual_net":   _f("indv_ntby_qty"),
+            }
+        except Exception:
+            return {"foreign_net": 0.0, "institution_net": 0.0, "individual_net": 0.0}
+
     def get_news(self, ticker: str = "000000", limit: int = 20) -> list[dict]:
         """종목별/시장 전반 뉴스 조회 (ticker='000000'이면 전체 시장)"""
         url = f"{self._cfg.base_url}/uapi/domestic-stock/v1/quotations/news-title"

@@ -123,7 +123,7 @@ class Scanner:
             new_high_score=new_high_score,
             technical_score=round(technical_score, 2),
             flow_score=round(flow_score, 2),
-            sector="",
+            sector=snap.sector,
             change_pct=snap.change_pct,
             trading_value=snap.trading_value,
             passed_filters=passed,

@@ -32,6 +32,8 @@ class MarketSnapshot:
     trading_value: float    # 거래대금 (원)
     foreign_net: float      # 외국인 순매수
     institution_net: float  # 기관 순매수
+    market_cap: float = 0.0 # 시가총액 (원)
+    sector: str = ""        # 업종명 (bstp_kor_isnm)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
@@ -131,6 +133,8 @@ class MarketData:
             trading_value=self._to_float(row.get("trading_value") or row.get("acml_tr_pbmn")),
             foreign_net=self._to_float(row.get("foreign_net") or row.get("frgn_ntby_qty")),
             institution_net=self._to_float(row.get("institution_net") or row.get("orgn_ntby_qty")),
+            market_cap=self._to_float(row.get("market_cap") or row.get("hts_avls") or row.get("stck_avls")),
+            sector=str(row.get("sector") or row.get("bstp_kor_isnm") or ""),
         )
 
     def _coerce_index_status(self, row: Any) -> IndexStatus:

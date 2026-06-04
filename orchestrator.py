@@ -38,6 +38,7 @@ from agents.self_improvement_agent import SelfImprovementAgent
 from broker.telegram import TelegramApproval, ApprovalRequest
 from codes.news_fetcher import NaverNewsFetcher, KISNewsFetcher
 from codes.disclosure_fetcher import DARTFetcher
+from codes.flow import FlowRecord
 from broker.telegram_news import get_recent_news as get_telegram_news
 
 logging.basicConfig(
@@ -74,7 +75,10 @@ class MQKOrchestrator:
         self._naver_news = NaverNewsFetcher()
         self._kis_news = KISNewsFetcher(kis_api=kis_api)
         self._dart = DARTFetcher()
-        self._current_theme: str = ""   # run_scan()에서 갱신, evaluate_candidate()에서 사용
+        self._current_theme: str = ""       # run_scan()에서 갱신
+        self._last_regime = None            # run_premarket()에서 갱신 → PM Agent에 전달
+        self._last_theme = None             # run_scan()에서 갱신 → PM Agent에 전달
+        self._sector_performance: dict = {} # run_scan()에서 갱신 → Regime Agent 재호출 시 사용
         self._today = datetime.now().strftime("%Y-%m-%d")
         self._log_dir = LOG_CONFIG.base_dir / self._today
         self._log_dir.mkdir(parents=True, exist_ok=True)
@@ -95,8 +99,10 @@ class MQKOrchestrator:
             "kospi_change_pct": index.kospi_change_pct,
             "kosdaq_change_pct": index.kosdaq_change_pct,
             "market_news_summary": market_news_summary,
+            "sector_performance": self._sector_performance,  # 전날 scan 결과 재사용
         }
         regime = self._regime_agent.judge(market_ctx)
+        self._last_regime = regime
         logger.info(f"Regime: {regime.regime.value} (확신도 {regime.confidence}%)")
 
         market_status = {
@@ -125,7 +131,16 @@ class MQKOrchestrator:
             bars = self._market_data.get_ohlcv(snap.ticker)
             if bars:
                 technicals[snap.ticker] = self._technical.analyze(snap.ticker, bars)
-            flows[snap.ticker] = self._flow.analyze(snap.ticker, [])
+            # snapshot의 당일 외국인/기관 데이터로 FlowRecord 구성
+            flow_records = [FlowRecord(
+                date=self._today,
+                ticker=snap.ticker,
+                foreign_net=snap.foreign_net,
+                institution_net=snap.institution_net,
+                program_net=0.0,
+                trading_value=snap.trading_value,
+            )] if (snap.foreign_net or snap.institution_net) else []
+            flows[snap.ticker] = self._flow.analyze(snap.ticker, flow_records)
 
         candidates = self._scanner.scan(snapshots, technicals, flows)
         logger.info(f"후보 {len(candidates)}종목 선발")
@@ -156,6 +171,17 @@ class MQKOrchestrator:
 
         # 이후 evaluate_candidate()에서 재사용
         self._current_theme = best_theme_name
+        self._last_theme = theme
+
+        # 섹터별 평균 등락률 계산 → Regime Agent 재사용 컨텍스트
+        sector_perf: dict[str, list[float]] = {}
+        for snap in snapshots:
+            if snap.sector:
+                sector_perf.setdefault(snap.sector, []).append(snap.change_pct)
+        self._sector_performance = {
+            s: round(sum(v) / len(v), 2) for s, v in sector_perf.items()
+        }
+
         logger.info(f"주도 테마: {best_theme_name or '미식별'}")
 
         result = [
@@ -184,9 +210,22 @@ class MQKOrchestrator:
         """후보 종목 최종 판단"""
         logger.info(f"[장중] {name}({ticker}) 평가 중")
 
+        # 스냅샷 1회 조회 → flow / disclosure market_cap 공유
+        snap = self._market_data.get_snapshot(ticker)
+
         bars = self._market_data.get_ohlcv(ticker)
         tech = self._technical.analyze(ticker, bars) if bars else None
-        flow = self._flow.analyze(ticker, [])
+
+        # snapshot 당일 수급 데이터로 FlowRecord 구성 (빈 리스트 방지)
+        flow_records = [FlowRecord(
+            date=self._today,
+            ticker=ticker,
+            foreign_net=snap.foreign_net,
+            institution_net=snap.institution_net,
+            program_net=0.0,
+            trading_value=snap.trading_value,
+        )] if (snap.foreign_net or snap.institution_net) else []
+        flow = self._flow.analyze(ticker, flow_records)
 
         # 뉴스 수집: KIS 종목 뉴스 + Naver 종목명+테마 검색 + Telegram DB
         kis_items = self._kis_news.get_news(ticker=ticker, limit=5)
@@ -204,20 +243,21 @@ class MQKOrchestrator:
         if self._dart.available:
             dart_item = self._dart.get_latest(ticker, days=7)
             if dart_item:
-                snap = self._market_data.get_snapshot(ticker)
-                market_cap = getattr(snap, "market_cap", 0)
                 disc_result = self._disclosure_agent.interpret(
                     ticker,
-                    {**dart_item.to_dict(), "market_cap": market_cap},
+                    {**dart_item.to_dict(), "market_cap": snap.market_cap},
                 )
                 logger.info(
                     f"[공시] {name}({ticker}): {dart_item.title[:40]} → {disc_result.impact.value}"
                 )
 
         # Portfolio Manager Agent 호출 (핵심 LLM 호출)
+        # regime / theme 을 컨텍스트에 포함 — Decision Hierarchy 완성
         decision = self._pm_agent.decide(ticker, {
             "name": name,
             "current_price": current_price,
+            "regime": self._last_regime,
+            "theme": self._last_theme,
             "technical": tech,
             "flow": flow,
             "news_evaluations": news,
@@ -249,16 +289,22 @@ class MQKOrchestrator:
             return {"action": "SKIP", "ticker": ticker, "reason": "기술적 데이터 없음"}
 
         # Position Sizer
-        sizing = self._position_sizer.calculate(
-            ticker=ticker,
-            entry_price=current_price,
-            atr=tech.atr,
-            total_capital=portfolio_state.total_capital,
-        )
+        try:
+            sizing = self._position_sizer.calculate(
+                ticker=ticker,
+                entry_price=current_price,
+                atr=tech.atr,
+                total_capital=portfolio_state.total_capital,
+            )
+        except ValueError as e:
+            self._append_jsonl("risk_checks.jsonl", {
+                "ticker": ticker, "blocked": True, "rule": "POSITION_SIZING", "detail": str(e)
+            })
+            return {"action": "BLOCKED", "ticker": ticker, "reason": str(e)}
 
         proposal = TradeProposal(
             ticker=ticker,
-            theme="",
+            theme=self._current_theme or "UNKNOWN",
             entry_price=current_price,
             stop_loss_price=sizing.stop_loss_price,
             quantity=sizing.quantity,
@@ -280,6 +326,7 @@ class MQKOrchestrator:
         })
 
         # Telegram 승인
+        approval_request_id = None
         if RISK.require_telegram_approval:
             approval_req = ApprovalRequest(
                 ticker=ticker, name=name, decision="BUY",
@@ -292,6 +339,7 @@ class MQKOrchestrator:
                 counter_argument=decision.counter_argument,
             )
             approval = self._telegram.request_approval(approval_req)
+            approval_request_id = approval.request_id
             self._append_jsonl("telegram_approvals.jsonl", {
                 "ticker": ticker,
                 "approved": approval.approved,
@@ -308,7 +356,7 @@ class MQKOrchestrator:
             stop_loss_price=sizing.stop_loss_price,
             reason=decision.reason,
             confidence=decision.confidence,
-            approved_by="telegram",
+            approval_request_id=approval_request_id,
         )
         result = self._order_manager.execute_buy(order)
         logger.info(f"[ORDER] BUY {ticker} {sizing.quantity}주: {'성공' if result.success else '실패'}")
