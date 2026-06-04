@@ -4,11 +4,17 @@ MQK-v2 자동 운영 진입점
 PM2 cron_restart로 각 단계별 실행.
 
 MQK_PHASE 환경변수로 실행 단계 구분:
-  premarket  - 08:00 장전 분석
-  scan       - 08:30 후보 스캔
-  intraday   - 09:00~15:20 장중 루프 (5분 간격)
-               보유 포지션 손절/익절 점검 + 상위 후보 진입 평가
-  close      - 15:30 장마감 복기
+  holiday_check - 00:30 휴장일 여부 판단 + 캐시 저장
+  premarket     - 08:00 장전 분석
+  scan          - 08:30 후보 스캔
+  intraday      - 09:00~15:20 장중 루프 (5분 간격)
+                  보유 포지션 손절/익절 점검 + 상위 후보 진입 평가
+  close         - 15:30 장마감 복기
+
+휴장일 가드:
+  holiday_check 단계가 매일 00:30에 실행되어 캐시를 저장한다.
+  이후 premarket/scan/intraday/close 단계는 캐시만 읽어 즉시 판단한다.
+  휴장일이면 즉시 종료(exit 0) — PM2 오류 없이 스킵 처리.
 """
 from __future__ import annotations
 
@@ -31,8 +37,40 @@ logger = logging.getLogger("mqk_schedule")
 PHASE = os.environ.get("MQK_PHASE", "")
 
 
+def _guard_trading_day() -> None:
+    """휴장일이면 즉시 종료. 캐시 없으면 check_trading_day() 호출."""
+    from codes.market_calendar import check_trading_day, read_cached_trading_day
+
+    cached = read_cached_trading_day()
+    if cached is None:
+        logger.info("[휴장일 가드] 캐시 없음 — check_trading_day() 호출")
+        cached = check_trading_day()
+
+    if not cached:
+        logger.info("[휴장일 가드] 오늘은 휴장일 — 작동 중단")
+        sys.exit(0)
+
+
+def run_holiday_check() -> None:
+    """00:30 휴장일 여부 판단 + 캐시 저장.
+
+    다음 날 영업일 여부를 미리 판단하지 않고 당일(한국 날짜) 기준으로 판단.
+    KIS API → 공공데이터 → 하드코딩 순으로 fallback.
+    """
+    from codes.market_calendar import check_trading_day
+
+    result = check_trading_day()
+    status = "영업일" if result else "휴장일"
+    logger.info(f"[00:30 휴장일 체크] 오늘은 {status}")
+
+    if not result:
+        logger.info("[00:30 휴장일 체크] 오늘 모든 MQK 단계 스킵 예정")
+
+
 def run_premarket() -> None:
     """장전 분석: 시장 상황 및 레짐 판단"""
+    _guard_trading_day()
+
     from broker.kis_api import KISApi
     from orchestrator import MQKOrchestrator
 
@@ -44,6 +82,8 @@ def run_premarket() -> None:
 
 def run_scan() -> None:
     """후보 스캔: 기술적 스캔 및 테마 분석"""
+    _guard_trading_day()
+
     from config.settings import LOG_CONFIG
     from broker.kis_api import KISApi
     from orchestrator import MQKOrchestrator
@@ -64,6 +104,8 @@ def run_scan() -> None:
 
 def run_intraday() -> None:
     """장중 루프: 포지션 STP 점검 + 상위 후보 진입 평가"""
+    _guard_trading_day()
+
     from config.settings import LOG_CONFIG
     from broker.kis_api import KISApi
     from orchestrator import MQKOrchestrator
@@ -118,6 +160,8 @@ def run_intraday() -> None:
 
 def run_close() -> None:
     """장마감 복기: 거래 복기 및 자기개선"""
+    _guard_trading_day()
+
     from broker.kis_api import KISApi
     from orchestrator import MQKOrchestrator
 
@@ -128,6 +172,7 @@ def run_close() -> None:
 
 
 _RUNNERS = {
+    "holiday_check": run_holiday_check,
     "premarket": run_premarket,
     "scan": run_scan,
     "intraday": run_intraday,
@@ -143,7 +188,7 @@ if __name__ == "__main__":
     if PHASE not in _RUNNERS:
         logger.error(
             f"MQK_PHASE={PHASE!r} 미지원. "
-            f"premarket | scan | close 중 하나를 설정하세요."
+            f"holiday_check | premarket | scan | intraday | close 중 하나를 설정하세요."
         )
         sys.exit(1)
 

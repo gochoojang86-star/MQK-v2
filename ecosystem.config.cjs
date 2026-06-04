@@ -2,6 +2,15 @@
 module.exports = {
   apps: [
     {
+      name: "mqk-holiday-check",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "holiday_check" },
+      cron_restart: "30 15 * * *",  // UTC 15:30 = KST 00:30
+      autorestart: false,
+    },
+    {
       name: "mqk-premarket",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule.py",
