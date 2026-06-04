@@ -99,7 +99,9 @@ class MQKOrchestrator:
         self._current_theme: str = ""       # run_scan()에서 갱신
         self._last_regime = None            # run_premarket()에서 갱신 → PM Agent에 전달
         self._last_theme = None             # run_scan()에서 갱신 → PM Agent에 전달
+        self._candidate_context: dict[str, dict] = {}  # run_scan() 후보 메타 → PM Agent에 전달
         self._sector_performance: dict = {} # run_scan()에서 갱신 → Regime Agent 재호출 시 사용
+        self._atr_cache: dict[str, float] = {}  # {ticker: atr} — 하루 한 번만 갱신
         self._today = datetime.now().strftime("%Y-%m-%d")
         self._log_dir = LOG_CONFIG.base_dir / self._today
         self._log_dir.mkdir(parents=True, exist_ok=True)
@@ -204,6 +206,12 @@ class MQKOrchestrator:
         market_ctx = {
             "kospi_change_pct": index.kospi_change_pct,
             "kosdaq_change_pct": index.kosdaq_change_pct,
+            "kospi_trading_value": index.kospi_trading_value,
+            "kosdaq_trading_value": index.kosdaq_trading_value,
+            "kospi_advancers": index.kospi_advancers,
+            "kospi_decliners": index.kospi_decliners,
+            "kosdaq_advancers": index.kosdaq_advancers,
+            "kosdaq_decliners": index.kosdaq_decliners,
             "market_news_summary": market_news_summary,
             "sector_performance": self._sector_performance,  # 전날 scan 결과 재사용
         }
@@ -215,12 +223,22 @@ class MQKOrchestrator:
             "date": self._today,
             "kospi": index.kospi,
             "kosdaq": index.kosdaq,
+            "kospi_trading_value": index.kospi_trading_value,
+            "kosdaq_trading_value": index.kosdaq_trading_value,
+            "kospi_advancers": index.kospi_advancers,
+            "kospi_decliners": index.kospi_decliners,
+            "kosdaq_advancers": index.kosdaq_advancers,
+            "kosdaq_decliners": index.kosdaq_decliners,
             "status": regime.status.value,
             "regime": regime.regime.value,
             "confidence": regime.confidence,
             "risk_notes": regime.risk_notes,
         }
         self._save_json("market_status.json", market_status)
+
+        # 장전에 보유 포지션 ATR 미리 계산 → 장중 run_position_exit_check API 호출 절감
+        self.warm_atr_cache()
+
         return market_status
 
     # ── 08:30 후보 생성 ─────────────────────────────────────────────────────
@@ -234,7 +252,7 @@ class MQKOrchestrator:
             return []
 
         tickers = self._market_data.get_universe()
-        snapshots = [self._market_data.get_snapshot(t) for t in tickers[:100]]  # 실제는 전체
+        snapshots = [self._market_data.get_snapshot(t) for t in tickers]
 
         technicals = {}
         flows = {}
@@ -294,18 +312,47 @@ class MQKOrchestrator:
 
         logger.info(f"주도 테마: {best_theme_name or '미식별'}")
 
-        result = [
-            {
+        result = []
+        candidate_context: dict[str, dict] = {}
+        for rank, c in enumerate(candidates, start=1):
+            flow_signals = flows.get(c.ticker)
+            is_leader = bool(
+                best_theme
+                and (
+                    c.name in best_theme.leader_candidates
+                    or c.ticker in best_theme.leader_candidates
+                )
+            )
+            is_laggard = bool(
+                best_theme
+                and (
+                    c.name in best_theme.laggard_stocks
+                    or c.ticker in best_theme.laggard_stocks
+                )
+            )
+            item = {
                 "ticker": c.ticker,
                 "name": c.name,
                 "score": c.total_score,
+                "rank": rank,
                 "theme": best_theme_name,
                 "theme_match": bool(best_theme_name and c.sector == best_theme_name),
+                "sector": c.sector,
+                "change_pct": c.change_pct,
+                "trading_value": c.trading_value,
+                "trading_value_score": c.trading_value_score,
+                "new_high_score": c.new_high_score,
+                "technical_score": c.technical_score,
+                "flow_score": c.flow_score,
+                "trading_value_rank": flow_signals.trading_value_rank if flow_signals else None,
+                "is_theme_leader": is_leader,
+                "is_laggard": is_laggard,
                 "theme_news": news_headlines[:3],
                 "passed": c.passed_filters,
             }
-            for c in candidates
-        ]
+            result.append(item)
+            candidate_context[c.ticker] = item
+        self._candidate_context = candidate_context
         self._save_jsonl("candidate_scores.jsonl", result)
         return result
 
@@ -338,7 +385,14 @@ class MQKOrchestrator:
             {"title": n["title"], "content": "", "date": n["date"], "source": n["source"]}
             for n in get_telegram_news(ticker=ticker, hours=2)
         ]
-        raw_news = [n.to_dict() for n in kis_items + naver_items] + tg_items
+        reaction = self._build_reaction_context(snap, bars)
+        raw_news = [
+            self._with_reaction_context(n.to_dict(), reaction, self._current_theme)
+            for n in kis_items + naver_items
+        ] + [
+            self._with_reaction_context(n, reaction, self._current_theme)
+            for n in tg_items
+        ]
         news = self._news_agent.evaluate(ticker, raw_news)
 
         # 공시 수집 + Disclosure Agent 해석
@@ -349,7 +403,11 @@ class MQKOrchestrator:
                 dart_item = self._dart.enrich_content(dart_item)
                 disc_result = self._disclosure_agent.interpret(
                     ticker,
-                    {**dart_item.to_dict(), "market_cap": snap.market_cap},
+                    {
+                        **dart_item.to_dict(),
+                        "market_cap": snap.market_cap,
+                        **reaction,
+                    },
                 )
                 logger.info(
                     f"[공시] {name}({ticker}): {dart_item.title[:40]} → {disc_result.impact.value}"
@@ -366,6 +424,8 @@ class MQKOrchestrator:
             "flow": flow,
             "news_evaluations": news,
             "disclosure": disc_result,
+            "candidate": getattr(self, "_candidate_context", {}).get(ticker, {}),
+            "reaction": reaction,
             "is_in_portfolio": any(
                 p["ticker"] == ticker for p in portfolio_state.open_positions
             ),
@@ -610,10 +670,50 @@ class MQKOrchestrator:
         return []
 
     def _estimate_atr(self, ticker: str) -> float:
+        """ATR 추정. 당일 첫 호출만 API를 사용하고 이후엔 캐시 반환."""
+        if ticker in self._atr_cache:
+            return self._atr_cache[ticker]
         bars = self._market_data.get_ohlcv(ticker)
-        if not bars:
-            return 0.0
-        return self._technical.calculate_atr(bars)
+        atr = self._technical.calculate_atr(bars) if bars else 0.0
+        self._atr_cache[ticker] = atr
+        return atr
+
+    def warm_atr_cache(self) -> None:
+        """보유 포지션의 ATR을 장전에 미리 계산해 캐시에 적재."""
+        journal = getattr(self, "_journal", None)
+        if journal is None:
+            return
+        open_pos = journal.get_open_positions()
+        if not open_pos:
+            return
+        logger.info(f"[ATR 워밍] 보유 종목 {len(open_pos)}개 ATR 사전 계산")
+        for row in open_pos:
+            self._estimate_atr(row["ticker"])  # 캐시 미스 → API 호출 후 저장
+
+    def _build_reaction_context(self, snapshot, bars) -> dict:
+        """뉴스/공시 이후 반응 판단에 필요한 가격·거래대금 요약."""
+        recent = bars[-20:] if bars else []
+        avg_trading_value = 0.0
+        if recent:
+            avg_trading_value = sum(b.trading_value for b in recent) / len(recent)
+        trading_value_ratio = (
+            snapshot.trading_value / avg_trading_value
+            if avg_trading_value > 0
+            else 0.0
+        )
+        return {
+            "price_reaction_pct": snapshot.change_pct,
+            "current_trading_value": snapshot.trading_value,
+            "avg_trading_value_20d": avg_trading_value,
+            "trading_value_ratio_20d": trading_value_ratio,
+        }
+
+    def _with_reaction_context(self, item: dict, reaction: dict, theme: str) -> dict:
+        enriched = dict(item)
+        enriched.update(reaction)
+        if theme:
+            enriched["related_theme"] = theme
+        return enriched
 
     def _first_number(self, row: dict, keys: list[str]) -> float:
         for key in keys:

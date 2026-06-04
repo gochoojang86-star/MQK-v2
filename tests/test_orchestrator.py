@@ -18,6 +18,8 @@ def make_orchestrator(tmp_path: Path) -> MQKOrchestrator:
     orchestrator._last_regime = None
     orchestrator._last_theme = None
     orchestrator._current_theme = ""
+    orchestrator._kis_api = None
+    orchestrator._atr_cache = {}
     return orchestrator
 
 
@@ -70,6 +72,10 @@ class FakeThemeAgent:
                     leader_candidates=["Samsung"],
                     reason="strong flow",
                     risk="crowded",
+                    theme_stage="초입",
+                    entry_verdict="진입가능",
+                    laggard_stocks=["WeakSemi"],
+                    junk_warning=False,
                 )
             ]
         )
@@ -153,6 +159,15 @@ class FakeBalanceApi:
         }
 
 
+class FakeFlowHistoryApi:
+    def get_investor_flow_history(self, ticker, days=3):
+        return [
+            {"date": "20260601", "ticker": ticker, "foreign_net": 1, "institution_net": 2, "program_net": 3, "trading_value": 10},
+            {"date": "20260602", "ticker": ticker, "foreign_net": 4, "institution_net": 5, "program_net": 6, "trading_value": 20},
+            {"date": "20260603", "ticker": ticker, "foreign_net": 7, "institution_net": 8, "program_net": 9, "trading_value": 30},
+        ]
+
+
 def test_run_premarket_serializes_regime_status_and_risk_notes(tmp_path):
     orchestrator = make_orchestrator(tmp_path)
     orchestrator._market_data = FakeMarketData()
@@ -198,7 +213,64 @@ def test_run_scan_uses_best_theme_for_theme_match(tmp_path):
     assert len(candidates) == 1
     assert candidates[0]["theme"] == "semiconductor"
     assert "theme_match" in candidates[0]
+    assert candidates[0]["trading_value"] == 70_000_000_000
+    assert candidates[0]["is_theme_leader"] is True
+    assert orchestrator._candidate_context["005930"]["score"] == candidates[0]["score"]
     assert (tmp_path / "candidate_scores.jsonl").exists()
+
+
+def test_build_reaction_context_uses_snapshot_and_average_trading_value(tmp_path):
+    orchestrator = make_orchestrator(tmp_path)
+    snapshot = MarketSnapshot(
+        ticker="005930",
+        name="삼성전자",
+        current_price=70000,
+        change_pct=2.5,
+        volume=100,
+        trading_value=30_000_000_000,
+        foreign_net=0,
+        institution_net=0,
+    )
+    bars = [
+        __import__("codes.market_data", fromlist=["OHLCVBar"]).OHLCVBar(
+            date=f"202606{i:02d}",
+            open=1,
+            high=1,
+            low=1,
+            close=1,
+            volume=1,
+            trading_value=10_000_000_000,
+        )
+        for i in range(1, 6)
+    ]
+
+    reaction = orchestrator._build_reaction_context(snapshot, bars)
+
+    assert reaction["price_reaction_pct"] == 2.5
+    assert reaction["current_trading_value"] == 30_000_000_000
+    assert reaction["trading_value_ratio_20d"] == 3.0
+
+
+def test_get_flow_records_prefers_three_day_history(tmp_path):
+    orchestrator = make_orchestrator(tmp_path)
+    orchestrator._kis_api = FakeFlowHistoryApi()
+    snapshot = MarketSnapshot(
+        ticker="005930",
+        name="Samsung",
+        current_price=70000,
+        change_pct=1,
+        volume=1,
+        trading_value=100,
+        foreign_net=100,
+        institution_net=100,
+        program_net=100,
+    )
+
+    records = orchestrator._get_flow_records("005930", snapshot)
+
+    assert len(records) == 3
+    assert records[-1].foreign_net == 7
+    assert records[-1].program_net == 9
 
 
 def test_run_close_review_summarizes_markdown_and_logs_expected_effect(tmp_path, caplog):
@@ -255,3 +327,50 @@ def test_process_position_exit_executes_sell_on_stop_loss(tmp_path):
     assert result["signal"] == "STOP_LOSS"
     assert result["quantity"] == 10
     assert (tmp_path / "exit_signals.jsonl").exists()
+
+
+def test_run_position_exit_check_reads_open_positions(tmp_path):
+    orchestrator = make_orchestrator(tmp_path)
+    orchestrator._order_manager = OrderManager(kis_api=None, dry_run=True, log_dir=tmp_path)
+    orchestrator._stp_manager = __import__(
+        "codes.stop_take_profit", fromlist=["StopTakeProfitManager"]
+    ).StopTakeProfitManager()
+
+    class FakeJournal:
+        def get_open_positions(self):
+            return [
+                {
+                    "ticker": "005930",
+                    "name": "삼성전자",
+                    "entry_price": 50000,
+                    "stop_loss_price": 47000,
+                    "quantity": 10,
+                }
+            ]
+
+    class ExitMarketData:
+        def get_snapshot(self, ticker):
+            return MarketSnapshot(
+                ticker=ticker,
+                name="삼성전자",
+                current_price=46900,
+                change_pct=-2,
+                volume=1,
+                trading_value=1,
+                foreign_net=0,
+                institution_net=0,
+            )
+
+        def get_ohlcv(self, ticker):
+            return []
+
+    orchestrator._journal = FakeJournal()
+    orchestrator._market_data = ExitMarketData()
+    orchestrator._technical = __import__(
+        "codes.technical", fromlist=["TechnicalAnalysis"]
+    ).TechnicalAnalysis()
+
+    results = orchestrator.run_position_exit_check()
+
+    assert results[0]["action"] == "SELL_EXECUTED"
+    assert results[0]["signal"] == "STOP_LOSS"

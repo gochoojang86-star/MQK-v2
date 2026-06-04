@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -20,6 +21,30 @@ from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
+
+# 핵심 공시 키워드 — 주변 컨텍스트를 추출할 기준
+_KEY_PATTERNS = [
+    r"발행가액",      # 주당 가격
+    r"발행금액",      # 총 발행 금액
+    r"납입금액",      # 실제 납입액
+    r"증자규모",
+    r"발행주식수",
+    r"신주\s*수",
+    r"시설자금",      # 자금 목적
+    r"운영자금",
+    r"채무상환",
+    r"타법인\s*취득",
+    r"제3자\s*배정",  # 배정 방식
+    r"주주\s*배정",
+    r"일반\s*공모",
+    r"자기주식",
+    r"전환가액",      # CB/BW 관련
+    r"행사가액",
+    r"만기일",
+    r"이자율",
+]
+_KEY_RE = re.compile("|".join(_KEY_PATTERNS), re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
 
 load_dotenv()
 
@@ -35,11 +60,12 @@ class DisclosureItem:
     date: str           # YYYYMMDD
     rcept_no: str
     pblntf_ty: str      # B=주요사항, D=지분공시
+    content: str = ""
 
     def to_dict(self) -> dict:
         return {
             "title": self.title,
-            "content": "",   # 제목만으로 LLM 해석 충분 (원문은 zip 포맷)
+            "content": self.content,
             "date": self.date,
             "source": "dart",
             "rcept_no": self.rcept_no,
@@ -170,6 +196,75 @@ class DARTFetcher:
         """가장 최근 공시 1건 반환 (없으면 None)"""
         items = self.get_disclosures(ticker, days=days)
         return items[0] if items else None
+
+    def get_document_text(self, rcept_no: str) -> str:
+        """DART 공시 원문을 다운로드해 XML 태그 제거 후 평문 반환."""
+        if not self._api_key or not rcept_no:
+            return ""
+        try:
+            resp = requests.get(
+                f"{_BASE}/document.xml",
+                params={"crtfc_key": self._api_key, "rcept_no": rcept_no},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+                names = zf.namelist()
+                if not names:
+                    return ""
+                raw = zf.read(names[0])
+            raw_text = raw.decode("utf-8", errors="ignore")
+            return _TAG_RE.sub(" ", raw_text)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def extract_key_summary(plain_text: str, context_chars: int = 120) -> str:
+        """XML 태그가 제거된 평문에서 핵심 키워드 주변 컨텍스트만 추출.
+
+        LLM에 넘기기 전 처리:
+          - 핵심 키워드(_KEY_PATTERNS) 주변 ±context_chars 추출
+          - 중복 구간 제거
+          - 공백·줄바꿈 정규화
+        반환: 최대 ~800자 요약 문자열
+        """
+        if not plain_text:
+            return ""
+
+        text = " ".join(plain_text.split())  # 공백 정규화
+        snippets: list[tuple[int, str]] = []
+
+        for m in _KEY_RE.finditer(text):
+            start = max(0, m.start() - context_chars)
+            end = min(len(text), m.end() + context_chars)
+            snippets.append((start, text[start:end]))
+
+        if not snippets:
+            # 키워드 없으면 앞부분만
+            return text[:400]
+
+        # 겹치는 구간 병합 후 정렬
+        snippets.sort(key=lambda x: x[0])
+        merged: list[str] = []
+        last_end = -1
+        for pos, snippet in snippets:
+            s = max(0, pos - context_chars)
+            e = s + len(snippet)
+            if s > last_end + 20:      # 간격 20자 이상이면 별도 구간
+                merged.append(snippet.strip())
+                last_end = e
+            # 겹치면 스킵 (이미 포함됨)
+
+        summary = " … ".join(merged)
+        return summary[:800]
+
+    def enrich_content(self, item: DisclosureItem) -> DisclosureItem:
+        """공시 원문을 받아 핵심 키워드 요약으로 item.content를 채운다."""
+        if item.content:
+            return item
+        plain = self.get_document_text(item.rcept_no)
+        item.content = self.extract_key_summary(plain)
+        return item
 
     @property
     def available(self) -> bool:
