@@ -364,7 +364,30 @@ class MQKOrchestrator:
             candidate_context[c.ticker] = item
         self._candidate_context = candidate_context
         self._save_jsonl("candidate_scores.jsonl", result)
+        self._notify_candidates(result)
         return result
+
+    def _notify_candidates(self, candidates: list[dict]) -> None:
+        """스캔 결과 상위 종목을 텔레그램으로 발송."""
+        if not candidates:
+            return
+        top = candidates[:10]
+        lines = [
+            f"📊 *오늘의 스캔 결과* ({self._today})",
+            f"주도 테마: {self._current_theme or '미식별'}",
+            f"후보 {len(candidates)}종목 중 상위 {len(top)}",
+            "",
+        ]
+        for i, c in enumerate(top, 1):
+            filters = " · ".join(c.get("passed", [])[:3])
+            lines.append(
+                f"{i}. *{c['name']}* ({c['ticker']})\n"
+                f"   점수 {c['score']} | {c.get('change_pct', 0):+.1f}% | {filters}"
+            )
+        try:
+            self._telegram.notify("\n".join(lines))
+        except Exception as e:
+            logger.warning(f"[스캔 알림] 텔레그램 발송 실패: {e}")
 
     def _get_scan_seed_tickers(self) -> list[str]:
         kis_api = getattr(self, "_kis_api", None)
