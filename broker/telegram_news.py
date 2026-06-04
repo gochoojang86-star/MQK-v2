@@ -66,6 +66,7 @@ def _init_db() -> None:
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticker     TEXT    DEFAULT '',
                 title      TEXT    NOT NULL,
+                content    TEXT    DEFAULT '',
                 sentiment  TEXT,
                 score      REAL,
                 source     TEXT,
@@ -74,6 +75,11 @@ def _init_db() -> None:
                 processed  INTEGER DEFAULT 0
             )
         """)
+        # 기존 DB에 content 컬럼 없으면 추가 (마이그레이션)
+        try:
+            conn.execute("ALTER TABLE news_queue ADD COLUMN content TEXT DEFAULT ''")
+        except Exception:
+            pass
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_processed ON news_queue(processed)"
         )
@@ -125,21 +131,21 @@ def get_recent_news(ticker: str = "", hours: int = 2) -> list[dict]:
     with sqlite3.connect(DB_PATH) as conn:
         if ticker:
             rows = conn.execute(
-                "SELECT ticker,title,sentiment,score,source,url,created_at "
+                "SELECT ticker,title,content,sentiment,score,source,url,created_at "
                 "FROM news_queue WHERE ticker=? AND created_at>? "
                 "ORDER BY created_at DESC LIMIT 20",
                 (ticker, cutoff),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT ticker,title,sentiment,score,source,url,created_at "
+                "SELECT ticker,title,content,sentiment,score,source,url,created_at "
                 "FROM news_queue WHERE created_at>? "
                 "ORDER BY created_at DESC LIMIT 50",
                 (cutoff,),
             ).fetchall()
     return [
-        {"ticker": r[0], "title": r[1], "sentiment": r[2], "score": r[3],
-         "source": r[4], "url": r[5], "date": r[6]}
+        {"ticker": r[0], "title": r[1], "content": r[2], "sentiment": r[3],
+         "score": r[4], "source": r[5], "url": r[6], "date": r[7]}
         for r in rows
     ]
 
@@ -170,9 +176,14 @@ async def _run() -> None:
     async def handler(event) -> None:
         msg = event.message
         text = msg.text or ""
+        content = ""
+        url = ""
+
         if msg.web_preview:
-            text += " " + (msg.web_preview.title or "")
-            text += " " + (msg.web_preview.url or "")
+            wp = msg.web_preview
+            text += " " + (wp.title or "")
+            content = (wp.description or "")[:500]   # 기사 요약 최대 500자
+            url = wp.url or ""
 
         if any(k in text for k in _SKIP) or len(text) < 10:
             return
@@ -180,15 +191,14 @@ async def _run() -> None:
         ticker = _extract_ticker(text)
         sentiment, score = _classify(text)
         title = text[:200]
-        url = (msg.web_preview.url if msg.web_preview else "") or ""
 
         with sqlite3.connect(DB_PATH) as conn:
             if not _is_dup(conn, title):
                 conn.execute(
                     "INSERT INTO news_queue"
-                    "(ticker,title,sentiment,score,source,url,created_at)"
-                    " VALUES(?,?,?,?,?,?,?)",
-                    (ticker, title, sentiment, score,
+                    "(ticker,title,content,sentiment,score,source,url,created_at)"
+                    " VALUES(?,?,?,?,?,?,?,?)",
+                    (ticker, title, content, sentiment, score,
                      event.chat.username or "", url,
                      datetime.now().isoformat()),
                 )

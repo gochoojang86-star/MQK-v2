@@ -401,7 +401,7 @@ class MQKOrchestrator:
         naver_query = f"{name} {self._current_theme}".strip() if self._current_theme else name
         naver_items = self._naver_news.search(naver_query, display=5)
         tg_items = [
-            {"title": n["title"], "content": "", "date": n["date"], "source": n["source"]}
+            {"title": n["title"], "content": n.get("content", ""), "date": n["date"], "source": n["source"]}
             for n in get_telegram_news(ticker=ticker, hours=2)
         ]
         reaction = self._build_reaction_context(snap, bars)
