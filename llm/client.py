@@ -21,8 +21,11 @@ from llm.oauth_loader import load_openai_token
 
 logger = logging.getLogger(__name__)
 
-# o-series 모델은 temperature 미지원, max_completion_tokens 사용
-_REASONING_MODELS = {"o1", "o1-mini", "o3", "o3-mini", "o4-mini", "o1-preview"}
+# max_completion_tokens 사용 모델 (o-series + gpt-5.x)
+_REASONING_MODELS = {
+    "o1", "o1-mini", "o3", "o3-mini", "o4-mini", "o1-preview",
+    "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5",
+}
 
 
 def _resolve_api_key() -> str:
