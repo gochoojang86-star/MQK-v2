@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -30,7 +30,8 @@ class OrderRequest:
     stop_loss_price: float
     reason: str
     confidence: int
-    approved_by: str = "telegram"   # telegram / manual
+    approval_request_id: Optional[str] = None
+    entry_date: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
 
 
 @dataclass
@@ -57,22 +58,24 @@ class OrderManager:
         telegram=None,
         dry_run: bool = False,
         log_dir: Optional[Path] = None,
+        journal=None,
     ):
         self._kis = kis_api         # KISApi 인스턴스
         self._telegram = telegram   # TelegramApproval 인스턴스
         self._dry_run = dry_run
         self._log_dir = log_dir or LOG_CONFIG.base_dir
+        self._journal = journal
 
     def execute_buy(self, order: OrderRequest) -> ExecutionResult:
         """매수 주문 실행"""
-        if RISK.require_telegram_approval and not order.approved_by == "telegram":
-            raise PermissionError("텔레그램 승인 없이 매수 불가. require_telegram_approval=True")
+        if RISK.require_telegram_approval and not order.approval_request_id:
+            raise PermissionError("텔레그램 승인 ID 없이 매수 불가. require_telegram_approval=True")
 
         self._log_order(order)
 
         if self._dry_run:
             logger.warning(f"[DRY RUN] BUY {order.ticker} {order.quantity}주 @ {order.price:,.0f}원")
-            return ExecutionResult(
+            execution = ExecutionResult(
                 success=True,
                 ticker=order.ticker,
                 side="BUY",
@@ -81,6 +84,20 @@ class OrderManager:
                 order_no="DRY_RUN",
                 timestamp=datetime.now().isoformat(),
             )
+            if self._journal:
+                self._journal.open_trade(
+                    ticker=order.ticker,
+                    name=order.name,
+                    entry_date=order.entry_date,
+                    entry_price=order.price,
+                    quantity=order.quantity,
+                    stop_loss_price=order.stop_loss_price,
+                    entry_reason=order.reason,
+                    confidence=order.confidence,
+                    order_no=execution.order_no,
+                )
+            return execution
+
         if self._kis is None:
             raise RuntimeError("KIS API is required for live buy execution. Pass dry_run=True for order dry-run.")
 
@@ -100,6 +117,18 @@ class OrderManager:
             error_msg=result.error_msg,
         )
         self._log_execution(execution)
+        if self._journal and execution.success:
+            self._journal.open_trade(
+                ticker=order.ticker,
+                name=order.name,
+                entry_date=order.entry_date,
+                entry_price=execution.executed_price,
+                quantity=order.quantity,
+                stop_loss_price=order.stop_loss_price,
+                entry_reason=order.reason,
+                confidence=order.confidence,
+                order_no=execution.order_no,
+            )
         return execution
 
     def execute_sell(self, order: OrderRequest) -> ExecutionResult:
@@ -108,7 +137,7 @@ class OrderManager:
 
         if self._dry_run:
             logger.warning(f"[DRY RUN] SELL {order.ticker} {order.quantity}주 @ {order.price:,.0f}원")
-            return ExecutionResult(
+            execution = ExecutionResult(
                 success=True,
                 ticker=order.ticker,
                 side="SELL",
@@ -117,6 +146,15 @@ class OrderManager:
                 order_no="DRY_RUN",
                 timestamp=datetime.now().isoformat(),
             )
+            if self._journal:
+                self._journal.close_trade(
+                    ticker=order.ticker,
+                    exit_date=order.entry_date,
+                    exit_price=order.price,
+                    exit_reason=order.reason,
+                )
+            return execution
+
         if self._kis is None:
             raise RuntimeError("KIS API is required for live sell execution. Pass dry_run=True for order dry-run.")
 
@@ -136,6 +174,13 @@ class OrderManager:
             error_msg=result.error_msg,
         )
         self._log_execution(execution)
+        if self._journal and execution.success:
+            self._journal.close_trade(
+                ticker=order.ticker,
+                exit_date=order.entry_date,
+                exit_price=execution.executed_price,
+                exit_reason=order.reason,
+            )
         return execution
 
     def _append_log(self, record) -> None:

@@ -27,7 +27,8 @@ from codes.flow import FlowAnalysis
 from codes.risk_officer import RiskOfficer, RiskViolation, PortfolioState, TradeProposal
 from codes.position_sizer import PositionSizer
 from codes.order_manager import OrderManager, OrderRequest
-from codes.stop_take_profit import StopTakeProfitManager
+from codes.trade_journal import TradeJournal
+from codes.stop_take_profit import StopTakeProfitManager, PositionStatus, ExitSignal
 from agents.regime_agent import RegimeAgent
 from agents.theme_agent import ThemeAgent
 from agents.news_agent import NewsAgent
@@ -52,6 +53,7 @@ class MQKOrchestrator:
     """MQK-v2 메인 오케스트레이터"""
 
     def __init__(self, kis_api=None, dry_run_orders: bool | None = None):
+        self._kis_api = kis_api
         self._market_data = MarketData(data_source=kis_api)
         self._scanner = Scanner()
         self._technical = TechnicalAnalysis()
@@ -67,10 +69,12 @@ class MQKOrchestrator:
         self._review_agent = ReviewAgent()
         self._si_agent = SelfImprovementAgent()
         self._telegram = TelegramApproval()
+        self._journal = TradeJournal()
         self._order_manager = OrderManager(
             kis_api=kis_api,
             telegram=self._telegram,
             dry_run=EXECUTION.order_dry_run if dry_run_orders is None else dry_run_orders,
+            journal=self._journal,
         )
         self._naver_news = NaverNewsFetcher()
         self._kis_news = KISNewsFetcher(kis_api=kis_api)
@@ -82,6 +86,91 @@ class MQKOrchestrator:
         self._today = datetime.now().strftime("%Y-%m-%d")
         self._log_dir = LOG_CONFIG.base_dir / self._today
         self._log_dir.mkdir(parents=True, exist_ok=True)
+
+    def build_portfolio_state(
+        self,
+        theme_by_ticker: dict[str, str] | None = None,
+    ) -> PortfolioState:
+        """KIS 잔고 응답을 RiskOfficer용 PortfolioState로 변환."""
+        if self._kis_api is None or not hasattr(self._kis_api, "get_balance"):
+            raise RuntimeError("PortfolioState 생성을 위해 get_balance() 가능한 KIS API가 필요합니다.")
+
+        balance = self._kis_api.get_balance()
+        holdings = balance.get("output1") or balance.get("holdings") or []
+        summary = balance.get("output2") or balance.get("summary") or {}
+        if isinstance(summary, list):
+            summary = summary[0] if summary else {}
+
+        theme_by_ticker = theme_by_ticker or {}
+        total_capital = self._first_number(
+            summary,
+            [
+                "tot_evlu_amt",
+                "nass_amt",
+                "tot_asst_amt",
+                "total_capital",
+                "dnca_tot_amt",
+            ],
+        )
+
+        open_positions = []
+        theme_value: dict[str, float] = {}
+        position_value_total = 0.0
+        for row in holdings:
+            ticker = str(
+                row.get("ticker")
+                or row.get("pdno")
+                or row.get("mksc_shrn_iscd")
+                or ""
+            ).strip()
+            quantity = self._first_number(row, ["quantity", "hldg_qty", "ord_psbl_qty"])
+            if not ticker or quantity <= 0:
+                continue
+
+            current_price = self._first_number(row, ["current_price", "prpr", "now_pric"])
+            avg_price = self._first_number(row, ["avg_price", "pchs_avg_pric", "pchs_avg_prc"])
+            market_value = self._first_number(row, ["market_value", "evlu_amt"])
+            if market_value <= 0 and current_price > 0:
+                market_value = current_price * quantity
+            position_value_total += market_value
+
+            theme = theme_by_ticker.get(ticker) or row.get("theme") or "UNKNOWN"
+            theme_value[theme] = theme_value.get(theme, 0.0) + market_value
+            open_positions.append({
+                "ticker": ticker,
+                "name": row.get("name") or row.get("prdt_name") or ticker,
+                "quantity": int(quantity),
+                "avg_price": avg_price,
+                "current_price": current_price,
+                "market_value": market_value,
+                "theme": theme,
+            })
+
+        if total_capital <= 0:
+            cash = self._first_number(summary, ["cash", "dnca_tot_amt", "ord_psbl_cash"])
+            total_capital = cash + position_value_total
+        if total_capital <= 0:
+            raise RuntimeError("KIS 잔고 응답에서 총자산을 계산할 수 없습니다.")
+
+        theme_exposure = {
+            theme: round(value / total_capital * 100, 4)
+            for theme, value in theme_value.items()
+        }
+        daily_pnl = self._first_number(
+            summary,
+            [
+                "daily_pnl",
+                "thdt_evlu_pfls_amt",
+                "asst_icdc_amt",
+            ],
+        )
+
+        return PortfolioState(
+            total_capital=total_capital,
+            daily_pnl=daily_pnl,
+            open_positions=open_positions,
+            theme_exposure=theme_exposure,
+        )
 
     # ── 08:00 장전 ──────────────────────────────────────────────────────────
 
@@ -122,6 +211,11 @@ class MQKOrchestrator:
     def run_scan(self, market_status: dict) -> list[dict]:
         """후보 종목 30개 선발"""
         logger.info("[08:30] 종목 스캔 시작")
+        if market_status.get("status") == "RED":
+            logger.warning("[SCAN BLOCK] 시장 상태 RED - 신규 후보 스캔 중단")
+            self._save_jsonl("candidate_scores.jsonl", [])
+            return []
+
         tickers = self._market_data.get_universe()
         snapshots = [self._market_data.get_snapshot(t) for t in tickers[:100]]  # 실제는 전체
 
@@ -191,6 +285,7 @@ class MQKOrchestrator:
                 "score": c.total_score,
                 "theme": best_theme_name,
                 "theme_match": bool(best_theme_name and c.sector == best_theme_name),
+                "theme_news": news_headlines[:3],
                 "passed": c.passed_filters,
             }
             for c in candidates
@@ -362,10 +457,63 @@ class MQKOrchestrator:
         logger.info(f"[ORDER] BUY {ticker} {sizing.quantity}주: {'성공' if result.success else '실패'}")
         return {"action": "BUY_EXECUTED", "ticker": ticker, "success": result.success}
 
+    def process_position_exit(
+        self,
+        position: PositionStatus,
+        name: str,
+        current_price: float,
+        reason: str = "",
+    ) -> dict:
+        """보유 포지션 손절/익절 신호를 매도 주문으로 연결."""
+        self._stp_manager.update_trailing(position, current_price)
+        signal = self._stp_manager.evaluate(position, current_price)
+        if signal == ExitSignal.HOLD:
+            return {"action": "HOLD", "ticker": position.ticker}
+
+        sell_quantity = position.quantity
+        if signal == ExitSignal.TARGET_1:
+            sell_quantity = max(1, int(position.quantity * position.config.partial_exit_pct))
+            position.target1_hit = True
+
+        order = OrderRequest(
+            ticker=position.ticker,
+            name=name,
+            side="SELL",
+            quantity=sell_quantity,
+            price=current_price,
+            stop_loss_price=position.stop_loss_price,
+            reason=reason or signal.value,
+            confidence=100,
+        )
+        result = self._order_manager.execute_sell(order)
+        self._append_jsonl("exit_signals.jsonl", {
+            "ticker": position.ticker,
+            "signal": signal.value,
+            "quantity": sell_quantity,
+            "price": current_price,
+            "success": result.success,
+        })
+        logger.info(
+            f"[EXIT] {signal.value} {position.ticker} {sell_quantity}주: "
+            f"{'성공' if result.success else '실패'}"
+        )
+        return {
+            "action": "SELL_EXECUTED",
+            "ticker": position.ticker,
+            "signal": signal.value,
+            "quantity": sell_quantity,
+            "success": result.success,
+        }
+
     # ── 장마감 복기 ─────────────────────────────────────────────────────────
 
-    def run_close_review(self, today_trades: list[dict]) -> None:
+    def run_close_review(self) -> None:
         """장마감 복기 및 자기개선"""
+        today_trades = self._journal.get_closed_trades(days=1)
+        if not today_trades:
+            logger.info("[장마감] 오늘 청산 거래 없음")
+            return
+
         logger.info("[장마감] 거래 복기 시작")
         reviews = []
         for trade in today_trades:
@@ -397,6 +545,17 @@ class MQKOrchestrator:
         path = self._log_dir / filename
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def _first_number(self, row: dict, keys: list[str]) -> float:
+        for key in keys:
+            value = row.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return float(str(value).replace(",", "").strip())
+            except ValueError:
+                continue
+        return 0.0
 
 
 if __name__ == "__main__":
