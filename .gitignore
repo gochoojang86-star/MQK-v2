@@ -24,6 +24,12 @@ logs/debug/
 # 데이터
 data/raw/
 data/cache/
+data/*.db
+data/*.csv
+data/*.session
+data/*.session-journal
+data/*-cache.json
+data/approved_settings.json
 
 # IDE
 .idea/
