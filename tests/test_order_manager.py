@@ -1,4 +1,6 @@
 """Order Manager Code 테스트 - Telegram 승인 강제 + dry-run 경로"""
+from datetime import datetime, timedelta
+
 import pytest
 from codes.order_manager import OrderManager, OrderRequest
 from codes.trade_journal import TradeJournal
@@ -78,13 +80,16 @@ def test_execute_buy_records_to_journal(tmp_path):
 
 
 def test_execute_sell_closes_journal(tmp_path):
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    today = datetime.now().strftime("%Y-%m-%d")
+
     journal = TradeJournal(db_path=tmp_path / "trades.db")
     om = OrderManager(dry_run=True, journal=journal)
     buy = OrderRequest("005930", "삼성전자", "BUY", 10, 75000, 73000, "VCP", 80,
-                       approval_request_id="005930_1234567890", entry_date="2026-06-04")
+                       approval_request_id="005930_1234567890", entry_date=yesterday)
     om.execute_buy(buy)
     sell = OrderRequest("005930", "삼성전자", "SELL", 10, 78000, 0, "TARGET_1", 0,
-                        entry_date="2026-06-05")
+                        entry_date=today)
     om.execute_sell(sell)
     assert len(journal.get_open_positions()) == 0
     closed = journal.get_closed_trades(days=1)
