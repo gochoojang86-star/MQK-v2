@@ -22,10 +22,14 @@ from llm.oauth_loader import load_openai_token
 logger = logging.getLogger(__name__)
 
 # max_completion_tokens 사용 모델 (o-series + gpt-5.x)
-_REASONING_MODELS = {
-    "o1", "o1-mini", "o3", "o3-mini", "o4-mini", "o1-preview",
-    "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5",
-}
+_REASONING_MODEL_PREFIXES = (
+    "o1", "o3", "o4", "gpt-5",
+)
+
+
+def _uses_max_completion_tokens(model: str) -> bool:
+    """OpenAI Chat Completions에서 max_completion_tokens를 요구하는 모델 판별."""
+    return model.startswith(_REASONING_MODEL_PREFIXES)
 
 
 def _resolve_api_key() -> str:
@@ -67,7 +71,7 @@ class LLMClient:
         - expect_json=True면 JSON 파싱 후 반환
         """
         model = self._cfg.model_for(tier)
-        is_reasoning = model in _REASONING_MODELS
+        is_reasoning = _uses_max_completion_tokens(model)
 
         kwargs: dict[str, Any] = {
             "model": model,

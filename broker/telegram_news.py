@@ -154,6 +154,11 @@ def get_recent_news(ticker: str = "", hours: int = 2) -> list[dict]:
     ]
 
 
+def _source_from_event(event) -> str:
+    """Telethon event에서 채널 username을 안전하게 추출한다."""
+    return getattr(getattr(event, "chat", None), "username", "") or ""
+
+
 # ── 비동기 수집기 ─────────────────────────────────────────────────────────────
 
 async def _run() -> None:
@@ -203,7 +208,7 @@ async def _run() -> None:
                     "(ticker,title,content,sentiment,score,source,url,created_at)"
                     " VALUES(?,?,?,?,?,?,?,?)",
                     (ticker, title, content, sentiment, score,
-                     event.chat.username or "", url,
+                     _source_from_event(event), url,
                      datetime.now().isoformat()),
                 )
 
