@@ -4,15 +4,21 @@ LLM 사용. 해석/판단 전담.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
+from codes.risk_officer import clamp_risk_guidance
 from config.settings import ModelTier
 from llm.client import LLMClient
 from llm.soul import inject_agent
 
 _SYSTEM_PROMPT = inject_agent("regime_agent")
+
+_LAST_REGIME_PATH = Path(__file__).parent.parent / "data" / "last_regime.json"
 
 
 class MarketStatus(str, Enum):
@@ -50,6 +56,11 @@ class RegimeJudgment:
     risk_notes: list[str] = field(default_factory=list)
     opportunity_mode: OpportunityMode = OpportunityMode.NORMAL
     scanner_mode: ScannerMode = ScannerMode.TREND
+    # v3 확장 필드
+    risk_guidance: dict = field(default_factory=dict)
+    drift_triggers: list[dict] = field(default_factory=list)
+    cooldown_minutes: int = 60
+    max_daily_triggers: int = 3
 
 
 class RegimeAgent:
@@ -101,4 +112,30 @@ class RegimeAgent:
             risk_notes=raw.get("risk_notes", []),
             opportunity_mode=OpportunityMode(raw.get("opportunity_mode", "NORMAL")),
             scanner_mode=ScannerMode(raw.get("scanner_mode", "TREND")),
+            risk_guidance=clamp_risk_guidance(raw.get("risk_guidance", {})),
+            drift_triggers=raw.get("drift_triggers", []),
+            cooldown_minutes=int(raw.get("cooldown_minutes", 60)),
+            max_daily_triggers=int(raw.get("max_daily_triggers", 3)),
         )
+
+
+def save_last_regime(judgment: RegimeJudgment, path: Path = _LAST_REGIME_PATH) -> None:
+    """PREMARKET 판단 결과를 data/last_regime.json에 저장한다.
+
+    RegimeDriftDetector와 LLM SPOF 폴백(24시간 캐시)이 이 파일을 사용한다.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = asdict(judgment)
+    payload["status"] = judgment.status.value
+    payload["regime"] = judgment.regime.value
+    payload["opportunity_mode"] = judgment.opportunity_mode.value
+    payload["scanner_mode"] = judgment.scanner_mode.value
+    payload["timestamp"] = datetime.now().isoformat()
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_last_regime(path: Path = _LAST_REGIME_PATH) -> dict | None:
+    """캐시된 레짐 판단 로드. 파일이 없으면 None."""
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))

@@ -61,9 +61,54 @@
   "reason": "",
   "risk_notes": [],
   "opportunity_mode": "NORMAL|SETUP4_PANIC",
-  "scanner_mode": "TREND|REVERSAL_ONLY"
+  "scanner_mode": "TREND|REVERSAL_ONLY",
+
+  "risk_guidance": {
+    "buy_confidence_threshold": 75,
+    "risk_per_trade_pct": 0.35,
+    "max_positions": 4,
+    "min_trading_value_krw": 10000000000
+  },
+
+  "drift_triggers": [
+    {
+      "id": "index_sharp_drop",
+      "metric": "kospi_drop_from_open_pct",
+      "threshold": -1.5,
+      "direction": "below",
+      "description": "KOSPI 시가 대비 하락 시 RED 전환 가능성"
+    },
+    {
+      "id": "recovery_signal",
+      "metric": "kospi_recovery_from_low_pct",
+      "threshold": 1.0,
+      "direction": "above",
+      "description": "장중 저점 대비 회복 시 GREEN 재검토"
+    }
+  ],
+  "cooldown_minutes": 60,
+  "max_daily_triggers": 3
 }
 ```
+
+## risk_guidance 가이드
+- `buy_confidence_threshold`: 65~95 사이. RED일수록 높게 (강한 증거만 통과).
+- `risk_per_trade_pct`: 0.10~0.50 사이. RED일수록 작게 (포지션 사이즈 축소).
+- `max_positions`: 1~5 사이. RED일수록 작게.
+- `min_trading_value_krw`: 최소 50억. RED일수록 크게 (유동성 높은 종목만).
+- 위 값은 코드(`clamp_risk_guidance`)가 강제로 클램핑하므로, 범위를 벗어난 값을 선언해도 안전하게 처리된다.
+  단, 의도를 명확히 전달하려면 범위 내 값으로 선언하는 것이 좋다.
+
+## drift_triggers 가이드
+- 오늘 아침 판단의 "재검토 조건"을 스스로 선언한다.
+- 최소 1개는 악화 방향(`index_sharp_drop`, `foreign_heavy_sell`, `breadth_collapse` 등),
+  최소 1개는 회복 방향(`recovery_signal`)을 포함하는 것을 권장한다.
+  (RED 판단을 내려도 오후 회복 종목을 포착할 수 있어야 한다.)
+- `metric`은 RegimeDriftDetector가 5분마다 무료로 계산하는 다음 중에서 선택한다:
+  - `kospi_drop_from_open_pct`: (현재가-시가)/시가 × 100
+  - `kospi_recovery_from_low_pct`: (현재가-장중저가)/장중저가 × 100
+  - `foreign_net_sell_cumulative_bln`: 외국인 누적 순매도 대금 (억원, 양수=순매도)
+  - `advance_decline_ratio`: 상승종목수 / (상승종목수+하락종목수)
 
 ## Forbidden
 - 종목 매수 추천 금지
