@@ -13,7 +13,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from codes.risk_officer import clamp_risk_guidance
+from codes.risk_officer import (
+    clamp_cooldown_minutes,
+    clamp_max_daily_triggers,
+    clamp_risk_guidance,
+)
 from config.settings import ModelTier
 from llm.client import LLMClient
 from llm.soul import inject_agent
@@ -118,8 +122,8 @@ class RegimeAgent:
             scanner_mode=ScannerMode(raw.get("scanner_mode", "TREND")),
             risk_guidance=clamp_risk_guidance(raw.get("risk_guidance", {})),
             drift_triggers=raw.get("drift_triggers", []),
-            cooldown_minutes=int(raw.get("cooldown_minutes", 60)),
-            max_daily_triggers=int(raw.get("max_daily_triggers", 3)),
+            cooldown_minutes=clamp_cooldown_minutes(raw.get("cooldown_minutes", 60)),
+            max_daily_triggers=clamp_max_daily_triggers(raw.get("max_daily_triggers", 3)),
         )
 
 

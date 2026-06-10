@@ -189,6 +189,29 @@ def test_check_clamps_out_of_bounds_risk_guidance_delta():
     assert delta["max_positions"] == 1
 
 
+def test_evaluate_triggers_skips_malformed_drift_triggers():
+    metrics = {
+        "kospi_drop_from_open_pct": -2.0,   # < -1.5 → would fire
+        "kospi_recovery_from_low_pct": 0.2,
+        "foreign_net_sell_cumulative_bln": 1000,
+        "advance_decline_ratio": 0.5,
+    }
+    drift_state = {"last_trigger_time": {}}
+    malformed_triggers = [
+        "not_a_dict",
+        {"id": "missing_metric", "threshold": -1.5, "direction": "below"},
+        {"id": "bad_threshold", "metric": "kospi_drop_from_open_pct",
+         "threshold": "abc", "direction": "below"},
+        {"id": "index_sharp_drop", "metric": "kospi_drop_from_open_pct",
+         "threshold": -1.5, "direction": "below", "description": "급락"},
+    ]
+
+    triggered = evaluate_triggers(metrics, malformed_triggers, drift_state, cooldown_minutes=60)
+
+    assert len(triggered) == 1
+    assert triggered[0]["id"] == "index_sharp_drop"
+
+
 def test_downgrade_status_progression():
     from agents.drift_detector import _downgrade_status
     assert _downgrade_status("GREEN") == "YELLOW"

@@ -46,13 +46,17 @@ module.exports = {
       cron_restart: "30 15 * * 1-5",
       autorestart: false,
     },
+    // ⚠️ 경고: 아래 v3 앱들과 위의 v2 트레이딩 앱(mqk-premarket/scan/intraday/close)을
+    // 동시에 실행하면 같은 계좌에서 두 개의 자율 트레이더가 동시에 주문합니다.
+    // v3로 전환 시 반드시 v2 4개 앱을 `pm2 stop`/`pm2 delete` 하거나 cron_restart를
+    // 주석 처리한 후 v3를 시작하세요. (운영 전환은 수동 결정 사항)
     {
       name: "mqk-v3-premarket",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "premarket" },
-      cron_restart: "45 23 * * 0-4",  // UTC 23:45 = KST 08:45 (일~목 UTC = 월~금 KST)
+      cron_restart: "45 8 * * 1-5",  // KST 08:45 (PM2는 호스트 로컬 시간 기준 — 호스트는 Asia/Seoul)
       autorestart: false,
     },
     {
@@ -61,7 +65,9 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "scan" },
-      cron_restart: "10 0,2,5 * * 1-5",  // UTC 00:10/02:10/05:10 = KST 09:10/11:00/14:00
+      // KST 09:10/11:10/14:10 (원래 의도는 09:10/11:00/14:00이었으나, 분 단위까지
+      // 정확히 맞추려면 별도 항목이 필요. 단순화를 위해 09:10/11:10/14:10으로 통일)
+      cron_restart: "10 9,11,14 * * 1-5",
       autorestart: false,
     },
     {
@@ -70,7 +76,7 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "intraday" },
-      cron_restart: "*/5 0-5 * * 1-5",  // UTC 00:00~05:55 = KST 09:00~14:55, 5분 간격
+      cron_restart: "*/5 9-14 * * 1-5",  // KST 09:00~14:55, 5분 간격
       autorestart: false,
     },
     {
@@ -79,7 +85,7 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "close" },
-      cron_restart: "30 6 * * 1-5",  // UTC 06:30 = KST 15:30
+      cron_restart: "30 15 * * 1-5",  // KST 15:30
       autorestart: false,
     },
     {
@@ -88,7 +94,7 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "market_close" },
-      cron_restart: "0 8 * * 1-5",  // UTC 08:00 = KST 17:00
+      cron_restart: "0 17 * * 1-5",  // KST 17:00
       autorestart: false,
     },
     {

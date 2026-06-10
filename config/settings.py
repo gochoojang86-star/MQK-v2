@@ -46,6 +46,12 @@ class RegimeSafetyBounds:
     min_positions: int = 1
     max_positions: int = 5                  # RiskConfig.max_positions(5)가 천장
     min_trading_value_krw: int = 5_000_000_000
+    min_cooldown_minutes: int = 15
+    max_cooldown_minutes: int = 240
+    default_cooldown_minutes: int = 60
+    min_daily_triggers: int = 1
+    max_daily_triggers: int = 5
+    default_daily_triggers: int = 3
 
 
 @dataclass(frozen=True)

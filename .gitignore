@@ -31,6 +31,10 @@ data/*.session-journal
 data/*-cache.json
 data/approved_settings.json
 data/mqk_v3.lock
+data/last_regime.json
+data/drift_state.json
+data/watchlist.json
+data/*.tmp
 
 # IDE
 .idea/

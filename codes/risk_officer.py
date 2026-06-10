@@ -158,3 +158,31 @@ def clamp_risk_guidance(raw: dict, bounds: RegimeSafetyBounds | None = None) -> 
             b.min_trading_value_krw,
         ),
     }
+
+
+def clamp_cooldown_minutes(raw: object, bounds: RegimeSafetyBounds | None = None) -> int:
+    """RegimeAgent가 선언한 cooldown_minutes를 안전 범위로 강제 클램핑한다.
+
+    LLM이 비정수/극단값을 선언해도 [min_cooldown_minutes, max_cooldown_minutes]
+    범위 내의 정수만 반환한다. 변환 불가능한 값은 default_cooldown_minutes로 대체.
+    """
+    b = bounds or REGIME_SAFETY_BOUNDS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return b.default_cooldown_minutes
+    return min(max(value, b.min_cooldown_minutes), b.max_cooldown_minutes)
+
+
+def clamp_max_daily_triggers(raw: object, bounds: RegimeSafetyBounds | None = None) -> int:
+    """RegimeAgent가 선언한 max_daily_triggers를 안전 범위로 강제 클램핑한다.
+
+    LLM이 비정수/극단값을 선언해도 [min_daily_triggers, max_daily_triggers]
+    범위 내의 정수만 반환한다. 변환 불가능한 값은 default_daily_triggers로 대체.
+    """
+    b = bounds or REGIME_SAFETY_BOUNDS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return b.default_daily_triggers
+    return min(max(value, b.min_daily_triggers), b.max_daily_triggers)

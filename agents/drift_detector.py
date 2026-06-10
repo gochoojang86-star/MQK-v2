@@ -71,11 +71,30 @@ def evaluate_triggers(
     triggered = []
 
     for trigger in drift_triggers:
+        if not isinstance(trigger, dict):
+            logger.warning(f"[drift_detector] drift_trigger가 dict가 아님 — 건너뜀: {trigger!r}")
+            continue
+
+        required_keys = ("id", "metric", "threshold", "direction")
+        missing = [k for k in required_keys if k not in trigger]
+        if missing:
+            logger.warning(
+                f"[drift_detector] drift_trigger에 필수 키 누락 {missing} — 건너뜀: {trigger!r}"
+            )
+            continue
+
         metric_value = metrics.get(trigger["metric"])
         if metric_value is None:
             continue
 
-        threshold = trigger["threshold"]
+        try:
+            threshold = float(trigger["threshold"])
+        except (TypeError, ValueError):
+            logger.warning(
+                f"[drift_detector] drift_trigger의 threshold를 숫자로 변환 불가 — 건너뜀: {trigger!r}"
+            )
+            continue
+
         direction = trigger["direction"]
         if direction == "above":
             fired = metric_value > threshold

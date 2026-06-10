@@ -73,6 +73,32 @@ def test_judge_defaults_when_v3_fields_missing():
     assert judgment.risk_guidance["max_positions"] == 1
 
 
+def test_judge_clamps_extreme_cooldown_and_daily_triggers():
+    raw = {
+        "status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50, "reason": "혼조세",
+        "max_daily_triggers": 1000,
+        "cooldown_minutes": 0,
+    }
+    agent = RegimeAgent(llm=FakeLLMClient(raw))
+    judgment = agent.judge({})
+
+    assert judgment.max_daily_triggers == 5
+    assert judgment.cooldown_minutes == 15
+
+
+def test_judge_uses_defaults_for_garbage_cooldown_and_daily_triggers():
+    raw = {
+        "status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50, "reason": "혼조세",
+        "max_daily_triggers": "abc",
+        "cooldown_minutes": "abc",
+    }
+    agent = RegimeAgent(llm=FakeLLMClient(raw))
+    judgment = agent.judge({})
+
+    assert judgment.max_daily_triggers == 3
+    assert judgment.cooldown_minutes == 60
+
+
 def test_save_and_load_last_regime(tmp_path):
     raw = {
         "status": "YELLOW", "regime": "SIDEWAYS", "confidence": 44, "reason": "혼조세",
