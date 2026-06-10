@@ -424,3 +424,35 @@ def test_cancel_order_uses_real_admin_endpoint_by_default(tmp_path, monkeypatch)
     assert "openapi.koreainvestment.com:9443" in calls[0][0]
     assert calls[0][2]["RVSE_CNCL_DVSN_CD"] == "02"
     assert calls[0][2]["QTY_ALL_ORD_YN"] == "Y"
+
+
+def test_raw_get_calls_kis_api_with_tr_id_and_returns_json(tmp_path, monkeypatch):
+    cache_path = tmp_path / "kis_token.json"
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"rt_cd": "0", "output": {"foo": "bar"}}
+
+    def fake_get(url, headers, params, timeout):
+        calls.append((url, headers, params, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr("broker.kis_api.requests.get", fake_get)
+    monkeypatch.setattr(KISApi, "_get_token", lambda self, mode=None: "token")
+
+    api = KISApi(config=FakeKISConfig(), token_cache_path=cache_path)
+    result = api.raw_get(
+        "FHPUP02140000",
+        "domestic-stock/v1/quotations/inquire-index-category-price",
+        {"FID_COND_MRKT_DIV_CODE": "U"},
+    )
+
+    assert result == {"rt_cd": "0", "output": {"foo": "bar"}}
+    url, headers, params, timeout = calls[0]
+    assert url.endswith("/uapi/domestic-stock/v1/quotations/inquire-index-category-price")
+    assert headers["tr_id"] == "FHPUP02140000"
+    assert params == {"FID_COND_MRKT_DIV_CODE": "U"}

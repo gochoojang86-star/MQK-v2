@@ -1,0 +1,63 @@
+"""MILContext 테스트 - 캐시 + circuit breaker + fetch 통합"""
+import pytest
+
+from market_intelligence.base import MILContext, ToolFailure
+from market_intelligence.circuit_breaker import CircuitBreaker
+
+
+class StubKisApi:
+    pass
+
+
+class StubMcpClient:
+    @property
+    def available(self) -> bool:
+        return False
+
+
+def test_cached_call_returns_and_caches_fetch_result():
+    ctx = MILContext(kis_api=StubKisApi(), mcp_client=StubMcpClient())
+    calls = []
+
+    def fetch():
+        calls.append(1)
+        return {"x": 1}
+
+    result1 = ctx.cached_call("get_market_context", "SCAN", {}, fetch)
+    result2 = ctx.cached_call("get_market_context", "SCAN", {}, fetch)
+
+    assert result1 == {"x": 1}
+    assert result2 == {"x": 1}
+    assert len(calls) == 1
+
+
+def test_cached_call_raises_toolfailure_on_fetch_error():
+    ctx = MILContext(kis_api=StubKisApi(), mcp_client=StubMcpClient())
+
+    def fetch():
+        raise RuntimeError("boom")
+
+    with pytest.raises(ToolFailure):
+        ctx.cached_call("get_market_context", "SCAN", {}, fetch)
+
+
+def test_cached_call_opens_circuit_after_threshold_then_blocks_without_fetch():
+    ctx = MILContext(
+        kis_api=StubKisApi(),
+        mcp_client=StubMcpClient(),
+        circuit_breaker=CircuitBreaker(failure_threshold=2),
+    )
+    fetch_calls = []
+
+    def fetch():
+        fetch_calls.append(1)
+        raise RuntimeError("boom")
+
+    for i in range(2):
+        with pytest.raises(ToolFailure):
+            ctx.cached_call("get_market_context", "SCAN", {"i": i}, fetch)
+
+    with pytest.raises(ToolFailure, match="circuit breaker open"):
+        ctx.cached_call("get_market_context", "SCAN", {"i": 99}, fetch)
+
+    assert len(fetch_calls) == 2  # 세 번째 호출은 circuit breaker가 fetch를 막음

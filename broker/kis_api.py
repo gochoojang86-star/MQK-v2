@@ -423,6 +423,25 @@ class KISApi:
                 time.sleep(0.5 * (attempt + 1))
         raise last_error
 
+    def raw_get(self, tr_id: str, path: str, params: dict, mode: str | None = None) -> dict:
+        """MIL 도구가 사용하는 범용 KIS REST GET 호출.
+
+        Args:
+            tr_id: KIS 거래ID (e.g. "FHPUP02140000")
+            path: /uapi/ 이후 경로 (e.g. "domestic-stock/v1/quotations/inquire-index-category-price")
+            params: 쿼리 파라미터
+            mode: "real"|"paper". 미지정 시 self._data_mode 사용
+        """
+        mode = mode or self._data_mode
+        url = f"{self._base_url_for(mode)}/uapi/{path}"
+        resp = self._get_with_retry(
+            url,
+            headers=self._headers(tr_id, mode=mode),
+            params=params,
+            timeout=10,
+        )
+        return resp.json()
+
     def get_universe(self) -> list[str]:
         """운영 스캔 대상 종목 목록.
 
