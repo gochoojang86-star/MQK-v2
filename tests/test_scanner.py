@@ -1,6 +1,7 @@
 """Scanner Code 테스트 - 5000→30 필터링 + 거래대금 컷오프"""
 from codes.scanner import Scanner, CandidateScore
 from codes.market_data import MarketSnapshot
+from codes.technical import TechnicalSignals
 
 
 def make_snapshot(
@@ -86,3 +87,33 @@ def test_scanner_marks_sector_leaders_first():
     assert next(c for c in result if c.ticker == "A1").theme_rank == 1
     assert next(c for c in result if c.ticker == "A2").theme_rank == 2
     assert "섹터대장" in next(c for c in result if c.ticker == "A1").passed_filters
+
+
+def test_reversal_scanner_finds_oversold_liquid_candidate():
+    scanner = Scanner()
+    snap = make_snapshot("REV", trading_value=80_000_000_000, change_pct=-12.0, sector="semiconductor")
+    tech = TechnicalSignals(
+        ticker="REV",
+        atr=1000,
+        rsi=24.0,
+        is_vcp=False,
+        is_box_breakout=False,
+        is_pullback=False,
+        ma20=100.0,
+        ma60=110.0,
+        ma120=120.0,
+        above_ma20=False,
+        above_ma60=False,
+        above_ma120=False,
+        new_high_52w=False,
+        disparity20_pct=-12.0,
+        disparity60_pct=-15.0,
+        disparity120_pct=-18.0,
+    )
+
+    result = scanner.scan_reversal([snap], {"REV": tech}, {})
+
+    assert len(result) == 1
+    assert result[0].strategy_type == "SETUP4_PANIC"
+    assert result[0].reversal_score > 0
+    assert "과매도" in result[0].passed_filters

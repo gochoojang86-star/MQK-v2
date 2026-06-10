@@ -101,3 +101,24 @@ def test_flexible_stop_rejects_too_wide_support():
 
     assert result.stop_loss_price == 9700
     assert result.stop_method == "ATR"
+
+
+def test_risk_pct_override_reduces_quantity():
+    sizer = PositionSizer()
+
+    normal = sizer.calculate(
+        ticker="005930",
+        entry_price=70000,
+        atr=2000,
+        total_capital=10_000_000,
+    )
+    reduced = sizer.calculate(
+        ticker="005930",
+        entry_price=70000,
+        atr=2000,
+        total_capital=10_000_000,
+        risk_pct_override=0.25,
+    )
+
+    assert reduced.quantity < normal.quantity
+    assert reduced.risk_pct <= 0.25

@@ -68,3 +68,9 @@ def test_52w_high_not_detected():
     bars = make_bars(260, trend="down")
     highs = [b.high for b in bars]
     assert ta.is_52w_high(highs) is False
+
+
+def test_disparity_calculation():
+    ta = TechnicalAnalysis()
+    assert ta.calculate_disparity_pct(90, 100) == -10.0
+    assert ta.calculate_disparity_pct(100, None) == 0.0

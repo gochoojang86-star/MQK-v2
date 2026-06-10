@@ -89,6 +89,8 @@ class PortfolioManagerAgent:
         if candidate:
             lines += [
                 f"- 후보 순위: {candidate.get('rank', '-')}",
+                f"- 전략 타입: {candidate.get('strategy_type', 'TREND')}",
+                f"- 기회 모드: {candidate.get('opportunity_mode', 'NORMAL')}",
                 f"- 테마/섹터 내 순위: {candidate.get('theme_rank') or '-'}",
                 f"- 스캐너 점수: {candidate.get('score', 0)}",
                 f"- 대장주 점수: {candidate.get('leadership_score', 0)}",
@@ -96,6 +98,10 @@ class PortfolioManagerAgent:
                 f"- 등락률: {candidate.get('change_pct', 0):.2f}%",
                 f"- 거래대금: {candidate.get('trading_value', 0) / 1e8:.1f}억원",
                 f"- 거래대금 순위: {candidate.get('trading_value_rank') or '-'}",
+                f"- reversal 점수: {candidate.get('reversal_score', 0)}",
+                f"- 20일 이격도: {candidate.get('disparity20_pct', 0):.2f}%",
+                f"- 60일 이격도: {candidate.get('disparity60_pct', 0):.2f}%",
+                f"- 과매도 사유: {candidate.get('oversold_reason') or '없음'}",
                 f"- 통과 필터: {', '.join(candidate.get('passed', [])) or '없음'}",
                 f"- 테마 대장 후보 여부: {'예' if candidate.get('is_theme_leader') else '아니오'}",
                 f"- 후발주/소외주 경고: {'예' if candidate.get('is_laggard') else '아니오'}",
@@ -131,6 +137,8 @@ class PortfolioManagerAgent:
             lines += [
                 f"- Status: {regime.status.value}",
                 f"- Regime: {regime.regime.value} (확신도 {regime.confidence}%)",
+                f"- Opportunity Mode: {getattr(regime, 'opportunity_mode', 'NORMAL').value if hasattr(getattr(regime, 'opportunity_mode', 'NORMAL'), 'value') else getattr(regime, 'opportunity_mode', 'NORMAL')}",
+                f"- Scanner Mode: {getattr(regime, 'scanner_mode', 'TREND').value if hasattr(getattr(regime, 'scanner_mode', 'TREND'), 'value') else getattr(regime, 'scanner_mode', 'TREND')}",
             ]
 
         lines += ["", "### 테마"]
@@ -150,6 +158,7 @@ class PortfolioManagerAgent:
         if tech:
             lines += [
                 f"- ATR: {tech.atr:.0f}원  RSI: {tech.rsi:.1f}",
+                f"- 20일 이격도: {tech.disparity20_pct:.2f}%  60일 이격도: {tech.disparity60_pct:.2f}%",
                 f"- 52주 신고가: {'예' if tech.new_high_52w else '아니오'}",
                 f"- VCP: {'예' if tech.is_vcp else '아니오'}  "
                 f"박스돌파: {'예' if tech.is_box_breakout else '아니오'}  "

@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from config.settings import RISK, LOG_CONFIG, EXECUTION
+from config.settings import RISK, REVERSAL, LOG_CONFIG, EXECUTION
 from codes.market_data import MarketData
 from codes.scanner import Scanner
 from codes.technical import TechnicalAnalysis
@@ -29,7 +29,7 @@ from codes.risk_officer import RiskOfficer, RiskViolation, PortfolioState, Trade
 from codes.position_sizer import PositionSizer
 from codes.order_manager import OrderManager, OrderRequest
 from codes.trade_journal import TradeJournal
-from codes.stop_take_profit import StopTakeProfitManager, PositionStatus, ExitSignal
+from codes.stop_take_profit import StopTakeProfitManager, PositionStatus, ExitSignal, StopTakeProfitConfig
 from codes.improvement_manager import ImprovementManager
 from agents.regime_agent import RegimeAgent
 from agents.theme_agent import ThemeAgent
@@ -240,21 +240,60 @@ class MQKOrchestrator:
             "status": regime.status.value,
             "regime": regime.regime.value,
             "confidence": regime.confidence,
+            "reason": regime.reason,
             "risk_notes": regime.risk_notes,
+            "opportunity_mode": regime.opportunity_mode.value,
+            "scanner_mode": regime.scanner_mode.value,
         }
         self._save_json("market_status.json", market_status)
+        self._notify_market_regime(market_status)
 
         # 장전에 보유 포지션 ATR 미리 계산 → 장중 run_position_exit_check API 호출 절감
         self.warm_atr_cache()
 
         return market_status
 
+    def _notify_market_regime(self, market_status: dict) -> None:
+        """장전 시장레짐 평가 결과를 텔레그램으로 발송."""
+        status = market_status.get("status", "UNKNOWN")
+        regime = market_status.get("regime", "UNKNOWN")
+        confidence = market_status.get("confidence", 0)
+        risk_notes = market_status.get("risk_notes") or []
+        risk_text = "\n".join(f"- {note}" for note in risk_notes) if risk_notes else "- 특이 리스크 없음"
+        reason = str(market_status.get("reason") or "근거 없음")
+        if len(reason) > 700:
+            reason = reason[:700].rstrip() + "..."
+
+        lines = [
+            f"📊 *MQK v2 시장레짐 평가 완료* ({market_status.get('date', self._today)})",
+            "",
+            f"상태: *{status}*",
+            f"레짐: *{regime}*",
+            f"확신도: *{confidence}%*",
+            f"기회 모드: {market_status.get('opportunity_mode', 'NORMAL')}",
+            f"스캐너 모드: {market_status.get('scanner_mode', 'TREND')}",
+            "",
+            "근거:",
+            reason,
+            "",
+            "리스크 노트:",
+            risk_text,
+            "",
+            f"전일 KOSPI/KOSDAQ: {market_status.get('prev_kospi_change_pct', 0):+.2f}% / {market_status.get('prev_kosdaq_change_pct', 0):+.2f}%",
+        ]
+        try:
+            self._telegram.notify("\n".join(lines))
+        except Exception as e:
+            logger.warning(f"[시장레짐 알림] 텔레그램 발송 실패: {e}")
+
     # ── 08:30 후보 생성 ─────────────────────────────────────────────────────
 
     def run_scan(self, market_status: dict) -> list[dict]:
         """후보 종목 30개 선발"""
         logger.info("[08:30] 종목 스캔 시작")
-        if market_status.get("status") == "RED":
+        scanner_mode = market_status.get("scanner_mode", "TREND")
+        opportunity_mode = market_status.get("opportunity_mode", "NORMAL")
+        if scanner_mode != "REVERSAL_ONLY" and market_status.get("status") == "RED":
             logger.warning("[SCAN BLOCK] 시장 상태 RED - 신규 후보 스캔 중단")
             self._save_jsonl("candidate_scores.jsonl", [])
             return []
@@ -271,7 +310,10 @@ class MQKOrchestrator:
             flow_records = self._get_flow_records(snap.ticker, snap)
             flows[snap.ticker] = self._flow.analyze(snap.ticker, flow_records)
 
-        candidates = self._scanner.scan(snapshots, technicals, flows)
+        if scanner_mode == "REVERSAL_ONLY":
+            candidates = self._scanner.scan_reversal(snapshots, technicals, flows)
+        else:
+            candidates = self._scanner.scan(snapshots, technicals, flows)
         logger.info(f"후보 {len(candidates)}종목 선발")
 
         # 거래대금 순위를 FlowSignals.trading_value_rank에 반영
@@ -357,6 +399,12 @@ class MQKOrchestrator:
                 "trading_value_rank": flow_signals.trading_value_rank if flow_signals else None,
                 "is_theme_leader": is_leader or c.is_theme_leader,
                 "is_laggard": is_laggard,
+                "strategy_type": c.strategy_type,
+                "opportunity_mode": opportunity_mode,
+                "reversal_score": c.reversal_score,
+                "disparity20_pct": c.disparity20_pct,
+                "disparity60_pct": c.disparity60_pct,
+                "oversold_reason": c.oversold_reason,
                 "theme_news": news_headlines[:3],
                 "passed": c.passed_filters,
             }
@@ -375,6 +423,7 @@ class MQKOrchestrator:
         lines = [
             f"📊 *오늘의 스캔 결과* ({self._today})",
             f"주도 테마: {self._current_theme or '미식별'}",
+            f"스캔 모드: {candidates[0].get('strategy_type', 'TREND') if candidates else 'TREND'}",
             f"후보 {len(candidates)}종목 중 상위 {len(top)}",
             "",
         ]
@@ -489,6 +538,7 @@ class MQKOrchestrator:
                 decision,
                 tech,
                 portfolio_state,
+                strategy_type=getattr(self, "_candidate_context", {}).get(ticker, {}).get("strategy_type", "TREND"),
                 support_stop_price=self._estimate_support_stop(bars, current_price),
             )
         return {"action": "SKIP", "ticker": ticker, "reason": decision.reason}
@@ -501,11 +551,24 @@ class MQKOrchestrator:
         decision,
         tech,
         portfolio_state,
+        strategy_type: str = "TREND",
         support_stop_price: float | None = None,
     ) -> dict:
         """매수 신호 처리: Risk → Size → Telegram → Order"""
         if tech is None:
             return {"action": "SKIP", "ticker": ticker, "reason": "기술적 데이터 없음"}
+
+        if strategy_type == "SETUP4_PANIC":
+            current_setup4_positions = [
+                pos for pos in portfolio_state.open_positions
+                if str(pos.get("strategy_type") or "TREND") == "SETUP4_PANIC"
+            ]
+            if len(current_setup4_positions) >= REVERSAL.max_positions:
+                return {
+                    "action": "BLOCKED",
+                    "ticker": ticker,
+                    "reason": f"Setup 4 최대 보유 수({REVERSAL.max_positions}) 초과",
+                }
 
         # Position Sizer
         try:
@@ -515,6 +578,7 @@ class MQKOrchestrator:
                 atr=tech.atr,
                 total_capital=portfolio_state.total_capital,
                 support_stop_price=support_stop_price,
+                risk_pct_override=REVERSAL.risk_per_trade_pct if strategy_type == "SETUP4_PANIC" else None,
             )
         except ValueError as e:
             self._append_jsonl("risk_checks.jsonl", {
@@ -579,6 +643,7 @@ class MQKOrchestrator:
             reason=decision.reason,
             confidence=decision.confidence,
             approval_request_id=approval_request_id,
+            strategy_type=strategy_type,
         )
         result = self._order_manager.execute_buy(order)
         logger.info(f"[ORDER] BUY {ticker} {sizing.quantity}주: {'성공' if result.success else '실패'}")
@@ -592,14 +657,24 @@ class MQKOrchestrator:
         reason: str = "",
     ) -> dict:
         """보유 포지션 손절/익절 신호를 매도 주문으로 연결."""
+        position.config = self._config_for_position_exit(position)
         self._stp_manager.update_trailing(position, current_price)
         self._sync_position_management(position)
+        if self._should_force_time_exit(position):
+            return self._execute_exit_order(
+                position=position,
+                name=name,
+                current_price=current_price,
+                signal=ExitSignal.STOP_LOSS,
+                reason=reason or "TIME_STOP",
+                sell_quantity=position.quantity,
+            )
         signal = self._stp_manager.evaluate(position, current_price)
         if signal == ExitSignal.HOLD:
             return {"action": "HOLD", "ticker": position.ticker}
 
         if signal in {ExitSignal.TARGET_1, ExitSignal.TARGET_2}:
-            if self._should_extend_profit_hold(position, name, current_price, signal):
+            if self._should_allow_profit_extension(position) and self._should_extend_profit_hold(position, name, current_price, signal):
                 protected_stop = self._protective_stop_for_extension(position, signal)
                 journal = getattr(self, "_journal", None)
                 if hasattr(journal, "update_position_management"):
@@ -684,6 +759,8 @@ class MQKOrchestrator:
                     float(row.get("highest_price") or row["entry_price"]),
                     snapshot.current_price,
                 ),
+                entry_date=str(row.get("entry_date") or ""),
+                strategy_type=str(row.get("strategy_type") or "TREND"),
                 target1_hit=bool(row.get("target1_hit")),
                 trailing_active=bool(row.get("trailing_active")),
             )
@@ -750,6 +827,34 @@ class MQKOrchestrator:
             position.atr * position.config.trailing_atr_multiplier
         )
         return max(position.stop_loss_price, position.entry_price, trailing_stop)
+
+    def _config_for_position_exit(self, position: PositionStatus) -> StopTakeProfitConfig:
+        if position.strategy_type == "SETUP4_PANIC":
+            return StopTakeProfitConfig(
+                target1_ratio=1.0,
+                target2_ratio=99.0,
+                target1_pct=REVERSAL.take_profit_pct,
+                target2_pct=None,
+                partial_exit_pct=1.0,
+                enable_target2=False,
+                trailing_activation_ratio=1.0,
+                trailing_activation_pct=REVERSAL.take_profit_pct,
+                trailing_atr_multiplier=1.0,
+            )
+        return position.config
+
+    def _should_allow_profit_extension(self, position: PositionStatus) -> bool:
+        return position.strategy_type != "SETUP4_PANIC"
+
+    def _should_force_time_exit(self, position: PositionStatus) -> bool:
+        if position.strategy_type != "SETUP4_PANIC" or not position.entry_date:
+            return False
+        try:
+            entry_date = datetime.strptime(position.entry_date, "%Y-%m-%d").date()
+        except ValueError:
+            return False
+        holding_days = (datetime.now().date() - entry_date).days
+        return holding_days >= REVERSAL.max_holding_days
 
     # ── 장마감 복기 ─────────────────────────────────────────────────────────
 

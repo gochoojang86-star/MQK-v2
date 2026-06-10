@@ -26,6 +26,9 @@ class TechnicalSignals:
     above_ma60: bool
     above_ma120: bool
     new_high_52w: bool          # 52주 신고가
+    disparity20_pct: float
+    disparity60_pct: float
+    disparity120_pct: float
 
 
 class TechnicalAnalysis:
@@ -57,6 +60,9 @@ class TechnicalAnalysis:
             above_ma60=current > ma60 if ma60 else False,
             above_ma120=current > ma120 if ma120 else False,
             new_high_52w=self.is_52w_high(highs),
+            disparity20_pct=self.calculate_disparity_pct(current, ma20),
+            disparity60_pct=self.calculate_disparity_pct(current, ma60),
+            disparity120_pct=self.calculate_disparity_pct(current, ma120),
         )
 
     def calculate_atr(self, bars: list[OHLCVBar], period: int = 14) -> float:
@@ -94,6 +100,12 @@ class TechnicalAnalysis:
         if len(closes) < period:
             return None
         return sum(closes[-period:]) / period
+
+    def calculate_disparity_pct(self, current: float, ma: Optional[float]) -> float:
+        """현재가와 이동평균의 이격도(%)"""
+        if not ma:
+            return 0.0
+        return round(((current - ma) / ma) * 100, 2)
 
     def detect_vcp(self, bars: list[OHLCVBar], lookback: int = 60) -> bool:
         """

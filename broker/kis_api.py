@@ -346,9 +346,26 @@ class KISApi:
                 timeout=10,
             )
             rows = resp.json().get("output2", [])
-            return rows[0] if rows else {}
+            return self._select_prev_index_day(rows)
         except Exception:
             return {}
+
+    def _select_prev_index_day(self, rows: list[dict]) -> dict:
+        """일봉 응답에서 장전 0값 당일 row를 제외한 최근 확정 거래일을 선택."""
+        for idx, row in enumerate(rows):
+            if self._to_float_safe(row.get("acml_tr_pbmn")) <= 0:
+                continue
+            selected = dict(row)
+            previous_close = self._to_float_safe(
+                rows[idx + 1].get("bstp_nmix_prpr")
+                if idx + 1 < len(rows)
+                else None
+            )
+            close = self._to_float_safe(selected.get("bstp_nmix_prpr"))
+            if close > 0 and previous_close > 0:
+                selected["prdy_ctrt"] = round((close - previous_close) / previous_close * 100, 2)
+            return selected
+        return {}
 
     def _to_float_safe(self, value) -> float:
         if value in (None, ""):

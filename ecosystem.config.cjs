@@ -48,9 +48,9 @@ module.exports = {
     },
     {
       name: "mqk-kis-mcp",
-      script: "/home/gochoojang/kis-mcp-source/MCP/Kis Trading MCP/.venv/bin/python",
-      args: "server.py",
+      script: "server.py",
       cwd: "/home/gochoojang/kis-mcp-source/MCP/Kis Trading MCP",
+      interpreter: "/home/gochoojang/kis-mcp-source/MCP/Kis Trading MCP/.venv/bin/python",
       env: { ENV: "mqk" },
       autorestart: true,
       restart_delay: 3000,

@@ -54,3 +54,19 @@ def test_get_targets():
     assert targets["stop_loss"] == 47000
     assert targets["target1"] == 50000 + 3000 * 1.5
     assert targets["target2"] == 50000 + 3000 * 3.0
+
+
+def test_get_targets_supports_absolute_pct_mode():
+    mgr = StopTakeProfitManager()
+    config = StopTakeProfitConfig(
+        target1_pct=4.0,
+        enable_target2=False,
+        trailing_activation_pct=4.0,
+        partial_exit_pct=1.0,
+    )
+
+    targets = mgr.get_targets(50000, 47000, config=config)
+
+    assert targets["target1"] == 52000
+    assert targets["target2"] is None
+    assert targets["trailing_activation"] == 52000

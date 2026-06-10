@@ -18,6 +18,7 @@ load_dotenv()
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+NOTIFY_CHAT_IDS = os.environ.get("TELEGRAM_NOTIFY_CHAT_IDS", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
@@ -49,9 +50,15 @@ class TelegramApproval:
     require_telegram_approval=True면 이 채널 승인 없이는 주문 불가.
     """
 
-    def __init__(self, bot_token: str = BOT_TOKEN, chat_id: str = CHAT_ID):
+    def __init__(
+        self,
+        bot_token: str = BOT_TOKEN,
+        chat_id: str = CHAT_ID,
+        notify_chat_ids: str | list[str] | None = NOTIFY_CHAT_IDS,
+    ):
         self._token = bot_token
         self._chat_id = chat_id
+        self._notify_chat_ids = self._parse_notify_chat_ids(notify_chat_ids, chat_id)
         self._last_update_id: int | None = None
 
     def request_approval(self, req: ApprovalRequest, timeout_sec: int = 300) -> ApprovalResult:
@@ -119,7 +126,20 @@ class TelegramApproval:
 
     def notify(self, message: str) -> None:
         """일반 알림 전송 (승인 불필요)"""
-        self._send_message(message)
+        for chat_id in self._notify_chat_ids:
+            self._send_message(message, chat_id=chat_id)
+
+    @staticmethod
+    def _parse_notify_chat_ids(chat_ids: str | list[str] | None, fallback_chat_id: str) -> list[str]:
+        if isinstance(chat_ids, str):
+            parsed = [item.strip() for item in chat_ids.split(",") if item.strip()]
+        elif chat_ids:
+            parsed = [str(item).strip() for item in chat_ids if str(item).strip()]
+        else:
+            parsed = []
+        if not parsed and fallback_chat_id:
+            parsed = [str(fallback_chat_id)]
+        return list(dict.fromkeys(parsed))
 
     def _format_message(self, req: ApprovalRequest, request_id: str) -> str:
         risk_amount = (req.entry_price - req.stop_loss_price) * req.quantity
@@ -144,18 +164,28 @@ class TelegramApproval:
 아래 버튼으로 승인 또는 거부하세요.
 """
 
-    def _send_message(self, text: str, reply_markup: dict | None = None) -> None:
-        if not self._token or not self._chat_id:
+    def _send_message(
+        self,
+        text: str,
+        reply_markup: dict | None = None,
+        chat_id: str | None = None,
+    ) -> None:
+        target_chat_id = chat_id or self._chat_id
+        if not self._token or not target_chat_id:
             return
         url = f"{TELEGRAM_API}/sendMessage"
         payload = {
-            "chat_id": self._chat_id,
+            "chat_id": target_chat_id,
             "text": text,
             "parse_mode": "Markdown",
         }
         if reply_markup:
             payload["reply_markup"] = reply_markup
-        requests.post(url, json=payload, timeout=10)
+        resp = requests.post(url, json=payload, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("ok"):
+            raise RuntimeError(data.get("description") or "Telegram sendMessage failed")
 
     def _approval_keyboard(self, request_id: str) -> dict:
         return {

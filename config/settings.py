@@ -41,6 +41,18 @@ class ScannerConfig:
 
 
 @dataclass(frozen=True)
+class ReversalConfig:
+    enabled: bool = True
+    rsi_threshold: float = 30.0
+    min_disparity20_pct: float = -8.0
+    min_disparity60_pct: float = -12.0
+    max_positions: int = 2
+    risk_per_trade_pct: float = 0.25
+    take_profit_pct: float = 4.0
+    max_holding_days: int = 4
+
+
+@dataclass(frozen=True)
 class LLMConfig:
     # ── OpenAI 모델 배치 (Hermes/Codex OAuth 인증) ───────────────────────────
     # REASONING: 핵심 투자 판단 (PortfolioManager, SelfImprovement)
@@ -81,6 +93,7 @@ class ExecutionConfig:
 _RUNTIME_OVERRIDES = load_runtime_overrides()
 RISK       = RiskConfig(**_RUNTIME_OVERRIDES.get("RISK", {}))
 SCANNER    = ScannerConfig(**_RUNTIME_OVERRIDES.get("SCANNER", {}))
+REVERSAL   = ReversalConfig(**_RUNTIME_OVERRIDES.get("REVERSAL", {}))
 LLM_CONFIG = LLMConfig(**_RUNTIME_OVERRIDES.get("LLM_CONFIG", {}))
 LOG_CONFIG = LogConfig()
 EXECUTION  = ExecutionConfig()

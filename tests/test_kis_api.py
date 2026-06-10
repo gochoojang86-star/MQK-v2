@@ -110,6 +110,48 @@ def test_get_index_quote_retries_transient_server_error(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
+def test_get_prev_index_day_skips_today_zero_row_and_computes_change_pct(tmp_path, monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "rt_cd": "0",
+                "output2": [
+                    {
+                        "stck_bsop_date": "20260609",
+                        "bstp_nmix_prpr": "7484.41",
+                        "acml_vol": "0",
+                        "acml_tr_pbmn": "0",
+                    },
+                    {
+                        "stck_bsop_date": "20260608",
+                        "bstp_nmix_prpr": "7484.41",
+                        "acml_vol": "452204",
+                        "acml_tr_pbmn": "48338891",
+                    },
+                    {
+                        "stck_bsop_date": "20260605",
+                        "bstp_nmix_prpr": "8160.59",
+                        "acml_vol": "463197",
+                        "acml_tr_pbmn": "48519528",
+                    },
+                ],
+            }
+
+    monkeypatch.setattr("broker.kis_api.requests.get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(KISApi, "_get_token", lambda self, mode=None: "token")
+    api = KISApi(config=FakeKISConfig(), token_cache_path=tmp_path / "token.json")
+    api._data_mode = "real"
+
+    prev = api._get_prev_index_day("0001")
+
+    assert prev["stck_bsop_date"] == "20260608"
+    assert prev["acml_tr_pbmn"] == "48338891"
+    assert prev["prdy_ctrt"] == -8.29
+
+
 def test_get_universe_loads_codes_from_file(tmp_path, monkeypatch):
     universe = tmp_path / "universe.csv"
     universe.write_text(

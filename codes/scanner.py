@@ -15,7 +15,7 @@ from typing import Optional
 from codes.market_data import MarketSnapshot
 from codes.technical import TechnicalSignals
 from codes.flow import FlowSignals
-from config.settings import SCANNER
+from config.settings import SCANNER, REVERSAL
 
 
 @dataclass
@@ -34,6 +34,11 @@ class CandidateScore:
     market_rank: int = 0
     theme_rank: int = 0
     is_theme_leader: bool = False
+    strategy_type: str = "TREND"
+    reversal_score: float = 0.0
+    disparity20_pct: float = 0.0
+    disparity60_pct: float = 0.0
+    oversold_reason: str = ""
     passed_filters: list[str] = field(default_factory=list)
     failed_filters: list[str] = field(default_factory=list)
 
@@ -74,6 +79,23 @@ class Scanner:
         result = (leaders + non_leaders)[: self._cfg.candidate_count]
 
         return result
+
+    def scan_reversal(
+        self,
+        snapshots: list[MarketSnapshot],
+        technicals: dict[str, TechnicalSignals],
+        flows: dict[str, FlowSignals],
+    ) -> list[CandidateScore]:
+        """Setup 4용 과매도 평균회귀 후보 스캔."""
+        candidates = []
+        for snap in snapshots:
+            score = self._score_reversal(snap, technicals.get(snap.ticker), flows.get(snap.ticker))
+            if score is not None:
+                candidates.append(score)
+
+        self._apply_leader_ranking(candidates)
+        candidates.sort(key=lambda c: c.total_score, reverse=True)
+        return candidates[: self._cfg.candidate_count]
 
     def _apply_leader_ranking(self, candidates: list[CandidateScore]) -> None:
         """섹터/테마 프록시 단위 대장주 랭킹을 점수에 반영한다."""
@@ -168,6 +190,82 @@ class Scanner:
             failed_filters=failed,
         )
 
+    def _score_reversal(
+        self,
+        snap: MarketSnapshot,
+        tech: Optional[TechnicalSignals],
+        flow: Optional[FlowSignals],
+    ) -> Optional[CandidateScore]:
+        passed = []
+        failed = []
+
+        if not REVERSAL.enabled:
+            failed.append("reversal_disabled")
+            return None
+        if snap.trading_halted:
+            failed.append("거래정지")
+            return None
+        if snap.administrative_issue:
+            failed.append("관리종목")
+            return None
+        if snap.trading_value < self._cfg.min_trading_value_krw:
+            failed.append("거래대금_미달")
+            return None
+        if tech is None:
+            failed.append("기술데이터_없음")
+            return None
+        if tech.rsi > REVERSAL.rsi_threshold:
+            failed.append("RSI_과매도미달")
+            return None
+
+        disparity20_ok = tech.disparity20_pct <= REVERSAL.min_disparity20_pct
+        disparity60_ok = tech.disparity60_pct <= REVERSAL.min_disparity60_pct
+        if not (disparity20_ok or disparity60_ok):
+            failed.append("이격도_미달")
+            return None
+
+        passed.append("거래대금_통과")
+        passed.append("과매도")
+        if disparity20_ok:
+            passed.append("이격20")
+        if disparity60_ok:
+            passed.append("이격60")
+
+        liquidity_score = min(snap.trading_value / 100_000_000_000, 1.0) * 25
+        oversold_score = max(0.0, (REVERSAL.rsi_threshold - tech.rsi) * 1.5)
+        disparity_score = max(abs(min(tech.disparity20_pct, 0.0)), abs(min(tech.disparity60_pct, 0.0))) * 2
+        selloff_score = max(abs(min(snap.change_pct, 0.0)), 0.0) * 2
+        flow_score = 0.0
+        if flow:
+            flow_score = min(flow.foreign_consecutive_buy * 2, 6)
+            if flow.is_strong_inflow:
+                flow_score += 4
+                passed.append("반전수급")
+
+        total = liquidity_score + oversold_score + disparity_score + selloff_score + flow_score
+        oversold_reason = f"RSI {tech.rsi:.1f}, 20일 이격 {tech.disparity20_pct:.1f}%, 60일 이격 {tech.disparity60_pct:.1f}%"
+
+        return CandidateScore(
+            ticker=snap.ticker,
+            name=snap.name,
+            total_score=round(total, 2),
+            trading_value_score=round(liquidity_score, 2),
+            new_high_score=0.0,
+            technical_score=round(oversold_score + disparity_score + selloff_score, 2),
+            flow_score=round(flow_score, 2),
+            leadership_score=0.0,
+            sector=snap.sector,
+            change_pct=snap.change_pct,
+            trading_value=snap.trading_value,
+            strategy_type="SETUP4_PANIC",
+            reversal_score=round(oversold_score + disparity_score + selloff_score, 2),
+            disparity20_pct=tech.disparity20_pct,
+            disparity60_pct=tech.disparity60_pct,
+            oversold_reason=oversold_reason,
+            passed_filters=passed,
+            failed_filters=failed,
+        )
+
     def save_candidates(self, candidates: list[CandidateScore], output_path: Path) -> None:
         """candidate_scores.jsonl 저장"""
         lines = []
@@ -179,6 +277,7 @@ class Scanner:
                 "trading_value": c.trading_value,
                 "theme_rank": c.theme_rank,
                 "is_theme_leader": c.is_theme_leader,
+                "strategy_type": c.strategy_type,
                 "passed": c.passed_filters,
             }, ensure_ascii=False))
         output_path.write_text("\n".join(lines), encoding="utf-8")

@@ -51,6 +51,7 @@ class TradeJournal:
                     pnl             REAL,
                     pnl_pct         REAL,
                     result          TEXT,
+                    strategy_type   TEXT DEFAULT 'TREND',
                     highest_price   REAL,
                     target1_hit     INTEGER DEFAULT 0,
                     trailing_active INTEGER DEFAULT 0,
@@ -60,6 +61,7 @@ class TradeJournal:
             self._ensure_column(conn, "highest_price", "REAL")
             self._ensure_column(conn, "target1_hit", "INTEGER DEFAULT 0")
             self._ensure_column(conn, "trailing_active", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "strategy_type", "TEXT DEFAULT 'TREND'")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS trade_executions (
                     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,14 +97,15 @@ class TradeJournal:
         entry_reason: str,
         confidence: int,
         order_no: str = "",
+        strategy_type: str = "TREND",
     ) -> int:
         with self._conn() as conn:
             cur = conn.execute(
                 """INSERT INTO trades
                    (ticker, name, entry_date, entry_price, quantity,
                     stop_loss_price, entry_reason, confidence, order_no,
-                    highest_price, target1_hit, trailing_active)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    highest_price, target1_hit, trailing_active, strategy_type)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     ticker,
                     name,
@@ -116,6 +119,7 @@ class TradeJournal:
                     entry_price,
                     0,
                     0,
+                    strategy_type,
                 ),
             )
             return cur.lastrowid

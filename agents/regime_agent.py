@@ -21,6 +21,16 @@ class MarketStatus(str, Enum):
     RED    = "RED"     # 신규 매수 제한
 
 
+class OpportunityMode(str, Enum):
+    NORMAL = "NORMAL"
+    SETUP4_PANIC = "SETUP4_PANIC"
+
+
+class ScannerMode(str, Enum):
+    TREND = "TREND"
+    REVERSAL_ONLY = "REVERSAL_ONLY"
+
+
 class Regime(str, Enum):
     UPTREND        = "UPTREND"
     DOWNTREND      = "DOWNTREND"
@@ -38,6 +48,8 @@ class RegimeJudgment:
     confidence: int
     reason: str
     risk_notes: list[str] = field(default_factory=list)
+    opportunity_mode: OpportunityMode = OpportunityMode.NORMAL
+    scanner_mode: ScannerMode = ScannerMode.TREND
 
 
 class RegimeAgent:
@@ -87,4 +99,6 @@ class RegimeAgent:
             confidence=int(raw["confidence"]),
             reason=raw["reason"],
             risk_notes=raw.get("risk_notes", []),
+            opportunity_mode=OpportunityMode(raw.get("opportunity_mode", "NORMAL")),
+            scanner_mode=ScannerMode(raw.get("scanner_mode", "TREND")),
         )

@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from agents.regime_agent import MarketStatus, Regime, RegimeJudgment
+from agents.regime_agent import (
+    MarketStatus,
+    OpportunityMode,
+    Regime,
+    RegimeJudgment,
+    ScannerMode,
+)
 from agents.portfolio_manager import Decision, PortfolioDecision
 from agents.review_agent import TradeReview
 from agents.self_improvement_agent import ChangeType, ImprovementProposal
@@ -8,6 +14,7 @@ from agents.theme_agent import ThemeAnalysis, ThemeItem
 from codes.market_data import IndexStatus, MarketSnapshot
 from codes.order_manager import OrderManager
 from codes.stop_take_profit import PositionStatus
+from broker.telegram import TelegramApproval
 from orchestrator import MQKOrchestrator
 
 
@@ -60,6 +67,8 @@ class FakeRegimeAgent:
             confidence=80,
             reason="market is supportive",
             risk_notes=["watch volatility"],
+            opportunity_mode=OpportunityMode.NORMAL,
+            scanner_mode=ScannerMode.TREND,
         )
 
 
@@ -95,10 +104,17 @@ class FakeFlow:
 class FakeNewsFetcher:
     def search(self, query, display=5):
         return []
-
     def get_news(self, ticker="000000", limit=20):
         return []
 
+
+class FakeTelegram(TelegramApproval):
+    def __init__(self):
+        super().__init__(bot_token="token", chat_id="primary", notify_chat_ids="primary")
+        self.messages = []
+
+    def notify(self, message):
+        self.messages.append(message)
 
 class FakeReviewAgent:
     def analyze(self, trade):
@@ -191,11 +207,19 @@ def test_run_premarket_serializes_regime_status_and_risk_notes(tmp_path):
     orchestrator._regime_agent = FakeRegimeAgent()
     orchestrator._kis_news = FakeNewsFetcher()
     orchestrator._naver_news = FakeNewsFetcher()
+    telegram = FakeTelegram()
+    orchestrator._telegram = telegram
 
     status = orchestrator.run_premarket()
 
     assert status["status"] == "GREEN"
     assert status["risk_notes"] == ["watch volatility"]
+    assert status["opportunity_mode"] == "NORMAL"
+    assert status["scanner_mode"] == "TREND"
+    assert status["reason"] == "market is supportive"
+    assert len(telegram.messages) == 1
+    assert "MQK v2 시장레짐 평가 완료" in telegram.messages[0]
+    assert "THEME_MARKET" in telegram.messages[0]
     assert (tmp_path / "market_status.json").exists()
 
 
@@ -232,8 +256,70 @@ def test_run_scan_uses_best_theme_for_theme_match(tmp_path):
     assert "theme_match" in candidates[0]
     assert candidates[0]["trading_value"] == 70_000_000_000
     assert candidates[0]["is_theme_leader"] is True
+    assert candidates[0]["strategy_type"] == "TREND"
     assert orchestrator._candidate_context["005930"]["score"] == candidates[0]["score"]
     assert (tmp_path / "candidate_scores.jsonl").exists()
+
+
+def test_run_scan_blocks_plain_red_market(tmp_path):
+    orchestrator = make_orchestrator(tmp_path)
+    orchestrator._market_data = FakeMarketData()
+    orchestrator._technical = FakeTechnical()
+    orchestrator._flow = FakeFlow()
+    orchestrator._scanner = __import__("codes.scanner", fromlist=["Scanner"]).Scanner()
+    orchestrator._theme_agent = FakeThemeAgent()
+    orchestrator._naver_news = FakeNewsFetcher()
+
+    candidates = orchestrator.run_scan({"status": "RED", "scanner_mode": "TREND"})
+
+    assert candidates == []
+
+
+def test_run_scan_uses_reversal_path_when_scanner_mode_requests_it(tmp_path):
+    orchestrator = make_orchestrator(tmp_path)
+    orchestrator._market_data = FakeMarketData()
+    orchestrator._technical = FakeTechnical()
+    orchestrator._flow = FakeFlow()
+    orchestrator._theme_agent = FakeThemeAgent()
+    orchestrator._naver_news = FakeNewsFetcher()
+
+    class StubScanner:
+        def scan(self, snapshots, technicals, flows):
+            raise AssertionError("trend scan should not be called")
+
+        def scan_reversal(self, snapshots, technicals, flows):
+            from codes.scanner import CandidateScore
+
+            return [
+                CandidateScore(
+                    ticker="005930",
+                    name="Samsung",
+                    total_score=88.0,
+                    trading_value_score=20.0,
+                    new_high_score=0.0,
+                    technical_score=40.0,
+                    flow_score=0.0,
+                    leadership_score=0.0,
+                    sector="semiconductor",
+                    change_pct=-8.0,
+                    trading_value=70_000_000_000,
+                    strategy_type="SETUP4_PANIC",
+                    reversal_score=40.0,
+                    disparity20_pct=-9.0,
+                    disparity60_pct=-14.0,
+                    oversold_reason="RSI 25",
+                )
+            ]
+
+    orchestrator._scanner = StubScanner()
+
+    candidates = orchestrator.run_scan(
+        {"status": "RED", "scanner_mode": "REVERSAL_ONLY", "opportunity_mode": "SETUP4_PANIC"}
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["strategy_type"] == "SETUP4_PANIC"
+    assert candidates[0]["opportunity_mode"] == "SETUP4_PANIC"
 
 
 def test_get_scan_seed_tickers_prefers_kis_ranking_api(tmp_path):
@@ -420,6 +506,31 @@ def test_hold_exit_check_syncs_highest_price_and_trailing_state(tmp_path):
     assert result["action"] == "HOLD"
     assert orchestrator._journal.update["highest_price"] == 53000
     assert orchestrator._journal.update["trailing_active"] is False
+
+
+def test_setup4_target_exits_full_without_hold_extension(tmp_path):
+    orchestrator = make_orchestrator(tmp_path)
+    orchestrator._order_manager = OrderManager(kis_api=None, dry_run=True, log_dir=tmp_path)
+    orchestrator._stp_manager = __import__(
+        "codes.stop_take_profit", fromlist=["StopTakeProfitManager"]
+    ).StopTakeProfitManager()
+    orchestrator._pm_agent = FakeHoldPM()
+
+    position = PositionStatus(
+        ticker="005930",
+        entry_price=50000,
+        stop_loss_price=47000,
+        quantity=10,
+        atr=1000,
+        highest_price=50000,
+        strategy_type="SETUP4_PANIC",
+    )
+
+    result = orchestrator.process_position_exit(position, "삼성전자", current_price=52000)
+
+    assert result["action"] == "SELL_EXECUTED"
+    assert result["signal"] == "TARGET_1"
+    assert result["quantity"] == 10
 
 
 def test_run_position_exit_check_reads_open_positions(tmp_path):

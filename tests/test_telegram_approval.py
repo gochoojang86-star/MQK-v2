@@ -22,8 +22,8 @@ class FakeTelegramApproval(TelegramApproval):
         self._updates = list(updates)
         self.sent = []
 
-    def _send_message(self, text: str, reply_markup=None) -> None:
-        self.sent.append({"text": text, "reply_markup": reply_markup})
+    def _send_message(self, text: str, reply_markup=None, chat_id=None) -> None:
+        self.sent.append({"text": text, "reply_markup": reply_markup, "chat_id": chat_id})
 
     def _get_updates(self) -> list:
         if not self._updates:
@@ -32,6 +32,15 @@ class FakeTelegramApproval(TelegramApproval):
 
     def _answer_callback(self, callback_query_id: str) -> None:
         return None
+
+
+class FakeNotifyTelegramApproval(TelegramApproval):
+    def __init__(self, notify_chat_ids):
+        super().__init__(bot_token="token", chat_id="primary", notify_chat_ids=notify_chat_ids)
+        self.sent = []
+
+    def _send_message(self, text: str, reply_markup=None, chat_id=None) -> None:
+        self.sent.append({"text": text, "chat_id": chat_id, "reply_markup": reply_markup})
 
 
 def test_approves_matching_callback_button(monkeypatch):
@@ -128,3 +137,19 @@ def test_rejects_immediately_when_telegram_is_not_configured():
 
     assert result.approved is False
     assert "미설정" in result.responder_note
+
+
+def test_notify_sends_to_each_configured_notify_chat_once():
+    approval = FakeNotifyTelegramApproval("primary, secondary, primary")
+
+    approval.notify("hello")
+
+    assert [item["chat_id"] for item in approval.sent] == ["primary", "secondary"]
+
+
+def test_notify_falls_back_to_approval_chat_id_when_notify_chat_ids_empty():
+    approval = FakeNotifyTelegramApproval("")
+
+    approval.notify("hello")
+
+    assert [item["chat_id"] for item in approval.sent] == ["primary"]

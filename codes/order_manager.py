@@ -32,6 +32,7 @@ class OrderRequest:
     confidence: int
     approval_request_id: Optional[str] = None
     entry_date: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
+    strategy_type: str = "TREND"
 
 
 @dataclass
@@ -95,6 +96,7 @@ class OrderManager:
                     entry_reason=order.reason,
                     confidence=order.confidence,
                     order_no=execution.order_no,
+                    strategy_type=order.strategy_type,
                 )
             return execution
 
@@ -128,6 +130,7 @@ class OrderManager:
                 entry_reason=order.reason,
                 confidence=order.confidence,
                 order_no=execution.order_no,
+                strategy_type=order.strategy_type,
             )
         return execution
 

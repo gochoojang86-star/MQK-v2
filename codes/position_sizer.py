@@ -36,6 +36,7 @@ class PositionSizer:
         entry_price: float,
         atr: float,
         total_capital: float,
+        risk_pct_override: float | None = None,
     ) -> SizingResult:
         """
         ATR 기반 수량 계산.
@@ -54,7 +55,8 @@ class PositionSizer:
         stop_distance = atr * self._cfg.atr_multiplier
         stop_loss_price = entry_price - stop_distance
 
-        risk_budget = total_capital * (self._cfg.risk_per_trade_pct / 100)
+        risk_budget_pct = risk_pct_override if risk_pct_override is not None else self._cfg.risk_per_trade_pct
+        risk_budget = total_capital * (risk_budget_pct / 100)
         raw_quantity = risk_budget / stop_distance
         if raw_quantity < 1:
             raise ValueError(
@@ -88,6 +90,7 @@ class PositionSizer:
         atr: float,
         total_capital: float,
         support_stop_price: float | None = None,
+        risk_pct_override: float | None = None,
     ) -> SizingResult:
         """ATR와 차트 지지선 후보 중 유효한 손절폭을 선택해 수량을 계산.
 
@@ -110,6 +113,7 @@ class PositionSizer:
             entry_price=entry_price,
             stop_loss_price=round(stop_price, 0),
             total_capital=total_capital,
+            risk_pct_override=risk_pct_override,
         )
         result.stop_method = stop_method
         return result
@@ -120,6 +124,7 @@ class PositionSizer:
         entry_price: float,
         stop_loss_price: float,
         total_capital: float,
+        risk_pct_override: float | None = None,
     ) -> SizingResult:
         """손절가가 고정된 경우 (차트 지지선 기준)"""
         stop_distance = entry_price - stop_loss_price
@@ -128,7 +133,8 @@ class PositionSizer:
         if total_capital <= 0:
             raise ValueError(f"{ticker}: 총 자본금은 0보다 커야 합니다.")
 
-        risk_budget = total_capital * (self._cfg.risk_per_trade_pct / 100)
+        risk_budget_pct = risk_pct_override if risk_pct_override is not None else self._cfg.risk_per_trade_pct
+        risk_budget = total_capital * (risk_budget_pct / 100)
         raw_quantity = risk_budget / stop_distance
         if raw_quantity < 1:
             raise ValueError(
