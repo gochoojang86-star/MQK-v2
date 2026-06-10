@@ -101,3 +101,31 @@ def test_save_and_load_last_regime(tmp_path):
 
 def test_load_last_regime_returns_none_if_missing(tmp_path):
     assert load_last_regime(path=tmp_path / "missing.json") is None
+
+
+def test_load_last_regime_returns_none_on_corrupt_json(tmp_path):
+    path = tmp_path / "last_regime.json"
+    path.write_bytes(b"{not valid json!!")
+
+    assert load_last_regime(path=path) is None
+
+
+def test_save_last_regime_writes_atomically(tmp_path):
+    path = tmp_path / "last_regime.json"
+    raw = {
+        "status": "YELLOW", "regime": "SIDEWAYS", "confidence": 44, "reason": "혼조세",
+        "risk_guidance": {"max_positions": 4, "buy_confidence_threshold": 75,
+                           "risk_per_trade_pct": 0.35, "min_trading_value_krw": 1_000_000_000},
+        "drift_triggers": [], "cooldown_minutes": 60, "max_daily_triggers": 3,
+        "risk_notes": [], "opportunity_mode": "NORMAL", "scanner_mode": "TREND",
+    }
+    judgment = RegimeJudgment(
+        status=MarketStatus(raw["status"]), regime=Regime(raw["regime"]),
+        confidence=raw["confidence"], reason=raw["reason"],
+        risk_guidance=raw["risk_guidance"], drift_triggers=raw["drift_triggers"],
+        cooldown_minutes=raw["cooldown_minutes"], max_daily_triggers=raw["max_daily_triggers"],
+    )
+    save_last_regime(judgment, path=path)
+
+    assert path.exists()
+    assert not (tmp_path / "last_regime.json.tmp").exists()

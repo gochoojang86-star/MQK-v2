@@ -194,3 +194,54 @@ def test_downgrade_status_progression():
     assert _downgrade_status("GREEN") == "YELLOW"
     assert _downgrade_status("YELLOW") == "RED"
     assert _downgrade_status("RED") == "RED"
+
+
+def test_downgrade_status_unknown_input_clamps_to_red():
+    from agents.drift_detector import _downgrade_status
+    assert _downgrade_status("PURPLE") == "RED"
+
+
+# ── Critical 4: zero/None kospi values must not raise ───────────────────────
+
+def test_compute_metrics_handles_zero_kospi_open():
+    snapshot = {
+        "kospi_current": 2480.0, "kospi_open": 0, "kospi_low": 2470.0,
+        "foreign_net_buy_bln": -100, "advance_count": 500, "decline_count": 400,
+    }
+    metrics = compute_metrics(snapshot)
+    assert metrics["kospi_drop_from_open_pct"] == 0.0
+
+
+def test_compute_metrics_handles_none_kospi_current():
+    snapshot = {
+        "kospi_current": None, "kospi_open": 2530.0, "kospi_low": 2470.0,
+        "foreign_net_buy_bln": -100, "advance_count": 500, "decline_count": 400,
+    }
+    # 핵심: TypeError/ZeroDivisionError 없이 계산이 완료되어야 한다.
+    metrics = compute_metrics(snapshot)
+    assert isinstance(metrics["kospi_drop_from_open_pct"], float)
+    assert isinstance(metrics["kospi_recovery_from_low_pct"], float)
+
+
+# ── Important 5: invalid new_status from Lite LLM must be sanitized ─────────
+
+def test_check_sanitizes_invalid_new_status_on_regime_shift():
+    snapshot = {
+        "kospi_current": 2480.0, "kospi_open": 2530.0, "kospi_low": 2470.0,
+        "foreign_net_buy_bln": -4500, "advance_count": 150, "decline_count": 700,
+    }
+    lite_response = {
+        "drift_judgment": "REGIME_SHIFT",
+        "reason": "급변",
+        "new_status": "PURPLE",
+        "risk_guidance_delta": {},
+        "updated_triggers": [],
+    }
+    detector = RegimeDriftDetector(llm=FakeLiteLLM(lite_response))
+    drift_state = {"last_trigger_time": {}, "today_caution_count": 0, "daily_lite_llm_calls": 0}
+
+    result = detector.check(snapshot, DRIFT_TRIGGERS, cooldown_minutes=60,
+                             max_daily_triggers=3, drift_state=drift_state,
+                             current_status="YELLOW")
+
+    assert result["new_status"] in {"GREEN", "YELLOW", "RED"}

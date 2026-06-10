@@ -59,6 +59,45 @@ def test_load_watchlist_returns_empty_when_missing(tmp_path):
     assert load_watchlist(path=tmp_path / "missing.json") == []
 
 
+# ── Important 6: corrupt JSON state files must not crash loaders ───────────
+
+def test_load_drift_state_returns_default_on_corrupt_json(tmp_path):
+    path = tmp_path / "drift_state.json"
+    path.write_bytes(b"{not valid json!!")
+
+    state = load_drift_state(path=path, today="2026-06-09")
+
+    assert state["date"] == "2026-06-09"
+    assert state["today_caution_count"] == 0
+
+
+def test_load_watchlist_returns_empty_on_corrupt_json(tmp_path):
+    path = tmp_path / "watchlist.json"
+    path.write_bytes(b"{not valid json!!")
+
+    assert load_watchlist(path=path) == []
+
+
+def test_save_drift_state_writes_atomically(tmp_path):
+    path = tmp_path / "drift_state.json"
+    save_drift_state({"date": "2026-06-09", "last_trigger_time": {}, "today_caution_count": 0,
+                       "daily_lite_llm_calls": 0}, path=path)
+
+    assert path.exists()
+    assert not (tmp_path / "drift_state.json.tmp").exists()
+    loaded = load_drift_state(path=path, today="2026-06-09")
+    assert loaded["date"] == "2026-06-09"
+
+
+def test_save_last_regime_dict_writes_atomically(tmp_path):
+    from orchestrator_v3 import save_last_regime_dict, load_drift_state  # noqa: F401
+    path = tmp_path / "last_regime.json"
+    save_last_regime_dict({"status": "RED", "regime": "RISK_OFF"}, path=path)
+
+    assert path.exists()
+    assert not (tmp_path / "last_regime.json.tmp").exists()
+
+
 # ── 오케스트레이터 헬퍼 ──────────────────────────────────────────────────────
 
 def make_orchestrator(tmp_path: Path) -> MQKOrchestratorV3:
@@ -92,6 +131,92 @@ def test_build_context_uses_mil_portfolio_tools(monkeypatch, tmp_path):
     assert ctx["daily_pnl"]["realized_pnl_pct"] == -0.5
     assert ctx["watchlist"] == ["005930"]
     assert ctx["allowed_tools"] == ["get_ohlcv", "get_intraday_candles", "get_flow", "get_news_stock", "get_stock_status"]
+
+
+# ── Critical 3/4: graceful degradation on ToolFailure / bad kospi values ───
+
+def test_collect_drift_snapshot_returns_none_on_tool_failure(monkeypatch, tmp_path):
+    import market_intelligence.market as mil_market
+    from market_intelligence.base import ToolFailure
+
+    def _raise(ctx, phase):
+        raise ToolFailure("circuit breaker open")
+
+    monkeypatch.setattr(mil_market, "get_market_context", _raise)
+    monkeypatch.setattr(mil_market, "get_intraday_index_candles",
+                         lambda ctx, phase: {"candles": []})
+    monkeypatch.setattr(mil_market, "get_sector_breadth",
+                         lambda ctx, phase: {"sectors": []})
+
+    orch = make_orchestrator(tmp_path)
+    assert orch._collect_drift_snapshot() is None
+
+
+def test_collect_drift_snapshot_returns_none_when_kospi_is_none(monkeypatch, tmp_path):
+    import market_intelligence.market as mil_market
+
+    monkeypatch.setattr(mil_market, "get_market_context",
+                         lambda ctx, phase: {"kospi": None, "foreign_net_buy_krw": 0})
+    monkeypatch.setattr(mil_market, "get_intraday_index_candles",
+                         lambda ctx, phase: {"candles": []})
+    monkeypatch.setattr(mil_market, "get_sector_breadth",
+                         lambda ctx, phase: {"sectors": []})
+
+    orch = make_orchestrator(tmp_path)
+    assert orch._collect_drift_snapshot() is None
+
+
+def test_run_intraday_v3_degrades_when_snapshot_unavailable(monkeypatch, tmp_path):
+    import market_intelligence.portfolio as mil_portfolio
+    import market_intelligence.market as mil_market
+    from market_intelligence.base import ToolFailure
+
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [], "position_count": 0})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0, "total_eval_amt": 10_000_000})
+
+    def _raise(ctx, phase):
+        raise ToolFailure("circuit breaker open")
+
+    monkeypatch.setattr(mil_market, "get_market_context", _raise)
+    monkeypatch.setattr(mil_market, "get_intraday_index_candles",
+                         lambda ctx, phase: {"candles": []})
+    monkeypatch.setattr(mil_market, "get_sector_breadth",
+                         lambda ctx, phase: {"sectors": []})
+
+    orch = make_orchestrator(tmp_path)
+
+    class RecordingDriftDetector:
+        def __init__(self):
+            self.calls = 0
+
+        def check(self, **kwargs):
+            self.calls += 1
+            return {}
+
+    orch._drift_detector = RecordingDriftDetector()
+    orch._trading_agent = FakeTradingAgent({"action": "NO_TRADE", "proposals": [], "reason": "관망"})
+
+    regime = {
+        "status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50,
+        "risk_guidance": {"max_positions": 4, "buy_confidence_threshold": 75,
+                           "risk_per_trade_pct": 0.35, "min_trading_value_krw": 1_000_000_000},
+        "drift_triggers": [], "cooldown_minutes": 60, "max_daily_triggers": 3,
+        "timestamp": "2026-06-09T08:45:00",
+    }
+    (tmp_path / "last_regime.json").write_text(json.dumps(regime), encoding="utf-8")
+    (tmp_path / "watchlist.json").write_text(json.dumps({"watchlist": []}), encoding="utf-8")
+
+    monkeypatch.setattr("orchestrator_v3._LAST_REGIME_PATH", tmp_path / "last_regime.json")
+    monkeypatch.setattr("orchestrator_v3._DRIFT_STATE_PATH", tmp_path / "drift_state.json")
+    monkeypatch.setattr("orchestrator_v3._WATCHLIST_PATH", tmp_path / "watchlist.json")
+
+    result = orch.run_intraday_v3()
+
+    assert result["action"] == "NO_TRADE"
+    assert orch._drift_detector.calls == 0
+    assert orch._trading_agent.calls[0][0] == TradingPhase.INTRADAY
 
 
 def test_collect_drift_snapshot_combines_market_tools(monkeypatch, tmp_path):
@@ -304,6 +429,91 @@ def test_process_v3_buy_proposal_executes_order_when_approved(tmp_path, monkeypa
 
     assert result["action"] == "BUY_EXECUTED"
     assert orch._order_manager.buy_calls[0].ticker == "005930"
+
+
+# ── Critical 1/2: malformed proposals must not crash _handle_proposals ─────
+
+def test_handle_proposals_skips_malformed_and_executes_valid(tmp_path, monkeypatch):
+    orch = make_orchestrator(tmp_path)
+    orch._risk_officer = FakeRiskOfficer()
+    orch._position_sizer = FakePositionSizer()
+    orch._telegram = FakeTelegramApproval(approved=True)
+    orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
+    monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
+
+    class FakeSnapshot:
+        current_price = 70000.0
+
+    monkeypatch.setattr(orch, "_market_data", type("MD", (), {"get_snapshot": staticmethod(lambda t: FakeSnapshot())})())
+
+    proposals = [
+        "not_a_dict",
+        {"ticker": "000660", "side": "BUY", "confidence": 80, "reason": "누락"},  # missing stop_loss_price
+        {"ticker": "005930", "side": "BUY", "confidence": 82, "stop_loss_price": 68000, "reason": "정상"},
+    ]
+
+    results = orch._handle_proposals(proposals)
+
+    assert results[0]["action"] == "SKIP"
+    assert results[0]["reason"] == "malformed_proposal"
+    assert results[1]["action"] == "SKIP"
+    assert results[1]["reason"] == "malformed_proposal"
+    assert results[2]["action"] == "BUY_EXECUTED"
+    assert orch._order_manager.buy_calls[0].ticker == "005930"
+
+
+def test_handle_sell_proposals_skips_malformed(tmp_path, monkeypatch):
+    orch = make_orchestrator(tmp_path)
+    orch._journal = type("J", (), {"get_open_positions": staticmethod(lambda: [])})()
+
+    proposals = ["not_a_dict", {"reason": "no ticker key"}]
+    results = orch._handle_sell_proposals(proposals)
+
+    assert all(r["action"] == "SKIP" and r["reason"] == "malformed_proposal" for r in results)
+
+
+# ── Critical 2: non-numeric stop_loss_price coercion ────────────────────────
+
+def test_process_v3_buy_proposal_coerces_string_stop_loss_price(tmp_path, monkeypatch):
+    orch = make_orchestrator(tmp_path)
+    orch._risk_officer = FakeRiskOfficer()
+    orch._position_sizer = FakePositionSizer()
+    orch._telegram = FakeTelegramApproval(approved=True)
+    orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
+    monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
+
+    class FakeSnapshot:
+        current_price = 70000.0
+
+    monkeypatch.setattr(orch, "_market_data", type("MD", (), {"get_snapshot": staticmethod(lambda t: FakeSnapshot())})())
+
+    proposal = {"ticker": "005930", "side": "BUY", "confidence": 82, "stop_loss_price": "68000", "reason": "강한 회복"}
+    result = orch._process_v3_buy_proposal(proposal)
+
+    assert result["action"] == "BUY_EXECUTED"
+
+
+def test_handle_proposals_skips_non_numeric_stop_loss_price(tmp_path, monkeypatch):
+    orch = make_orchestrator(tmp_path)
+    orch._risk_officer = FakeRiskOfficer()
+    orch._position_sizer = FakePositionSizer()
+    orch._telegram = FakeTelegramApproval(approved=True)
+    orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
+    monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
+
+    class FakeSnapshot:
+        current_price = 70000.0
+
+    monkeypatch.setattr(orch, "_market_data", type("MD", (), {"get_snapshot": staticmethod(lambda t: FakeSnapshot())})())
+
+    proposals = [{"ticker": "005930", "side": "BUY", "confidence": 82, "stop_loss_price": "abc", "reason": "이상값"}]
+    results = orch._handle_proposals(proposals)
+
+    assert results[0]["action"] == "SKIP"
+    assert results[0]["reason"] == "malformed_proposal"
 
 
 def test_process_v3_buy_proposal_blocked_by_risk_officer(tmp_path, monkeypatch):

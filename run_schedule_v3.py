@@ -13,9 +13,11 @@ MQK_PHASE 환경변수:
 """
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -29,6 +31,8 @@ logger = logging.getLogger("mqk_v3_schedule")
 
 PHASE = os.environ.get("MQK_PHASE", "")
 
+_LOCK_PATH = Path(__file__).parent / "data" / "mqk_v3.lock"
+
 
 def _guard_trading_day() -> None:
     from codes.market_calendar import check_trading_day, read_cached_trading_day
@@ -41,6 +45,22 @@ def _guard_trading_day() -> None:
     if not cached:
         logger.info("[휴장일 가드] 오늘은 휴장일 — 작동 중단")
         sys.exit(0)
+
+
+def _acquire_lock(path: Path = _LOCK_PATH):
+    """5개 PM2 앱 간 mutable JSON state 동시 read-modify-write를 막기 위한
+    exclusive non-blocking flock. 잠금 실패 시 None을 반환한다.
+
+    반환된 파일 객체를 GC되지 않도록 호출부에서 보유해야 lock이 유지된다.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(path, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
 
 
 def _make_orchestrator():
@@ -106,4 +126,13 @@ if __name__ == "__main__":
         )
         sys.exit(1)
 
-    _RUNNERS[PHASE]()
+    _lock_file = _acquire_lock()
+    if _lock_file is None:
+        logger.warning("이전 인스턴스 실행 중 — 스킵")
+        sys.exit(0)
+
+    try:
+        _RUNNERS[PHASE]()
+    finally:
+        fcntl.flock(_lock_file, fcntl.LOCK_UN)
+        _lock_file.close()

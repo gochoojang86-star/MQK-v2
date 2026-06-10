@@ -6,6 +6,7 @@ Tier1(Full LLM)은 RegimeAgent가 담당. 이 모듈은 5분마다 무료로 dri
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -14,22 +15,36 @@ from config.settings import ModelTier
 from llm.client import LLMClient
 from llm.soul import inject_agent
 
+logger = logging.getLogger("mqk_v3")
+
 _SYSTEM_PROMPT = inject_agent("drift_detector")
 
 _STATUS_ORDER = ["GREEN", "YELLOW", "RED"]
 
 
 def compute_metrics(snapshot: dict[str, Any]) -> dict[str, float]:
-    """시장 스냅샷에서 drift_trigger 평가용 지표를 계산한다 (코드, 무료)."""
-    kospi_current = float(snapshot["kospi_current"])
-    kospi_open = float(snapshot["kospi_open"])
-    kospi_low = float(snapshot["kospi_low"])
+    """시장 스냅샷에서 drift_trigger 평가용 지표를 계산한다 (코드, 무료).
+
+    분모(kospi_open/kospi_low)가 0이거나 값이 None/누락이면 해당 지표는 0.0으로
+    degrade한다 (ZeroDivisionError/TypeError 방지).
+    """
+    kospi_current = snapshot.get("kospi_current")
+    kospi_open = snapshot.get("kospi_open")
+    kospi_low = snapshot.get("kospi_low")
     foreign_net_buy_bln = float(snapshot["foreign_net_buy_bln"])
     advance_count = float(snapshot["advance_count"])
     decline_count = float(snapshot["decline_count"])
 
-    kospi_drop_from_open_pct = (kospi_current - kospi_open) / kospi_open * 100
-    kospi_recovery_from_low_pct = (kospi_current - kospi_low) / kospi_low * 100
+    kospi_current = float(kospi_current) if kospi_current is not None else 0.0
+    kospi_open = float(kospi_open) if kospi_open is not None else 0.0
+    kospi_low = float(kospi_low) if kospi_low is not None else 0.0
+
+    kospi_drop_from_open_pct = (
+        (kospi_current - kospi_open) / kospi_open * 100 if kospi_open else 0.0
+    )
+    kospi_recovery_from_low_pct = (
+        (kospi_current - kospi_low) / kospi_low * 100 if kospi_low else 0.0
+    )
     # foreign_net_buy_bln이 음수(순매도)일 때 양수 값으로 변환
     foreign_net_sell_cumulative_bln = max(-foreign_net_buy_bln, 0.0)
     total = advance_count + decline_count
@@ -84,7 +99,12 @@ def evaluate_triggers(
 
 
 def _downgrade_status(status: str) -> str:
-    """상태를 한 단계 악화시킨다 (GREEN→YELLOW→RED, RED는 유지)."""
+    """상태를 한 단계 악화시킨다 (GREEN→YELLOW→RED, RED는 유지).
+
+    알 수 없는 입력은 가장 보수적인 "RED"로 클램핑한다.
+    """
+    if status not in _STATUS_ORDER:
+        return "RED"
     idx = _STATUS_ORDER.index(status)
     return _STATUS_ORDER[min(idx + 1, len(_STATUS_ORDER) - 1)]
 
@@ -160,6 +180,15 @@ class RegimeDriftDetector:
             new_drift_state["today_caution_count"] += 1
             if new_drift_state["today_caution_count"] >= 3:
                 drift_judgment = "REGIME_SHIFT"
+                result["new_status"] = _downgrade_status(current_status)
+
+        if drift_judgment == "REGIME_SHIFT":
+            new_status = result.get("new_status")
+            if new_status not in {"GREEN", "YELLOW", "RED"}:
+                logger.warning(
+                    f"[drift_detector] Lite LLM이 유효하지 않은 new_status={new_status!r}를 "
+                    f"반환 — _downgrade_status({current_status!r})로 대체"
+                )
                 result["new_status"] = _downgrade_status(current_status)
 
         return {

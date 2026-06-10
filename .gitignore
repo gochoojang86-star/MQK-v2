@@ -30,6 +30,7 @@ data/*.session
 data/*.session-journal
 data/*-cache.json
 data/approved_settings.json
+data/mqk_v3.lock
 
 # IDE
 .idea/

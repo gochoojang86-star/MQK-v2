@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from codes.risk_officer import RiskViolation, TradeProposal
 from config.settings import RISK
 from market_intelligence import market as mil_market
 from market_intelligence import portfolio as mil_portfolio
-from market_intelligence.base import MILContext
+from market_intelligence.base import MILContext, ToolFailure
 from market_intelligence.cache import MILCache
 from market_intelligence.circuit_breaker import CircuitBreaker
 from orchestrator import MQKOrchestrator
@@ -39,32 +40,45 @@ def _default_drift_state(date: str) -> dict:
     return {"date": date, "last_trigger_time": {}, "today_caution_count": 0, "daily_lite_llm_calls": 0}
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
 def load_drift_state(path: Path = _DRIFT_STATE_PATH, today: str | None = None) -> dict:
     today = today or datetime.now().strftime("%Y-%m-%d")
     if not path.exists():
         return _default_drift_state(today)
-    state = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"[orchestrator_v3] drift_state.json 손상 — 기본값 반환: {e}")
+        return _default_drift_state(today)
     if state.get("date") != today:
         return _default_drift_state(today)
     return state
 
 
 def save_drift_state(state: dict, path: Path = _DRIFT_STATE_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_text(path, json.dumps(state, ensure_ascii=False, indent=2))
 
 
 def load_watchlist(path: Path = _WATCHLIST_PATH) -> list[str]:
     if not path.exists():
         return []
-    return json.loads(path.read_text(encoding="utf-8")).get("watchlist", [])
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("watchlist", [])
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"[orchestrator_v3] watchlist.json 손상 — 빈 목록 반환: {e}")
+        return []
 
 
 def save_watchlist(watchlist: list[str], path: Path = _WATCHLIST_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    _atomic_write_text(
+        path,
         json.dumps({"watchlist": watchlist, "updated_at": datetime.now().isoformat()}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
 
 
@@ -115,28 +129,33 @@ class MQKOrchestratorV3(MQKOrchestrator):
 
         drift_state = load_drift_state(path=_DRIFT_STATE_PATH, today=self._today)
         snapshot = self._collect_drift_snapshot()
-        drift_result = self._drift_detector.check(
-            market_snapshot=snapshot,
-            drift_triggers=regime.get("drift_triggers", []),
-            cooldown_minutes=regime.get("cooldown_minutes", 60),
-            max_daily_triggers=regime.get("max_daily_triggers", 3),
-            drift_state=drift_state,
-            current_status=regime.get("status", "YELLOW"),
-            current_regime=regime,
-        )
-        save_drift_state(drift_result["drift_state"], path=_DRIFT_STATE_PATH)
 
         risk_guidance = dict(regime.get("risk_guidance", {}))
-        drift_judgment = drift_result["drift_judgment"]
-        if drift_judgment in {"CAUTION", "REGIME_SHIFT"}:
-            risk_guidance.update(drift_result.get("risk_guidance_delta", {}))
-            self._notify_drift(drift_result)
+        if snapshot is None:
+            logger.warning("[INTRADAY] 드리프트 스냅샷 수집 실패 — 드리프트 체크 스킵, 기존 risk_guidance 유지")
+            drift_judgment = "STABLE"
+        else:
+            drift_result = self._drift_detector.check(
+                market_snapshot=snapshot,
+                drift_triggers=regime.get("drift_triggers", []),
+                cooldown_minutes=regime.get("cooldown_minutes", 60),
+                max_daily_triggers=regime.get("max_daily_triggers", 3),
+                drift_state=drift_state,
+                current_status=regime.get("status", "YELLOW"),
+                current_regime=regime,
+            )
+            save_drift_state(drift_result["drift_state"], path=_DRIFT_STATE_PATH)
 
-        if drift_judgment == "REGIME_SHIFT":
-            regime["status"] = drift_result["new_status"]
-            regime["risk_guidance"] = risk_guidance
-            save_last_regime_dict(regime, path=_LAST_REGIME_PATH)
-            self.run_scan_v3()
+            drift_judgment = drift_result["drift_judgment"]
+            if drift_judgment in {"CAUTION", "REGIME_SHIFT"}:
+                risk_guidance.update(drift_result.get("risk_guidance_delta", {}))
+                self._notify_drift(drift_result)
+
+            if drift_judgment == "REGIME_SHIFT":
+                regime["status"] = drift_result["new_status"]
+                regime["risk_guidance"] = risk_guidance
+                save_last_regime_dict(regime, path=_LAST_REGIME_PATH)
+                self.run_scan_v3()
 
         watchlist = load_watchlist(path=_WATCHLIST_PATH)
         context = self._build_context(
@@ -211,24 +230,41 @@ class MQKOrchestratorV3(MQKOrchestrator):
             },
         )
 
-    def _collect_drift_snapshot(self) -> dict:
-        market_ctx = mil_market.get_market_context(self._mil, "INTRADAY")
-        candles = mil_market.get_intraday_index_candles(self._mil, "INTRADAY").get("candles", [])
-        sectors = mil_market.get_sector_breadth(self._mil, "INTRADAY").get("sectors", [])
+    def _collect_drift_snapshot(self) -> dict | None:
+        """드리프트 스냅샷을 수집한다. 실패/이상 데이터 시 None을 반환한다 (호출부에서 STABLE로 강등).
 
-        kospi_current = market_ctx.get("kospi", 0.0)
-        kospi_open = candles[0]["open"] if candles else kospi_current
-        lows = [c["low"] for c in candles if c.get("low")]
-        kospi_low = min(lows) if lows else kospi_current
+        ToolFailure(circuit-breaker open, KIS API 오류 등)와 예기치 못한 예외를
+        여기서 흡수하여 5분 intraday tick이 죽지 않도록 한다.
+        """
+        try:
+            market_ctx = mil_market.get_market_context(self._mil, "INTRADAY")
+            candles = mil_market.get_intraday_index_candles(self._mil, "INTRADAY").get("candles", [])
+            sectors = mil_market.get_sector_breadth(self._mil, "INTRADAY").get("sectors", [])
 
-        return {
-            "kospi_current": kospi_current,
-            "kospi_open": kospi_open,
-            "kospi_low": kospi_low,
-            "foreign_net_buy_bln": market_ctx.get("foreign_net_buy_krw", 0.0) / 1e8,
-            "advance_count": sum(s.get("advancers", 0) for s in sectors),
-            "decline_count": sum(s.get("decliners", 0) for s in sectors),
-        }
+            kospi_current = market_ctx.get("kospi", 0.0)
+            kospi_open = candles[0]["open"] if candles else kospi_current
+            lows = [c["low"] for c in candles if c.get("low")]
+            kospi_low = min(lows) if lows else kospi_current
+
+            for value in (kospi_current, kospi_open, kospi_low):
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+                    logger.warning(f"[V3 DRIFT] 드리프트 스냅샷의 kospi 값이 비정상: {value!r} — 드리프트 체크 스킵")
+                    return None
+
+            return {
+                "kospi_current": kospi_current,
+                "kospi_open": kospi_open,
+                "kospi_low": kospi_low,
+                "foreign_net_buy_bln": market_ctx.get("foreign_net_buy_krw", 0.0) / 1e8,
+                "advance_count": sum(s.get("advancers", 0) for s in sectors),
+                "decline_count": sum(s.get("decliners", 0) for s in sectors),
+            }
+        except ToolFailure as e:
+            logger.warning(f"[V3 DRIFT] 드리프트 스냅샷 수집 실패(ToolFailure) — 드리프트 체크 스킵: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"[V3 DRIFT] 드리프트 스냅샷 수집 중 예기치 못한 오류 — 드리프트 체크 스킵: {e}")
+            return None
 
     def _notify_drift(self, drift_result: dict) -> None:
         lines = [
@@ -250,18 +286,35 @@ class MQKOrchestratorV3(MQKOrchestrator):
     def _handle_proposals(self, proposals: list[dict]) -> list[dict]:
         results = []
         for p in proposals:
-            if p.get("side") == "BUY":
-                results.append(self._process_v3_buy_proposal(p))
-            elif p.get("side") == "SELL":
-                results.append(self._process_v3_sell_proposal(p))
+            try:
+                if not isinstance(p, dict):
+                    raise TypeError(f"proposal이 dict가 아님: {type(p).__name__}")
+                if p.get("side") == "BUY":
+                    results.append(self._process_v3_buy_proposal(p))
+                elif p.get("side") == "SELL":
+                    results.append(self._process_v3_sell_proposal(p))
+                else:
+                    results.append({"action": "SKIP", "reason": "unknown_side", "proposal": _safe_summary(p)})
+            except (KeyError, TypeError, ValueError, AttributeError) as e:
+                logger.warning(f"[V3 PROPOSAL] 잘못된 proposal 무시: {e} | proposal={_safe_summary(p)}")
+                results.append({"action": "SKIP", "reason": "malformed_proposal", "proposal": _safe_summary(p)})
         return results
 
     def _handle_sell_proposals(self, proposals: list[dict]) -> list[dict]:
-        return [self._process_v3_sell_proposal(p) for p in proposals]
+        results = []
+        for p in proposals:
+            try:
+                if not isinstance(p, dict):
+                    raise TypeError(f"proposal이 dict가 아님: {type(p).__name__}")
+                results.append(self._process_v3_sell_proposal(p))
+            except (KeyError, TypeError, ValueError, AttributeError) as e:
+                logger.warning(f"[V3 SELL PROPOSAL] 잘못된 proposal 무시: {e} | proposal={_safe_summary(p)}")
+                results.append({"action": "SKIP", "reason": "malformed_proposal", "proposal": _safe_summary(p)})
+        return results
 
     def _process_v3_buy_proposal(self, proposal: dict) -> dict:
-        ticker = proposal["ticker"]
-        stop_loss_price = proposal["stop_loss_price"]
+        ticker = str(proposal["ticker"])
+        stop_loss_price = float(proposal["stop_loss_price"])
         snapshot = self._market_data.get_snapshot(ticker)
         entry_price = snapshot.current_price
         atr = self._estimate_atr(ticker)
@@ -355,11 +408,18 @@ def save_last_regime_dict(regime: dict, path: Path = _LAST_REGIME_PATH) -> None:
     """REGIME_SHIFT 후 갱신된 레짐 dict를 last_regime.json에 다시 저장한다."""
     payload = dict(regime)
     payload["timestamp"] = datetime.now().isoformat()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def _drift_status(drift_state: dict) -> str:
     if drift_state.get("today_caution_count", 0) > 0:
         return "CAUTION"
     return "STABLE"
+
+
+def _safe_summary(p) -> str:
+    """malformed proposal을 로그/결과에 안전하게 담기 위한 repr 요약."""
+    try:
+        return repr(p)[:500]
+    except Exception:
+        return "<unrepresentable proposal>"

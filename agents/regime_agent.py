@@ -5,6 +5,8 @@ LLM 사용. 해석/판단 전담.
 from __future__ import annotations
 
 import json
+import logging
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -15,6 +17,8 @@ from codes.risk_officer import clamp_risk_guidance
 from config.settings import ModelTier
 from llm.client import LLMClient
 from llm.soul import inject_agent
+
+logger = logging.getLogger("mqk_v3")
 
 _SYSTEM_PROMPT = inject_agent("regime_agent")
 
@@ -131,11 +135,17 @@ def save_last_regime(judgment: RegimeJudgment, path: Path = _LAST_REGIME_PATH) -
     payload["opportunity_mode"] = judgment.opportunity_mode.value
     payload["scanner_mode"] = judgment.scanner_mode.value
     payload["timestamp"] = datetime.now().isoformat()
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_path, path)
 
 
 def load_last_regime(path: Path = _LAST_REGIME_PATH) -> dict | None:
-    """캐시된 레짐 판단 로드. 파일이 없으면 None."""
+    """캐시된 레짐 판단 로드. 파일이 없거나 손상되었으면 None."""
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"[regime_agent] last_regime.json 손상 — None 반환: {e}")
+        return None
