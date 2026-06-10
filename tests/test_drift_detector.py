@@ -161,6 +161,34 @@ def test_caution_counter_auto_escalates_to_regime_shift():
     assert result["drift_state"]["today_caution_count"] == 3
 
 
+def test_check_clamps_out_of_bounds_risk_guidance_delta():
+    snapshot = {
+        "kospi_current": 2480.0, "kospi_open": 2530.0, "kospi_low": 2470.0,
+        "foreign_net_buy_bln": -4500, "advance_count": 150, "decline_count": 700,
+    }
+    lite_response = {
+        "drift_judgment": "CAUTION",
+        "reason": "극단적 risk_guidance_delta 시도",
+        "new_status": None,
+        "risk_guidance_delta": {
+            "buy_confidence_threshold": 999,   # 안전 상한(95.0) 초과
+            "max_positions": 0,                # 안전 하한(1) 미달
+        },
+        "updated_triggers": [],
+    }
+    detector = RegimeDriftDetector(llm=FakeLiteLLM(lite_response))
+    drift_state = {"last_trigger_time": {}, "today_caution_count": 0, "daily_lite_llm_calls": 0}
+
+    result = detector.check(snapshot, DRIFT_TRIGGERS, cooldown_minutes=60,
+                             max_daily_triggers=3, drift_state=drift_state)
+
+    delta = result["risk_guidance_delta"]
+    # delta semantics 유지: 원래 전달된 키만 존재
+    assert set(delta.keys()) == {"buy_confidence_threshold", "max_positions"}
+    assert delta["buy_confidence_threshold"] == 95.0
+    assert delta["max_positions"] == 1
+
+
 def test_downgrade_status_progression():
     from agents.drift_detector import _downgrade_status
     assert _downgrade_status("GREEN") == "YELLOW"

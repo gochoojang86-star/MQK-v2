@@ -5,9 +5,11 @@ Tier1(Full LLM)은 RegimeAgent가 담당. 이 모듈은 5분마다 무료로 dri
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
+from codes.risk_officer import clamp_risk_guidance
 from config.settings import ModelTier
 from llm.client import LLMClient
 from llm.soul import inject_agent
@@ -87,6 +89,18 @@ def _downgrade_status(status: str) -> str:
     return _STATUS_ORDER[min(idx + 1, len(_STATUS_ORDER) - 1)]
 
 
+def _clamp_risk_guidance_delta(delta: dict[str, Any]) -> dict[str, Any]:
+    """risk_guidance_delta의 partial-dict(delta) 의미를 유지한 채 안전 범위로 클램핑한다.
+
+    clamp_risk_guidance()는 누락된 키에 기본값을 채워 4개 키를 모두 반환하므로,
+    여기서는 클램핑 후 원래 delta에 존재했던 키만 다시 추려낸다.
+    """
+    if not delta:
+        return {}
+    clamped = clamp_risk_guidance(delta)
+    return {key: clamped[key] for key in delta if key in clamped}
+
+
 class RegimeDriftDetector:
     """5분마다 drift_triggers를 체크하고, 발동 시 Lite LLM을 호출한다."""
 
@@ -154,7 +168,7 @@ class RegimeDriftDetector:
             "metrics": metrics,
             "triggered": triggered,
             "new_status": result.get("new_status"),
-            "risk_guidance_delta": result.get("risk_guidance_delta", {}),
+            "risk_guidance_delta": _clamp_risk_guidance_delta(result.get("risk_guidance_delta", {})),
             "updated_triggers": result.get("updated_triggers", []),
             "drift_state": new_drift_state,
         }
@@ -162,8 +176,6 @@ class RegimeDriftDetector:
     def _call_lite_llm(
         self, current_regime: dict, metrics: dict[str, float], triggered: list[dict]
     ) -> dict[str, Any]:
-        import json
-
         user_msg = json.dumps(
             {
                 "current_regime": current_regime,
