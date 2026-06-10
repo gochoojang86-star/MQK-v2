@@ -334,3 +334,37 @@ class TradeJournal:
                 round(len(wins) / len(trades) * 100, 1) if trades else 0.0
             ),
         }
+
+    def today_summary(self) -> dict:
+        """현재 날짜 기준 거래 요약. TradingAgent 사전주입 컨텍스트용."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        summary = self.get_daily_summary(today)
+        closed_today = [
+            t for t in self.get_closed_trades(days=1) if t.get("exit_date") == today
+        ]
+        return {
+            "trade_count": summary["total_trades"],
+            "realized_pnl_pct": round(
+                sum(t.get("pnl_pct") or 0 for t in closed_today), 2
+            ),
+            "win": summary["win_trades"],
+            "loss": summary["loss_trades"],
+            "open_positions": len(self.get_open_positions()),
+            "last_trade": self._last_trade_summary(today),
+        }
+
+    def _last_trade_summary(self, date: str) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT ticker, result, pnl_pct FROM trades "
+                "WHERE exit_date=? ORDER BY id DESC LIMIT 1",
+                (date,),
+            ).fetchone()
+        if row is None:
+            return None
+        r = dict(row)
+        return {
+            "ticker": r["ticker"],
+            "result": r.get("result"),
+            "pct": r.get("pnl_pct") or 0,
+        }

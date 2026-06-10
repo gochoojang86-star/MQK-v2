@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 from pathlib import Path
 from codes.trade_journal import TradeJournal
@@ -136,3 +138,43 @@ def test_daily_summary(journal):
     assert summary["total_pnl"] < 0
     closed = journal.get_closed_trades(days=7)
     assert closed[0]["result"] == "LOSS"
+
+
+def test_today_summary_no_trades(tmp_path):
+    journal = TradeJournal(db_path=tmp_path / "trades.db")
+    summary = journal.today_summary()
+    assert summary["trade_count"] == 0
+    assert summary["realized_pnl_pct"] == 0.0
+    assert summary["win"] == 0
+    assert summary["loss"] == 0
+    assert summary["last_trade"] is None
+
+
+def test_today_summary_with_closed_trade(tmp_path):
+    journal = TradeJournal(db_path=tmp_path / "trades.db")
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    journal.open_trade(
+        ticker="005930",
+        name="삼성전자",
+        entry_date=today,
+        entry_price=70000,
+        quantity=10,
+        stop_loss_price=67000,
+        entry_reason="TREND",
+        confidence=80,
+    )
+    journal.close_trade(
+        ticker="005930",
+        exit_date=today,
+        exit_price=69440,
+        exit_reason="STOP_LOSS",
+    )
+
+    summary = journal.today_summary()
+    assert summary["trade_count"] == 1
+    assert summary["loss"] == 1
+    assert summary["win"] == 0
+    assert summary["last_trade"]["ticker"] == "005930"
+    assert summary["last_trade"]["result"] == "LOSS"
+    assert summary["last_trade"]["pct"] < 0
