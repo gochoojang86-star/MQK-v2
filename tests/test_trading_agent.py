@@ -121,6 +121,54 @@ def test_run_handles_tool_failure(monkeypatch):
     assert "tool_failure" in llm.calls[1][1]
 
 
+def test_run_handles_unexpected_tool_exception(monkeypatch):
+    def crashing_get_flow(ctx, phase, ticker):
+        raise TypeError("get_flow() missing 1 required positional argument")
+
+    monkeypatch.setitem(TOOL_REGISTRY, "get_flow", crashing_get_flow)
+
+    llm = FakeLLMClient([
+        {"next_action": "call_tool", "tool": "get_flow", "tool_args": {"ticker": "005930"}},
+        {"next_action": "final", "action": "NO_TRADE", "reason": "도구 오류"},
+    ])
+    agent = TradingAgent(mil=object(), llm=llm)
+    context = build_context(
+        phase=TradingPhase.INTRADAY, trading_date="2026-06-09",
+        regime={"status": "YELLOW"}, drift_status="STABLE",
+        risk_guidance={}, portfolio_snapshot={}, daily_pnl={}, risk_budget_remaining={},
+        watchlist=["005930"],
+    )
+
+    result = agent.run(TradingPhase.INTRADAY, context)
+
+    assert result["action"] == "NO_TRADE"
+    assert "tool_execution_error" in llm.calls[1][1]
+
+
+def test_run_handles_non_dict_tool_args(monkeypatch):
+    def fake_get_flow(ctx, phase, **kwargs):
+        return {"flow": "ok"}
+
+    monkeypatch.setitem(TOOL_REGISTRY, "get_flow", fake_get_flow)
+
+    llm = FakeLLMClient([
+        {"next_action": "call_tool", "tool": "get_flow", "tool_args": "not_a_dict"},
+        {"next_action": "final", "action": "NO_TRADE", "reason": "잘못된 인자"},
+    ])
+    agent = TradingAgent(mil=object(), llm=llm)
+    context = build_context(
+        phase=TradingPhase.INTRADAY, trading_date="2026-06-09",
+        regime={"status": "YELLOW"}, drift_status="STABLE",
+        risk_guidance={}, portfolio_snapshot={}, daily_pnl={}, risk_budget_remaining={},
+        watchlist=["005930"],
+    )
+
+    result = agent.run(TradingPhase.INTRADAY, context)
+
+    assert result["action"] == "NO_TRADE"
+    assert "invalid_tool_args" in llm.calls[1][1]
+
+
 def test_run_returns_no_trade_after_max_steps():
     llm = FakeLLMClient([
         {"next_action": "call_tool", "tool": "get_open_positions", "tool_args": {}},

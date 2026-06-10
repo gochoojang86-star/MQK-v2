@@ -150,6 +150,9 @@ class TradingAgent:
         if tool_name not in PHASE_TOOLS[phase]:
             return {"error": "tool_not_allowed_in_phase", "tool": tool_name, "phase": phase.value}
 
+        if not isinstance(tool_args, dict):
+            return {"error": "invalid_tool_args", "tool": tool_name}
+
         func = TOOL_REGISTRY[tool_name]
         call_args: dict[str, Any] = dict(tool_args)
         if tool_name in _TOOLS_REQUIRING_USER_ID:
@@ -159,3 +162,5 @@ class TradingAgent:
             return func(self._mil, phase.value, **call_args)
         except ToolFailure as e:
             return {"error": "tool_failure", "tool": tool_name, "message": str(e)}
+        except Exception as e:
+            return {"error": "tool_execution_error", "tool": tool_name, "message": str(e)}
