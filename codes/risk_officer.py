@@ -6,7 +6,7 @@ Agent는 판단하고, Risk Officer는 거부한다.
 """
 from dataclasses import dataclass
 from typing import Optional
-from config.settings import RISK
+from config.settings import RISK, RegimeSafetyBounds, REGIME_SAFETY_BOUNDS
 
 
 class RiskViolation(Exception):
@@ -125,3 +125,36 @@ class RiskOfficer:
             "trading_allowed": daily_loss_pct < self._cfg.max_daily_loss_pct
                                and len(state.open_positions) < self._cfg.max_positions,
         }
+
+
+def clamp_risk_guidance(raw: dict, bounds: RegimeSafetyBounds | None = None) -> dict:
+    """RegimeAgent가 선언한 risk_guidance를 RegimeSafetyBounds 범위로 강제 클램핑한다.
+
+    LLM이 risk_guidance를 누락하거나 극단값을 선언해도
+    이 함수를 통과하면 항상 안전 범위 내의 값만 남는다.
+    """
+    b = bounds or REGIME_SAFETY_BOUNDS
+
+    buy_confidence_threshold = raw.get("buy_confidence_threshold", b.min_buy_confidence_threshold)
+    risk_per_trade_pct = raw.get("risk_per_trade_pct", b.min_risk_per_trade_pct)
+    max_positions = raw.get("max_positions", b.min_positions)
+    min_trading_value_krw = raw.get("min_trading_value_krw", b.min_trading_value_krw)
+
+    return {
+        "buy_confidence_threshold": min(
+            max(buy_confidence_threshold, b.min_buy_confidence_threshold),
+            b.max_buy_confidence_threshold,
+        ),
+        "risk_per_trade_pct": min(
+            max(risk_per_trade_pct, b.min_risk_per_trade_pct),
+            b.max_risk_per_trade_pct,
+        ),
+        "max_positions": int(min(
+            max(max_positions, b.min_positions),
+            b.max_positions,
+        )),
+        "min_trading_value_krw": max(
+            min_trading_value_krw,
+            b.min_trading_value_krw,
+        ),
+    }

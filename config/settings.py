@@ -33,6 +33,22 @@ class RiskConfig:
 
 
 @dataclass(frozen=True)
+class RegimeSafetyBounds:
+    """RegimeAgent가 선언한 risk_guidance 값의 코드 강제 한계.
+
+    LLM이 risk_guidance에 어떤 값을 선언해도 이 범위를 벗어나면
+    clamp_risk_guidance()가 강제로 잘라낸다. v2 RiskConfig가 천장.
+    """
+    min_buy_confidence_threshold: float = 65.0
+    max_buy_confidence_threshold: float = 95.0
+    min_risk_per_trade_pct: float = 0.10
+    max_risk_per_trade_pct: float = 0.50   # RiskConfig.risk_per_trade_pct(0.5)가 천장
+    min_positions: int = 1
+    max_positions: int = 5                  # RiskConfig.max_positions(5)가 천장
+    min_trading_value_krw: int = 5_000_000_000
+
+
+@dataclass(frozen=True)
 class ScannerConfig:
     universe_size: int = 5000             # 전체 종목수
     candidate_count: int = 30            # Scanner 통과 종목수
@@ -92,6 +108,7 @@ class ExecutionConfig:
 
 _RUNTIME_OVERRIDES = load_runtime_overrides()
 RISK       = RiskConfig(**_RUNTIME_OVERRIDES.get("RISK", {}))
+REGIME_SAFETY_BOUNDS = RegimeSafetyBounds()
 SCANNER    = ScannerConfig(**_RUNTIME_OVERRIDES.get("SCANNER", {}))
 REVERSAL   = ReversalConfig(**_RUNTIME_OVERRIDES.get("REVERSAL", {}))
 LLM_CONFIG = LLMConfig(**_RUNTIME_OVERRIDES.get("LLM_CONFIG", {}))
