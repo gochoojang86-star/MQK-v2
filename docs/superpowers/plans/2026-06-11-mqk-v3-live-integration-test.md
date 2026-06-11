@@ -13,11 +13,17 @@
 
 ---
 
+> **사전 발견 이슈 (API 문서 대조, `docs/superpowers/specs/2026-06-11-kis-api-inventory.md`):**
+> ① 코드의 주문 TR(TTTC0802U/0801U)이 2026-05-28 KIS 문서에서 사라짐 — 신규 TR은 TTTC0012U(매수)/TTTC0011U(매도). **0-0에서 최우선 확인.**
+> ② TTTC0084R(미체결 조회)은 모의투자 미지원 — paper 모드 실패 양상 확인 필요 (0-0b).
+
 ## Level 0: 환경 / 인증 (장외 가능)
 
 | # | 항목 | 실행 | 통과 기준 |
 |---|------|------|-----------|
-| 0-1 | 안전모드 확인 | `python -c "from broker.kis_api import KISApi; k=KISApi(); print(k.mode, k._data_mode)"` + `echo $ORDER_DRY_RUN` | 주문 모드 `paper`, `ORDER_DRY_RUN=true` |
+| 0-0 | **주문 TR 구버전 동작 확인 (최우선)** | paper 모드로 소액 지정가 매수 1건 → 즉시 취소 | 구 TR(VTTC0802U) 정상 접수되면 통과(폐기 예고 여부 응답 메시지 확인). 실패 시 **신 TR(VTTC0012U/0011U)로 마이그레이션 후 테스트 재개** — 다른 모든 항목보다 우선 |
+| 0-0b | 미체결 조회 모의 미지원 확인 | paper 모드에서 `VTTC0084R` 경로 1회 호출 | 실패 시 빈 목록 graceful 처리 확인, "실전 전용"으로 기록 |
+| 0-1 | 안전모드 확인 | `python -c "from broker.kis_api import KISApi; k=KISApi(); print(k.mode, k._data_mode)"` + `echo $ORDER_DRY_RUN` | 주문 모드 `paper`, `ORDER_DRY_RUN=true`, 데이터 모드 `real` (MIL 11개 도구가 모의 미지원이므로 real 필수) |
 | 0-2 | .env 필수 키 | KIS app key/secret, 계좌번호, `KIS_HTS_ID`, LLM API 키, Telegram 토큰/챗ID, `KIS_MCP_URL` 존재 확인 | 전부 비어있지 않음 |
 | 0-3 | KIS 토큰 발급 | `KISApi()` 생성 후 아무 시세 1건 호출 | HTTP 200, 토큰 캐시 생성 |
 | 0-4 | KIS MCP 서버 | `python -c "from broker.kis_mcp_client import KISMCPClient; print(KISMCPClient().available())"` | `True` (PM2 `mqk-kis-mcp` 기동 상태) — `False`면 REST 폴백 경로로 진행하되 기록 |
