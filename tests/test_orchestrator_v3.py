@@ -535,3 +535,80 @@ def test_process_v3_buy_proposal_blocked_by_risk_officer(tmp_path, monkeypatch):
 
     assert result["action"] == "BLOCKED"
     assert orch._order_manager.buy_calls == []
+
+
+# ── 매수가능현금 가드 (insufficient_cash) ───────────────────────────────────
+
+class FakeKISApiBuyable:
+    def __init__(self, buyable_cash_krw):
+        self._buyable_cash_krw = buyable_cash_krw
+        self.calls = []
+
+    def get_buyable_cash(self, ticker="", price=0):
+        self.calls.append((ticker, price))
+        return {"buyable_cash_krw": self._buyable_cash_krw, "max_buy_qty": 999}
+
+
+class FakeKISApiBuyableError:
+    def get_buyable_cash(self, ticker="", price=0):
+        raise RuntimeError("network error")
+
+
+def _setup_buy_proposal_orch(tmp_path, monkeypatch):
+    orch = make_orchestrator(tmp_path)
+    orch._risk_officer = FakeRiskOfficer()
+    orch._position_sizer = FakePositionSizer()
+    orch._telegram = FakeTelegramApproval(approved=True)
+    orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
+    monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
+
+    class FakeSnapshot:
+        current_price = 70000.0
+
+    monkeypatch.setattr(orch, "_market_data", type("MD", (), {"get_snapshot": staticmethod(lambda t: FakeSnapshot())})())
+    return orch
+
+
+def test_process_v3_buy_proposal_blocked_when_buyable_cash_insufficient(tmp_path, monkeypatch):
+    orch = _setup_buy_proposal_orch(tmp_path, monkeypatch)
+    # FakePositionSizer: quantity=10, entry_price=70000 → order value 700,000
+    orch._kis_api = FakeKISApiBuyable(buyable_cash_krw=500_000)
+
+    proposal = {"ticker": "005930", "side": "BUY", "confidence": 82, "stop_loss_price": 68000, "reason": "강한 회복"}
+    result = orch._process_v3_buy_proposal(proposal)
+
+    assert result["action"] == "BLOCKED"
+    assert result["reason"] == "insufficient_cash"
+    assert orch._order_manager.buy_calls == []
+
+
+def test_process_v3_buy_proposal_proceeds_when_buyable_cash_ample(tmp_path, monkeypatch):
+    orch = _setup_buy_proposal_orch(tmp_path, monkeypatch)
+    orch._kis_api = FakeKISApiBuyable(buyable_cash_krw=10_000_000)
+
+    proposal = {"ticker": "005930", "side": "BUY", "confidence": 82, "stop_loss_price": 68000, "reason": "강한 회복"}
+    result = orch._process_v3_buy_proposal(proposal)
+
+    assert result["action"] == "BUY_EXECUTED"
+    assert orch._order_manager.buy_calls[0].ticker == "005930"
+
+
+def test_process_v3_buy_proposal_proceeds_when_buyable_cash_check_fails(tmp_path, monkeypatch):
+    orch = _setup_buy_proposal_orch(tmp_path, monkeypatch)
+    orch._kis_api = FakeKISApiBuyableError()
+
+    proposal = {"ticker": "005930", "side": "BUY", "confidence": 82, "stop_loss_price": 68000, "reason": "강한 회복"}
+    result = orch._process_v3_buy_proposal(proposal)
+
+    assert result["action"] == "BUY_EXECUTED"
+
+
+def test_process_v3_buy_proposal_proceeds_when_kis_api_attribute_absent(tmp_path, monkeypatch):
+    orch = _setup_buy_proposal_orch(tmp_path, monkeypatch)
+    # orch._kis_api intentionally not set (mirrors make_orchestrator default)
+
+    proposal = {"ticker": "005930", "side": "BUY", "confidence": 82, "stop_loss_price": 68000, "reason": "강한 회복"}
+    result = orch._process_v3_buy_proposal(proposal)
+
+    assert result["action"] == "BUY_EXECUTED"

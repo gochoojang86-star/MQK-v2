@@ -970,6 +970,80 @@ class KISApi:
         except Exception:
             return []
 
+    def get_buyable_cash(self, ticker: str = "", price: float = 0) -> Optional[dict]:
+        """매수가능조회 (TTTC8908R/VTTC8908R).
+
+        주문 모드(`_cfg.mode`)와 동일한 계좌를 조회한다 (주문이 실제로
+        체결될 계좌의 가용 현금을 확인해야 의미가 있다).
+
+        조회 실패 시 None을 반환한다 (raise하지 않음). 호출자는 None을
+        "확인 불가"로 간주하고 가드를 건너뛰며 경고를 남긴다 — 이 가드는
+        보조 안전망이고 주문 자체는 KIS가 최종 거부한다 (fail-open).
+        """
+        order_mode = self._cfg.mode
+        url = f"{self._base_url_for(order_mode)}/uapi/domestic-stock/v1/trading/inquire-psbl-order"
+        tr_id = "TTTC8908R" if order_mode == KISMode.REAL else "VTTC8908R"
+        acct_parts = self._account_no_for(order_mode).split("-")
+        params = {
+            "CANO": acct_parts[0],
+            "ACNT_PRDT_CD": acct_parts[1],
+            "PDNO": ticker,
+            "ORD_UNPR": str(int(price)) if price else "",
+            "ORD_DVSN": "01",
+            "CMA_EVLU_AMT_ICLD_YN": "N",
+            "OVRS_ICLD_YN": "N",
+        }
+        try:
+            resp = requests.get(url, headers=self._headers(tr_id, mode=order_mode), params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                logger.warning("KIS buyable cash query failed: %s", data.get("msg1", ""))
+                return None
+            output = data.get("output", {}) or {}
+            return {
+                "buyable_cash_krw": self._to_float_safe(output.get("ord_psbl_cash")),
+                "max_buy_qty": int(self._to_float_safe(output.get("max_buy_qty"))),
+            }
+        except Exception as exc:
+            logger.warning("KIS buyable cash query failed: %s", exc)
+            return None
+
+    def get_daily_minute_candles(self, ticker: str, date: str, time: str = "130000") -> list[dict]:
+        """주식일별분봉조회 (FHKST03010230) - 회고/백테스트용 유틸.
+
+        지정 일자(date, YYYYMMDD)의 특정 시각(time, HHMMSS) 기준
+        직전 분봉들을 반환한다.
+        """
+        url = f"{self._base_url_for(self._data_mode)}/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice"
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": ticker,
+            "FID_INPUT_DATE_1": date,
+            "FID_INPUT_HOUR_1": time,
+            "FID_PW_DATA_INCU_YN": "Y",
+            "FID_FAKE_TICK_INCU_YN": "",
+        }
+        resp = self._get_with_retry(
+            url,
+            headers=self._headers("FHKST03010230", mode=self._data_mode),
+            params=params,
+            timeout=10,
+        )
+        rows = resp.json().get("output2", [])
+        return [
+            {
+                "date": row.get("stck_bsop_date"),
+                "time": row.get("stck_cntg_hour"),
+                "open": self._to_float_safe(row.get("stck_oprc")),
+                "high": self._to_float_safe(row.get("stck_hgpr")),
+                "low": self._to_float_safe(row.get("stck_lwpr")),
+                "close": self._to_float_safe(row.get("stck_prpr")),
+                "volume": self._to_float_safe(row.get("cntg_vol")),
+            }
+            for row in rows
+        ]
+
     def get_balance(self) -> dict:
         """잔고 조회"""
         account_mode = self._data_mode

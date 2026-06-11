@@ -456,3 +456,192 @@ def test_raw_get_calls_kis_api_with_tr_id_and_returns_json(tmp_path, monkeypatch
     assert url.endswith("/uapi/domestic-stock/v1/quotations/inquire-index-category-price")
     assert headers["tr_id"] == "FHPUP02140000"
     assert params == {"FID_COND_MRKT_DIV_CODE": "U"}
+
+
+# ── get_buyable_cash (TTTC8908R / VTTC8908R) ────────────────────────────────
+
+def test_get_buyable_cash_parses_response_in_paper_mode(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "rt_cd": "0",
+                "msg1": "모의투자 조회가 완료되었습니다.",
+                "output": {
+                    "ord_psbl_cash": "48567776",
+                    "max_buy_qty": "209",
+                },
+            }
+
+    def fake_get(url, headers, params, timeout):
+        calls.append((url, headers, params, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr("broker.kis_api.requests.get", fake_get)
+    monkeypatch.setattr(KISApi, "_get_token", lambda self, mode=None: "token")
+
+    api = KISApi(config=FakeKISConfig(), token_cache_path=tmp_path / "token.json")
+    result = api.get_buyable_cash(ticker="005930", price=70000)
+
+    assert result == {"buyable_cash_krw": 48567776.0, "max_buy_qty": 209}
+    url, headers, params, timeout = calls[0]
+    assert url.endswith("/uapi/domestic-stock/v1/trading/inquire-psbl-order")
+    assert headers["tr_id"] == "VTTC8908R"
+    assert params["CANO"] == "12345678"
+    assert params["ACNT_PRDT_CD"] == "01"
+    assert params["PDNO"] == "005930"
+    assert params["ORD_UNPR"] == "70000"
+    assert params["ORD_DVSN"] == "01"
+    assert params["CMA_EVLU_AMT_ICLD_YN"] == "N"
+    assert params["OVRS_ICLD_YN"] == "N"
+
+
+def test_get_buyable_cash_uses_real_tr_id_when_order_mode_real(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"rt_cd": "0", "output": {"ord_psbl_cash": "1000000", "max_buy_qty": "10"}}
+
+    def fake_get(url, headers, params, timeout):
+        calls.append((url, headers, params, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr("broker.kis_api.requests.get", fake_get)
+    monkeypatch.setattr(KISApi, "_get_token", lambda self, mode=None: "token")
+
+    config = FakeKISConfig(mode="real")
+    api = KISApi(config=config, token_cache_path=tmp_path / "token.json")
+    api.get_buyable_cash(ticker="005930", price=70000)
+
+    assert calls[0][1]["tr_id"] == "TTTC8908R"
+
+
+def test_get_buyable_cash_returns_none_on_error_response(tmp_path, monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"rt_cd": "1", "msg1": "조회 실패"}
+
+    monkeypatch.setattr("broker.kis_api.requests.get", lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(KISApi, "_get_token", lambda self, mode=None: "token")
+
+    api = KISApi(config=FakeKISConfig(), token_cache_path=tmp_path / "token.json")
+    result = api.get_buyable_cash()
+
+    assert result is None
+
+
+def test_get_buyable_cash_returns_none_on_request_exception(tmp_path, monkeypatch):
+    import requests
+
+    def fake_get(*args, **kwargs):
+        raise requests.RequestException("network error")
+
+    monkeypatch.setattr("broker.kis_api.requests.get", fake_get)
+    monkeypatch.setattr(KISApi, "_get_token", lambda self, mode=None: "token")
+
+    api = KISApi(config=FakeKISConfig(), token_cache_path=tmp_path / "token.json")
+    result = api.get_buyable_cash(ticker="005930", price=70000)
+
+    assert result is None
+
+
+def test_get_buyable_cash_with_empty_ticker_and_price(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"rt_cd": "0", "output": {"ord_psbl_cash": "1000000", "max_buy_qty": "0"}}
+
+    def fake_get(url, headers, params, timeout):
+        calls.append((url, headers, params, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr("broker.kis_api.requests.get", fake_get)
+    monkeypatch.setattr(KISApi, "_get_token", lambda self, mode=None: "token")
+
+    api = KISApi(config=FakeKISConfig(), token_cache_path=tmp_path / "token.json")
+    result = api.get_buyable_cash()
+
+    assert result == {"buyable_cash_krw": 1000000.0, "max_buy_qty": 0}
+    params = calls[0][2]
+    assert params["PDNO"] == ""
+    assert params["ORD_UNPR"] == ""
+
+
+# ── get_daily_minute_candles (FHKST03010230) ────────────────────────────────
+
+def test_get_daily_minute_candles_parses_output2(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "rt_cd": "0",
+                "output2": [
+                    {
+                        "stck_bsop_date": "20260611",
+                        "stck_cntg_hour": "130000",
+                        "stck_oprc": "299500",
+                        "stck_hgpr": "300000",
+                        "stck_lwpr": "299500",
+                        "stck_prpr": "300000",
+                        "cntg_vol": "18757",
+                    },
+                    {
+                        "stck_bsop_date": "20260611",
+                        "stck_cntg_hour": "125900",
+                        "stck_oprc": "299000",
+                        "stck_hgpr": "299500",
+                        "stck_lwpr": "298900",
+                        "stck_prpr": "299500",
+                        "cntg_vol": "5000",
+                    },
+                ],
+            }
+
+    def fake_get(url, headers, params, timeout):
+        calls.append((url, headers, params, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr("broker.kis_api.requests.get", fake_get)
+    monkeypatch.setattr(KISApi, "_get_token", lambda self, mode=None: "token")
+
+    api = KISApi(config=FakeKISConfig(), token_cache_path=tmp_path / "token.json")
+    candles = api.get_daily_minute_candles("005930", "20260611", time="130000")
+
+    assert len(candles) == 2
+    assert candles[0] == {
+        "date": "20260611",
+        "time": "130000",
+        "open": 299500.0,
+        "high": 300000.0,
+        "low": 299500.0,
+        "close": 300000.0,
+        "volume": 18757.0,
+    }
+    url, headers, params, timeout = calls[0]
+    assert url.endswith("/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice")
+    assert headers["tr_id"] == "FHKST03010230"
+    assert params["FID_COND_MRKT_DIV_CODE"] == "J"
+    assert params["FID_INPUT_ISCD"] == "005930"
+    assert params["FID_INPUT_DATE_1"] == "20260611"
+    assert params["FID_INPUT_HOUR_1"] == "130000"
+    assert params["FID_PW_DATA_INCU_YN"] == "Y"
+    assert params["FID_FAKE_TICK_INCU_YN"] == ""

@@ -312,6 +312,17 @@ class MQKOrchestratorV3(MQKOrchestrator):
                 results.append({"action": "SKIP", "reason": "malformed_proposal", "proposal": _safe_summary(p)})
         return results
 
+    def _kis_buyable_cash_safe(self, ticker: str, price: float) -> dict | None:
+        """매수가능현금 조회 (실패/미구성 시 None - 가드 스킵, fail-open)."""
+        kis_api = getattr(self, "_kis_api", None)
+        if kis_api is None or not hasattr(kis_api, "get_buyable_cash"):
+            return None
+        try:
+            return kis_api.get_buyable_cash(ticker=ticker, price=price)
+        except Exception as exc:
+            logger.warning(f"[V3 CASH GUARD] {ticker}: 매수가능금액 조회 실패 - {exc}")
+            return None
+
     def _process_v3_buy_proposal(self, proposal: dict) -> dict:
         ticker = str(proposal["ticker"])
         stop_loss_price = float(proposal["stop_loss_price"])
@@ -327,6 +338,18 @@ class MQKOrchestratorV3(MQKOrchestrator):
             total_capital=getattr(portfolio_state, "total_capital", 0),
             support_stop_price=stop_loss_price,
         )
+
+        buyable = self._kis_buyable_cash_safe(ticker, entry_price)
+        if buyable is not None:
+            order_value = entry_price * sizing.quantity
+            if order_value > buyable["buyable_cash_krw"]:
+                logger.warning(
+                    f"[V3 CASH GUARD] {ticker}: 주문금액({order_value:,.0f})이 "
+                    f"매수가능금액({buyable['buyable_cash_krw']:,.0f})을 초과 — 주문 차단"
+                )
+                return {"action": "BLOCKED", "ticker": ticker, "reason": "insufficient_cash"}
+        else:
+            logger.warning(f"[V3 CASH GUARD] {ticker}: 매수가능금액 확인 불가 — 가드 스킵 후 진행")
 
         trade_proposal = TradeProposal(
             ticker=ticker,
