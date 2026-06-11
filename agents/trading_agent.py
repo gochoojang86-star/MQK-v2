@@ -47,6 +47,7 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "get_intraday_candles": stock.get_intraday_candles,
     "get_flow": stock.get_flow,
     "get_news_stock": stock.get_news_stock,
+    "get_fundamentals": stock.get_fundamentals,
     "get_stock_status": risk_filter.get_stock_status,
     "get_event_schedule": risk_filter.get_event_schedule,
     "get_open_positions": portfolio.get_open_positions,
@@ -61,7 +62,7 @@ PHASE_TOOLS: dict[TradingPhase, list[str]] = {
     TradingPhase.SCAN: [
         "get_market_context", "get_sector_breadth", "get_intraday_index_candles", "get_news_market",
         "psearch_title", "psearch_result", "get_top_movers",
-        "get_ohlcv", "get_flow", "get_stock_status", "get_news_stock",
+        "get_ohlcv", "get_flow", "get_stock_status", "get_news_stock", "get_fundamentals",
     ],
     TradingPhase.INTRADAY: [
         "get_ohlcv", "get_intraday_candles", "get_flow", "get_news_stock", "get_stock_status",

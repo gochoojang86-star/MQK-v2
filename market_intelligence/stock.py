@@ -188,6 +188,122 @@ def get_news_stock(ctx: MILContext, phase: str, ticker: str) -> dict:
     return ctx.cached_call("get_news_stock", phase, {"ticker": ticker}, fetch)
 
 
+def get_fundamentals(ctx: MILContext, phase: str, ticker: str) -> dict:
+    """SEPA 펀더멘털 스크리닝용 재무 데이터 4종 조합.
+
+    재무비율/손익계산서/대차대조표/종목투자의견 각각 개별 try/except 처리하여
+    한 API 실패가 다른 섹션에 영향을 주지 않는다 (결측은 missing_fields에 기록,
+    0으로 해석하지 않는다).
+
+    손익계산서/대차대조표 단위는 억원(100mln KRW) — 필드명에 _100mln 접미사로 명시.
+    """
+
+    def fetch():
+        result = {"ticker": ticker}
+        missing_fields: list[str] = []
+
+        common_params = {
+            "FID_DIV_CLS_CODE": "0",
+            "fid_cond_mrkt_div_code": "J",
+            "fid_input_iscd": ticker,
+        }
+
+        try:
+            raw = ctx.kis_api.raw_get(
+                "FHKST66430300",
+                "domestic-stock/v1/finance/financial-ratio",
+                common_params,
+            )
+            result["financial_ratios"] = [
+                {
+                    "period": row.get("stac_yymm"),
+                    "revenue_growth_rate_pct": _to_float(row.get("grs")),
+                    "operating_profit_growth_rate_pct": _to_float(row.get("bsop_prfi_inrt")),
+                    "net_income_growth_rate_pct": _to_float(row.get("ntin_inrt")),
+                    "roe_pct": _to_float(row.get("roe_val")),
+                    "eps": _to_float(row.get("eps")),
+                    "bps": _to_float(row.get("bps")),
+                    "debt_ratio_pct": _to_float(row.get("lblt_rate")),
+                }
+                for row in raw.get("output", [])[:4]
+            ]
+        except Exception:
+            result["financial_ratios"] = []
+            missing_fields.append("financial_ratios")
+
+        try:
+            raw = ctx.kis_api.raw_get(
+                "FHKST66430200",
+                "domestic-stock/v1/finance/income-statement",
+                common_params,
+            )
+            result["income_statements"] = [
+                {
+                    "period": row.get("stac_yymm"),
+                    "revenue_100mln": _to_float(row.get("sale_account")),
+                    "operating_profit_100mln": _to_float(row.get("op_prfi")),
+                    "net_income_100mln": _to_float(row.get("thtr_ntin")),
+                }
+                for row in raw.get("output", [])[:4]
+            ]
+        except Exception:
+            result["income_statements"] = []
+            missing_fields.append("income_statements")
+
+        try:
+            raw = ctx.kis_api.raw_get(
+                "FHKST66430100",
+                "domestic-stock/v1/finance/balance-sheet",
+                common_params,
+            )
+            result["balance_sheets"] = [
+                {
+                    "period": row.get("stac_yymm"),
+                    "total_assets_100mln": _to_float(row.get("total_aset")),
+                    "total_liabilities_100mln": _to_float(row.get("total_lblt")),
+                    "total_equity_100mln": _to_float(row.get("total_cptl")),
+                }
+                for row in raw.get("output", [])[:4]
+            ]
+        except Exception:
+            result["balance_sheets"] = []
+            missing_fields.append("balance_sheets")
+
+        try:
+            today = datetime.now()
+            six_months_ago = today - timedelta(days=180)
+            raw = ctx.kis_api.raw_get(
+                "FHKST663300C0",
+                "domestic-stock/v1/quotations/invest-opinion",
+                {
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_COND_SCR_DIV_CODE": "16633",
+                    "FID_INPUT_ISCD": ticker,
+                    "FID_INPUT_DATE_1": "00" + six_months_ago.strftime("%Y%m%d"),
+                    "FID_INPUT_DATE_2": "00" + today.strftime("%Y%m%d"),
+                },
+            )
+            result["analyst_opinions"] = [
+                {
+                    "date": row.get("stck_bsop_date"),
+                    "opinion": row.get("invt_opnn"),
+                    "firm": row.get("mbcr_name"),
+                    "target_price": _to_float(row.get("hts_goal_prc")),
+                }
+                for row in raw.get("output", [])[:10]
+            ]
+        except Exception:
+            result["analyst_opinions"] = []
+            missing_fields.append("analyst_opinions")
+
+        if missing_fields:
+            result["missing_fields"] = missing_fields
+
+        return result
+
+    return ctx.cached_call("get_fundamentals", phase, {"ticker": ticker}, fetch)
+
+
 def _to_float(value) -> float:
     if value in (None, ""):
         return 0.0

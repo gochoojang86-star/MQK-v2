@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MIL 16개 도구 라이브 스모크 테스트.
+"""MIL 17개 도구 라이브 스모크 테스트.
 
 실제 KIS API를 호출해 각 도구가 실데이터를 올바르게 가져오는지 검증한다.
 사용: .venv/bin/python tools/live_smoke_mil.py [--ticker 005930]
@@ -92,6 +92,13 @@ def run_checks(ctx: MILContext, ticker: str, hts_id: str) -> list[tuple[str, str
           lambda o: (bool(o), f"keys={sorted(o.keys())[:6]}"))
     check("get_news_stock", lambda: stock.get_news_stock(ctx, "SCAN", ticker),
           lambda o: (o.get("ticker") == ticker, f"headlines={len(o.get('headlines', []))}"))
+    check("get_fundamentals", lambda: stock.get_fundamentals(ctx, "SCAN", ticker),
+          lambda o: (len(o.get("financial_ratios", [])) > 0,
+                     f"ratios={len(o.get('financial_ratios', []))} "
+                     f"income={len(o.get('income_statements', []))} "
+                     f"balance={len(o.get('balance_sheets', []))} "
+                     f"opinions={len(o.get('analyst_opinions', []))} "
+                     f"missing={o.get('missing_fields')}"))
 
     # ── screening ──
     psearch = check("psearch_title", lambda: screening.psearch_title(ctx, "SCAN", hts_id),

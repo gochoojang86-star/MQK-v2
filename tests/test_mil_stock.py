@@ -6,6 +6,7 @@ from market_intelligence.stock import (
     get_intraday_candles,
     get_flow,
     get_news_stock,
+    get_fundamentals,
 )
 
 
@@ -136,3 +137,100 @@ def test_get_ohlcv_caches_per_ticker_and_period():
     get_ohlcv(ctx, "SCAN", ticker="005930", period=60)
     get_ohlcv(ctx, "SCAN", ticker="005930", period=60)
     assert len(ctx.kis_api.raw_get_calls) == 1
+
+
+def _fundamentals_responses():
+    return {
+        "FHKST66430300": {
+            "rt_cd": "0",
+            "output": [
+                {"stac_yymm": "202603", "grs": "69.1600", "bsop_prfi_inrt": "756.1000",
+                 "ntin_inrt": "474.3200", "roe_val": "19.16", "eps": "6993.00",
+                 "sps": "57655", "bps": "71907.00", "rsrv_rate": "50140.0200",
+                 "lblt_rate": "30.1500"},
+            ],
+        },
+        "FHKST66430200": {
+            "rt_cd": "0",
+            "output": [
+                {"stac_yymm": "202603", "sale_account": "1338734.00",
+                 "sale_cost": "519602.00", "sale_totl_prfi": "819132",
+                 "bsop_prti": "572328.00", "op_prfi": "588284.00",
+                 "thtr_ntin": "472253.00"},
+            ],
+        },
+        "FHKST66430100": {
+            "rt_cd": "0",
+            "output": [
+                {"stac_yymm": "202603", "cras": "3062201.00", "fxas": "3271195.00",
+                 "total_aset": "6333396.00", "flow_lblt": "1206038.00",
+                 "fix_lblt": "260999.00", "total_lblt": "1467036.00",
+                 "total_cptl": "4866360.00"},
+            ],
+        },
+        "FHKST663300C0": {
+            "rt_cd": "0",
+            "output": [
+                {"stck_bsop_date": "20260610", "invt_opnn": "BUY",
+                 "mbcr_name": "현대차", "hts_goal_prc": "440000",
+                 "stck_prdy_clpr": "322000"},
+            ],
+        },
+    }
+
+
+def test_get_fundamentals_parses_all_four_sections():
+    ctx = make_ctx(raw_responses=_fundamentals_responses())
+    result = get_fundamentals(ctx, "SCAN", ticker="005930")
+
+    assert result["ticker"] == "005930"
+
+    fr = result["financial_ratios"][0]
+    assert fr["period"] == "202603"
+    assert fr["revenue_growth_rate_pct"] == 69.16
+    assert fr["operating_profit_growth_rate_pct"] == 756.10
+    assert fr["roe_pct"] == 19.16
+    assert fr["eps"] == 6993.0
+    assert fr["bps"] == 71907.0
+    assert fr["debt_ratio_pct"] == 30.15
+
+    inc = result["income_statements"][0]
+    assert inc["period"] == "202603"
+    assert inc["revenue_100mln"] == 1338734.0
+    assert inc["operating_profit_100mln"] == 588284.0
+    assert inc["net_income_100mln"] == 472253.0
+
+    bs = result["balance_sheets"][0]
+    assert bs["period"] == "202603"
+    assert bs["total_assets_100mln"] == 6333396.0
+    assert bs["total_liabilities_100mln"] == 1467036.0
+    assert bs["total_equity_100mln"] == 4866360.0
+
+    op = result["analyst_opinions"][0]
+    assert op["date"] == "20260610"
+    assert op["opinion"] == "BUY"
+    assert op["firm"] == "현대차"
+    assert op["target_price"] == 440000.0
+
+    assert "missing_fields" not in result
+
+
+def test_get_fundamentals_one_section_failure_records_missing_fields():
+    responses = _fundamentals_responses()
+    del responses["FHKST66430200"]  # income-statement 호출 시 KeyError 발생 -> 실패 처리
+
+    ctx = make_ctx(raw_responses=responses)
+    result = get_fundamentals(ctx, "SCAN", ticker="005930")
+
+    assert result["income_statements"] == []
+    assert "income_statements" in result["missing_fields"]
+    assert result["financial_ratios"]
+    assert result["balance_sheets"]
+    assert result["analyst_opinions"]
+
+
+def test_get_fundamentals_caches_per_ticker():
+    ctx = make_ctx(raw_responses=_fundamentals_responses())
+    get_fundamentals(ctx, "SCAN", ticker="005930")
+    get_fundamentals(ctx, "SCAN", ticker="005930")
+    assert len(ctx.kis_api.raw_get_calls) == 4

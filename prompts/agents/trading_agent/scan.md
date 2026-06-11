@@ -18,6 +18,8 @@
 3. 후보별 `get_stock_status`로 VI/관리종목/거래정지/상하한가(`is_limit_up`,
    `is_limit_down`) 확인 → 문제 있으면 후보에서 제외
 4. 후보별 `get_ohlcv` + `get_flow` + `get_news_stock`으로 분석
+4-1. SEPA 펀더멘털 스크리닝이 필요하면 `get_fundamentals`로 재무비율(매출/영업이익
+     성장률, ROE, EPS, BPS, 부채비율), 손익계산서, 대차대조표, 애널리스트 투자의견 확인
 5. `risk_guidance.min_trading_value_krw` 미만 거래대금 종목은 제외
 6. watchlist 확정 (최대 10개, `risk_budget_remaining.positions_left` 고려)
 
