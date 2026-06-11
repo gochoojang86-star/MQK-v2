@@ -61,7 +61,7 @@ def test_get_sector_breadth_parses_output():
     ctx = make_ctx(
         raw_responses={
             "FHPUP02140000": {
-                "output": [
+                "output2": [
                     {
                         "hts_kor_isnm": "전기전자", "bstp_cls_code": "031",
                         "bstp_nmix_prdy_ctrt": "1.20",

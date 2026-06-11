@@ -98,12 +98,12 @@ def test_get_flow_parses_investor_breakdown():
     ctx = make_ctx(
         raw_responses={
             "FHPTJ04160001": {
-                "output": [
+                "output2": [
                     {"stck_bsop_date": "20260609", "stck_clpr": "70000",
                      "frgn_ntby_qty": "-10000", "orgn_ntby_qty": "5000",
-                     "prsn_ntby_qty": "5000", "invtrt_ntby_qty": "1000",
-                     "prvt_fund_ntby_qty": "500", "bank_ntby_qty": "100",
-                     "insu_ntby_qty": "200", "pe_fund_ntby_qty": "300"},
+                     "prsn_ntby_qty": "5000", "ivtr_ntby_qty": "1000",
+                     "pe_fund_ntby_vol": "500", "bank_ntby_qty": "100",
+                     "insu_ntby_qty": "200", "fund_ntby_qty": "300"},
                 ],
             },
         },

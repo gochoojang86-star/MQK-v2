@@ -45,6 +45,9 @@ def get_market_context(ctx: MILContext, phase: str) -> dict:
 def get_sector_breadth(ctx: MILContext, phase: str) -> dict:
     """업종별 지수·등락률 + 상승/하락/보합/상한/하한 종목 수 (브레드스 통합)."""
 
+    # 합계/규모별 지수 행 — 산업별 행만 남기지 않으면 breadth 합산이 이중계산된다.
+    _AGGREGATE_CODES = {"0001", "0002", "0003", "0004"}  # 종합/대형주/중형주/소형주
+
     def fetch():
         raw = ctx.kis_api.raw_get(
             "FHPUP02140000",
@@ -53,7 +56,7 @@ def get_sector_breadth(ctx: MILContext, phase: str) -> dict:
                 "FID_COND_MRKT_DIV_CODE": "U",
                 "FID_COND_SCR_DIV_CODE": "20214",
                 "FID_INPUT_ISCD": "0001",
-                "FID_DIV_CLS_CODE": "0",
+                "FID_MRKT_CLS_CODE": "K",
                 "FID_BLNG_CLS_CODE": "0",
             },
         )
@@ -68,7 +71,8 @@ def get_sector_breadth(ctx: MILContext, phase: str) -> dict:
                 "upper_limit": _to_int(row.get("uplm_issu_cnt")),
                 "lower_limit": _to_int(row.get("lslm_issu_cnt")),
             }
-            for row in raw.get("output", [])
+            for row in raw.get("output2", [])
+            if row.get("bstp_cls_code") not in _AGGREGATE_CODES
         ]
         return {"sectors": sectors}
 

@@ -59,7 +59,8 @@ def test_get_event_schedule_parses_rights_and_dividend():
     ctx = make_ctx(
         raw_responses={
             "HHKDB669100C0": {
-                "output1": [{"record_date": "20260620", "sbscr_strt_dt": "20260701", "sbscr_end_dt": "20260702"}],
+                "output1": [{"record_date": "20260620", "right_dt": "20260618",
+                              "sub_term_ft": "20260701", "sub_term": "2026/07/01 ~ 2026/07/02"}],
             },
             "HHKDB669102C0": {
                 "output1": [{"record_date": "20260630", "per_sto_divi_amt": "350"}],
@@ -68,6 +69,8 @@ def test_get_event_schedule_parses_rights_and_dividend():
     )
     result = get_event_schedule(ctx, "PREMARKET", ticker="005930")
     assert result["rights_events"][0]["record_date"] == "20260620"
+    assert result["rights_events"][0]["rights_ex_date"] == "20260618"
+    assert result["rights_events"][0]["subscription_start"] == "20260701"
     assert result["dividend_events"][0]["dividend_amount"] == 350.0
 
 

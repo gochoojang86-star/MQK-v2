@@ -120,15 +120,21 @@ def get_intraday_candles(ctx: MILContext, phase: str, ticker: str) -> dict:
 
 
 def get_flow(ctx: MILContext, phase: str, ticker: str) -> dict:
-    """종목별 투자자매매동향(일별) - 외국인/기관/개인/투신/사모/은행/보험/기금 순매수 수량."""
+    """종목별 투자자매매동향(일별) - 외국인/기관/개인/투신/사모/은행/보험/기금 순매수 수량.
+
+    응답은 output2(일별 리스트, 최신일 우선). 당일 row는 장 종료 후 확정된다.
+    """
 
     def fetch():
         raw = ctx.kis_api.raw_get(
             "FHPTJ04160001",
-            "domestic-stock/v1/quotations/inquire-investor-time-by-stock",
+            "domestic-stock/v1/quotations/investor-trade-by-stock-daily",
             {
                 "FID_COND_MRKT_DIV_CODE": "J",
                 "FID_INPUT_ISCD": ticker,
+                "FID_INPUT_DATE_1": datetime.now().strftime("%Y%m%d"),
+                "FID_ORG_ADJ_PRC": "",
+                "FID_ETC_CLS_CODE": "1",
             },
         )
         days = [
@@ -138,13 +144,13 @@ def get_flow(ctx: MILContext, phase: str, ticker: str) -> dict:
                 "foreign_net_qty": _to_float(row.get("frgn_ntby_qty")),
                 "institution_net_qty": _to_float(row.get("orgn_ntby_qty")),
                 "individual_net_qty": _to_float(row.get("prsn_ntby_qty")),
-                "trust_net_qty": _to_float(row.get("invtrt_ntby_qty")),
-                "private_fund_net_qty": _to_float(row.get("prvt_fund_ntby_qty")),
+                "trust_net_qty": _to_float(row.get("ivtr_ntby_qty")),
+                "private_fund_net_qty": _to_float(row.get("pe_fund_ntby_vol")),
                 "bank_net_qty": _to_float(row.get("bank_ntby_qty")),
                 "insurance_net_qty": _to_float(row.get("insu_ntby_qty")),
-                "pension_net_qty": _to_float(row.get("pe_fund_ntby_qty")),
+                "pension_net_qty": _to_float(row.get("fund_ntby_qty")),
             }
-            for row in raw.get("output", [])
+            for row in raw.get("output2", [])
         ]
         return {"ticker": ticker, "days": days}
 

@@ -1,6 +1,8 @@
 """리스크필터 도구 2개: get_stock_status, get_event_schedule"""
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from market_intelligence.base import MILContext
 
 
@@ -51,24 +53,27 @@ def get_stock_status(ctx: MILContext, phase: str, ticker: str) -> dict:
 
 
 def get_event_schedule(ctx: MILContext, phase: str, ticker: str) -> dict:
-    """권리락일/유상증자 청약기간 + 배당기준일/배당금."""
+    """권리락일/유상증자 청약기간 + 배당기준일/배당금 (향후 90일)."""
 
     def fetch():
+        f_dt = datetime.now().strftime("%Y%m%d")
+        t_dt = (datetime.now() + timedelta(days=90)).strftime("%Y%m%d")
         rights = ctx.kis_api.raw_get(
             "HHKDB669100C0",
-            "domestic-stock/v1/ksdinfo/paidin-capital-increase",
-            {"CTS": "", "GB1": "1", "F_DT": "", "T_DT": "", "SHT_CD": ticker},
+            "domestic-stock/v1/ksdinfo/paidin-capin",
+            {"CTS": "", "GB1": "1", "F_DT": f_dt, "T_DT": t_dt, "SHT_CD": ticker},
         )
         dividend = ctx.kis_api.raw_get(
             "HHKDB669102C0",
             "domestic-stock/v1/ksdinfo/dividend",
-            {"CTS": "", "GB1": "0", "F_DT": "", "T_DT": "", "SHT_CD": ticker, "HIGH_GB": ""},
+            {"CTS": "", "GB1": "0", "F_DT": f_dt, "T_DT": t_dt, "SHT_CD": ticker, "HIGH_GB": ""},
         )
         rights_events = [
             {
                 "record_date": row.get("record_date"),
-                "subscription_start": row.get("sbscr_strt_dt"),
-                "subscription_end": row.get("sbscr_end_dt"),
+                "rights_ex_date": row.get("right_dt"),
+                "subscription_start": row.get("sub_term_ft"),
+                "subscription_period": row.get("sub_term"),
             }
             for row in rights.get("output1", [])
         ]
