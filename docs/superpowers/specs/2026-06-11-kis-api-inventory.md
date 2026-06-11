@@ -69,6 +69,11 @@
 
 **조치:** 라이브 테스트 Level 0에서 paper 주문 1건으로 구 TR 동작 여부를 가장 먼저 확인. 실패하거나 경고 응답이 오면 신 TR로 마이그레이션 후 테스트 재개. **주문이 안 되면 시스템 전체가 무의미하므로 다른 모든 테스트보다 앞선다.**
 
+> **D0 결과 (2026-06-11 21:50 KST, 장외):** paper 매수 주문 시도 → `"모의투자 장종료 입니다"` 응답.
+> 서버가 구 TR(VTTC0802U)을 인식하고 장운영시간 검증까지 도달 → **구 TR 아직 유효**.
+> 접수→취소 전체 검증은 D1 장중 재실행 필요. 추가 발견: `_order_admin_mode` 기본값이 real이라
+> paper 모드에서 미체결조회/취소가 실전 서버로 향함 — D1에서 paper 주문 취소 가능 여부 확인 필수.
+
 ### 2-2. ⚠️ TTTC0084R(미체결 조회)은 모의투자 미지원
 
 코드(`broker/kis_api.py:598`)는 paper 모드에서 `VTTC0084R`로 분기하지만, 문서상 이 API는 **모의투자 미지원** (VTTC0084R 항목 없음). paper 모드 테스트에서 미체결 조회가 실패할 수 있다.
@@ -82,6 +87,14 @@
 ---
 
 ## 3. 갭 분석 — 추가 도입 후보 (미사용 113개 중 v3 설계 목적 관련)
+
+> **2026-06-11 구현 완료:** 아래 후보 14개 API 전부 구현·라이브 검증됨 (커밋 `66977c0`, `dd1abc6`, `5802c92`).
+> 배분: get_market_context(+프로그램매매/투자자동향), get_top_movers(+체결강도/등락률),
+> get_stock_status(+상하한가), get_event_schedule(+무상증자/합병분할/주주총회),
+> 신규 17번째 MIL 도구 get_fundamentals(재무비율/손익계산서/대차대조표/투자의견, SCAN 전용),
+> Safety Layer KISApi.get_buyable_cash + _process_v3_buy_proposal 현금 가드,
+> KISApi.get_daily_minute_candles(회고용).
+> 추가 라이브 발견 버그 3건도 수정됨 (`1623bd5`): get_flow URL/필드, get_sector_breadth 파라미터/이중계산, get_event_schedule URL/날짜.
 
 v3 설계(SEPA + 오후 회복 포착 + RED 방어 평가)의 신호 요구사항과 대조한 결과. **현재 16개 도구로 설계는 완결**이며, 아래는 신호 품질을 높일 선택적 후보다.
 
