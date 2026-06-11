@@ -67,11 +67,43 @@ def test_get_top_movers_includes_overheated_warning():
                      "stck_prpr": "180000", "prdy_ctrt": "5.0", "acml_vol": "5000000"},
                 ],
             },
+            "FHPST01680000": {
+                "output": [
+                    {"stck_shrn_iscd": "005930", "hts_kor_isnm": "삼성전자",
+                     "tday_rltv": "250.5", "prdy_ctrt": "2.0"},
+                ],
+            },
+            "FHPST01700000": {
+                "output": [
+                    {"stck_shrn_iscd": "465770", "hts_kor_isnm": "STX그린로지스",
+                     "prdy_ctrt": "30.00", "acml_vol": "375829", "stck_prpr": "3380"},
+                ],
+            },
         },
     )
     result = get_top_movers(ctx, "SCAN")
     assert result["movers"][0]["ticker"] == "000660"
     assert result["overheated_bias_warning"] is True
+    assert result["volume_power_top"][0]["ticker"] == "005930"
+    assert result["volume_power_top"][0]["volume_power"] == 250.5
+    assert result["change_rate_top"][0]["ticker"] == "465770"
+    assert result["change_rate_top"][0]["trading_value_krw"] == 375829.0 * 3380.0
+    assert "missing_fields" not in result
+
+
+def test_get_top_movers_marks_missing_when_rankings_empty():
+    ctx = make_ctx(
+        raw_responses={
+            "FHPST01710000": {"output": []},
+            "FHPST01680000": {"output": []},
+            "FHPST01700000": {"output": []},
+        },
+    )
+    result = get_top_movers(ctx, "SCAN")
+    assert result["volume_power_top"] == []
+    assert result["change_rate_top"] == []
+    assert "volume_power_top" in result["missing_fields"]
+    assert "change_rate_top" in result["missing_fields"]
 
 
 def test_psearch_result_caches_per_seq():

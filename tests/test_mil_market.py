@@ -48,6 +48,20 @@ def test_get_market_context_combines_index_and_flow():
                     {"frgn_ntby_tr_pbmn": "-2000", "orgn_ntby_tr_pbmn": "1500"},
                 ]
             },
+            "FHPPG04600101": {
+                "output": [
+                    {"bsop_hour": "180500", "whol_smtn_ntby_tr_pbmn": "-2380577"},
+                    {"bsop_hour": "173600", "whol_smtn_ntby_tr_pbmn": "-2200000"},
+                ]
+            },
+            "FHPTJ04040000": {
+                "output": [
+                    {"stck_bsop_date": "20260611", "frgn_ntby_tr_pbmn": "-1464017",
+                     "orgn_ntby_tr_pbmn": "-756138", "prsn_ntby_tr_pbmn": "2080254"},
+                    {"stck_bsop_date": "20260610", "frgn_ntby_tr_pbmn": "-2775389",
+                     "orgn_ntby_tr_pbmn": "-2266525", "prsn_ntby_tr_pbmn": "4864291"},
+                ]
+            },
         },
     )
     result = get_market_context(ctx, "PREMARKET")
@@ -55,6 +69,30 @@ def test_get_market_context_combines_index_and_flow():
     assert result["foreign_net_buy_krw"] == -3000.0
     assert result["institution_net_buy_krw"] == 2000.0
     assert result["prev_kospi_change_pct"] == -8.29
+    assert result["program_net_buy_krw"] == -2380577 * 1_000_000
+    assert result["investor_trend_days"][0]["date"] == "20260611"
+    assert result["investor_trend_days"][0]["foreign_net_krw"] == -1464017 * 1_000_000
+    assert "missing_fields" not in result
+
+
+def test_get_market_context_marks_missing_when_program_and_investor_empty():
+    ctx = make_ctx(
+        index_status={"kospi": "2800.50", "kospi_change_pct": "0.75",
+                       "kosdaq": "850.10", "kosdaq_change_pct": "-0.30",
+                       "kospi_advancers": 0, "kospi_decliners": 0,
+                       "prev_kospi_change_pct": 0, "prev_kospi_trading_value": 0,
+                       "prev_kosdaq_change_pct": 0, "prev_kosdaq_trading_value": 0},
+        raw_responses={
+            "FHPTJ04400000": {"output2": []},
+            "FHPPG04600101": {"output": []},
+            "FHPTJ04040000": {"output": []},
+        },
+    )
+    result = get_market_context(ctx, "SCAN")
+    assert result["program_net_buy_krw"] is None
+    assert result["investor_trend_days"] == []
+    assert "program_net_buy_krw" in result["missing_fields"]
+    assert "investor_trend_days" in result["missing_fields"]
 
 
 def test_get_sector_breadth_parses_output():
@@ -116,8 +154,12 @@ def test_get_market_context_caches_second_call():
                        "kospi_advancers": 0, "kospi_decliners": 0,
                        "prev_kospi_change_pct": 0, "prev_kospi_trading_value": 0,
                        "prev_kosdaq_change_pct": 0, "prev_kosdaq_trading_value": 0},
-        raw_responses={"FHPTJ04400000": {"output2": []}},
+        raw_responses={
+            "FHPTJ04400000": {"output2": []},
+            "FHPPG04600101": {"output": []},
+            "FHPTJ04040000": {"output": []},
+        },
     )
     get_market_context(ctx, "SCAN")
     get_market_context(ctx, "SCAN")
-    assert len(ctx.kis_api.raw_get_calls) == 1
+    assert len(ctx.kis_api.raw_get_calls) == 3

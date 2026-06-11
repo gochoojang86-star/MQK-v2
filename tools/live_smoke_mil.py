@@ -67,7 +67,9 @@ def run_checks(ctx: MILContext, ticker: str, hts_id: str) -> list[tuple[str, str
     # ── market ──
     check("get_market_context", lambda: market.get_market_context(ctx, "SCAN"),
           lambda o: (any(_num(o.get(k)) and o.get(k) for k in ("kospi", "kosdaq")) or bool(o),
-                     f"keys={sorted(o.keys())[:8]}"))
+                     f"keys={sorted(o.keys())[:8]} program_net={o.get('program_net_buy_krw')} "
+                     f"investor_days={len(o.get('investor_trend_days') or [])} "
+                     f"missing={o.get('missing_fields')}"))
     check("get_sector_breadth", lambda: market.get_sector_breadth(ctx, "SCAN"),
           lambda o: (len(o.get("sectors", [])) > 0, f"sectors={len(o.get('sectors', []))}"))
     check("get_intraday_index_candles", lambda: market.get_intraday_index_candles(ctx, "SCAN"),
@@ -104,13 +106,22 @@ def run_checks(ctx: MILContext, ticker: str, hts_id: str) -> list[tuple[str, str
             results.append(("psearch_result", WARN, "HTS 조건식 없음 — 사전조건 미충족 (HTS에서 조건식 등록 필요)"))
     check("get_top_movers", lambda: screening.get_top_movers(ctx, "SCAN"),
           lambda o: (len(o.get("movers", o.get("rows", []))) > 0 or bool(o),
-                     f"keys={sorted(o.keys())[:6]}"), intraday_only=True)
+                     f"keys={sorted(o.keys())[:6]} "
+                     f"vol_power={len(o.get('volume_power_top') or [])} "
+                     f"change_top={len(o.get('change_rate_top') or [])} "
+                     f"missing={o.get('missing_fields')}"), intraday_only=True)
 
     # ── risk_filter ──
     check("get_stock_status", lambda: risk_filter.get_stock_status(ctx, "SCAN", ticker),
-          lambda o: (bool(o), f"keys={sorted(o.keys())[:8]}"))
+          lambda o: (bool(o), f"keys={sorted(o.keys())[:8]} "
+                     f"limit_up={o.get('is_limit_up')} limit_down={o.get('is_limit_down')} "
+                     f"missing={o.get('missing_fields')}"))
     check("get_event_schedule", lambda: risk_filter.get_event_schedule(ctx, "SCAN", ticker),
-          lambda o: (isinstance(o, dict), f"keys={sorted(o.keys())[:6]}"))
+          lambda o: (isinstance(o, dict), f"keys={sorted(o.keys())[:6]} "
+                     f"bonus={len(o.get('bonus_issue_events') or [])} "
+                     f"merger={len(o.get('merger_split_events') or [])} "
+                     f"meeting={len(o.get('shareholder_meeting_events') or [])} "
+                     f"missing={o.get('missing_fields')}"))
 
     # ── portfolio ──
     check("get_open_positions", lambda: portfolio.get_open_positions(ctx, "SCAN"),

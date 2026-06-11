@@ -51,7 +51,8 @@ def psearch_result(ctx: MILContext, phase: str, user_id: str, seq: str) -> dict:
 
 
 def get_top_movers(ctx: MILContext, phase: str) -> dict:
-    """psearch 실패 시 백업: 거래량순위. 과열주 편향 경고 플래그 포함."""
+    """psearch 실패 시 백업: 거래량순위. 과열주 편향 경고 플래그 포함.
+    추가: 체결강도 상위, 등락률 순위."""
 
     def fetch():
         raw = ctx.kis_api.raw_get(
@@ -81,11 +82,90 @@ def get_top_movers(ctx: MILContext, phase: str) -> dict:
             }
             for row in raw.get("output", [])
         ]
-        return {
+        result = {
             "movers": movers,
             "overheated_bias_warning": True,
             "warning_reason": "psearch 실패로 거래량순위 백업 사용 — 단기 과열주 비중이 높을 수 있음",
         }
+
+        missing_fields: list[str] = []
+
+        # 체결강도 상위
+        try:
+            power = ctx.kis_api.raw_get(
+                "FHPST01680000",
+                "domestic-stock/v1/ranking/volume-power",
+                {
+                    "fid_cond_mrkt_div_code": "J",
+                    "fid_cond_scr_div_code": "20168",
+                    "fid_input_iscd": "0000",
+                    "fid_div_cls_code": "0",
+                    "fid_input_price_1": "",
+                    "fid_input_price_2": "",
+                    "fid_vol_cnt": "",
+                    "fid_trgt_cls_code": "0",
+                    "fid_trgt_exls_cls_code": "0",
+                },
+            )
+            power_rows = power.get("output", [])
+            result["volume_power_top"] = [
+                {
+                    "ticker": row.get("stck_shrn_iscd"),
+                    "name": row.get("hts_kor_isnm"),
+                    "volume_power": _to_float(row.get("tday_rltv")),
+                    "change_pct": _to_float(row.get("prdy_ctrt")),
+                }
+                for row in power_rows[:20]
+            ]
+            if not power_rows:
+                missing_fields.append("volume_power_top")
+        except Exception:
+            result["volume_power_top"] = None
+            missing_fields.append("volume_power_top")
+
+        # 등락률 순위 (상승율순)
+        try:
+            change = ctx.kis_api.raw_get(
+                "FHPST01700000",
+                "domestic-stock/v1/ranking/fluctuation",
+                {
+                    "fid_cond_mrkt_div_code": "J",
+                    "fid_cond_scr_div_code": "20170",
+                    "fid_input_iscd": "0000",
+                    "fid_rank_sort_cls_code": "0",
+                    "fid_input_cnt_1": "0",
+                    "fid_prc_cls_code": "1",
+                    "fid_input_price_1": "",
+                    "fid_input_price_2": "",
+                    "fid_vol_cnt": "",
+                    "fid_trgt_cls_code": "0",
+                    "fid_trgt_exls_cls_code": "0",
+                    "fid_div_cls_code": "0",
+                    "fid_rsfl_rate1": "",
+                    "fid_rsfl_rate2": "",
+                },
+            )
+            change_rows = change.get("output", [])
+            result["change_rate_top"] = [
+                {
+                    "ticker": row.get("stck_shrn_iscd"),
+                    "name": row.get("hts_kor_isnm"),
+                    "change_pct": _to_float(row.get("prdy_ctrt")),
+                    # 등락률 순위 API 응답에 거래대금 필드가 없어 거래량×현재가로 근사
+                    "trading_value_krw": _to_float(row.get("acml_vol")) * _to_float(row.get("stck_prpr")),
+                }
+                for row in change_rows[:20]
+            ]
+            if not change_rows:
+                missing_fields.append("change_rate_top")
+        except Exception:
+            result["change_rate_top"] = None
+            missing_fields.append("change_rate_top")
+
+        if missing_fields:
+            result["missing_fields"] = missing_fields
+
+        return result
 
     return ctx.cached_call("get_top_movers", phase, {}, fetch)
 

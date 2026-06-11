@@ -9,6 +9,7 @@
 
 ## 권장 흐름
 1. `get_market_context` + `get_sector_breadth`로 마감 지수/업종 현황 확인
+   (프로그램매매 순매수 `program_net_buy_krw`, 투자자별 일별 동향 `investor_trend_days` 참고)
 2. `get_news_market`으로 마감 후 주요 뉴스 확인
 3. 보유/관심 종목 중 의미 있는 종목은 `get_ohlcv`로 마감 흐름 확인
 

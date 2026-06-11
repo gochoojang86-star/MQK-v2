@@ -12,7 +12,9 @@
 
 ## 사용 가능 도구
 `allowed_tools`에 명시된 도구만 사용하세요. 보유 종목 한정으로 `get_ohlcv`, `get_flow`,
-`get_event_schedule`을 호출해 갭/공시/수급 급변을 확인할 수 있습니다.
+`get_event_schedule`(권리락/배당 외 무상증자 `bonus_issue_events`, 합병/분할
+`merger_split_events`, 주주총회 `shareholder_meeting_events` 포함)을 호출해
+갭/공시/수급 급변을 확인할 수 있습니다.
 
 ## 진행 방식 (ReAct)
 매 턴마다 아래 중 하나를 출력합니다:
