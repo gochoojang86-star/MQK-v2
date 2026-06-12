@@ -13,6 +13,32 @@
 
 ---
 
+## D1 결과 (2026-06-12, 장중 09:02~09:30 실행)
+
+| 항목 | 판정 | 핵심 결과 |
+|------|:---:|-----------|
+| 0-0 주문 TR 완결 | ✅ | 구 TR(VTTC0802U)로 paper 매수 접수 성공(order_no 0000002130). 취소는 `KIS_ORDER_ADMIN_MODE=paper`에서만 성공(VTTC0013U) — **기본값(real)으로는 paper 주문 취소 불가** |
+| 0-0b 미체결 조회(모의) | ✅ | VTTC0084R → "없는 서비스 코드" (문서대로 모의 미지원). graceful 빈 리스트 확인 |
+| 5-1 premarket | ✅ | YELLOW/THEME_MARKET/78. risk_guidance 4키 전부 클램프 범위 내, drift_triggers 4개 스키마 OK, drift_state 리셋, premarket_review.json 생성 |
+| 2 장중 스모크 | ✅ | 19건 실패 0 (수정 후). psearch_result만 ⚠️ — **HTS 조건식이 KIS 서버에 미저장 상태** (사용자: HTS 조건검색 화면에서 "서버 저장" 필요) |
+| 4-2 Tier2 드리프트 | ✅ | 실데이터 metrics 정상, recovery_signal+breadth_support 발동, 쿨다운 60분 작동(다음 틱 재발동 안 함) |
+| 4-4 / 5-2 scan | ✅ | watchlist=["005930"] 생성(확신도 82, 신규 도구 데이터 활용). psearch 실패 시 백업 스캔으로 자체 우회 |
+| 5-3 intraday 1틱 | ✅ | Tier3 Lite LLM 1회(daily_lite_llm_calls=1, 캡 추적 OK), drift STABLE, NO_TRADE(확신도<78) — proposals 미발생으로 Telegram 승인 왕복은 ⏭️ (자연 발생 대기) |
+| 5-4 RiskOfficer 차단 | ⏭️ | proposal 미발생 — 단위테스트로는 검증됨, 라이브는 BUY 발생 시 |
+
+**D1에서 발견·수정된 실버그 6건** (전부 라이브 전용 — mock 테스트로는 검출 불가):
+1. `get_intraday_index_candles`: 필수 `FID_ETC_CLS_CODE` 누락으로 **개통 이래 모든 호출이 거부**(rt_cd=2가 빈 candles로 은폐) + 과거일 캔들 혼입 + 내림차순 (`d717452`)
+2. `get_market_context`: 지수값이 KIS raw 문자열로 와서 **Tier2 드리프트 감시가 매 틱 무력화** (`dafd71e` 직전 커밋)
+3. `get_sector_breadth`: 상승/하락 종목수가 output1(기준지수)에만 존재 — 업종 행 합산은 **항상 0** → market_breadth로 재설계 (`dafd71e`)
+4. LLM이 JSON 2개를 한 응답에 반환 → **scan phase 전체 크래시** → raw_decode fallback + NO_TRADE 강등 + 단일 JSON 프롬프트 강제 + max_steps 12 (`e4a1816`, 후속)
+5. `_build_context`: 일시적 KIS 500이 phase를 죽임 → 보수적 강등(매수 예산 0) (직후 커밋)
+6. `get_intraday_candles`(종목 분봉): `FID_INPUT_HOUR_1="60"` 오용으로 **전일 15시대 캔들 반환** — TradingAgent가 직접 "비정상 시계열" 지적 (`bab9700`)
+
+**미해결/사용자 액션:**
+- ⚠️ `_order_admin_mode` 기본값(real) 탓에 paper 운영 시 OrderManager의 미체결 취소가 동작 불가 — paper 운영 기간엔 `.env`에 `KIS_ORDER_ADMIN_MODE=paper` 설정 권장 (실전 전환 시 제거)
+- psearch_result: HTS 조건검색식 "서버 저장" 후 재테스트
+- 5-5 close(15:27)/5-6 market_close(16:58): 당일 예약 등록됨
+
 > **사전 발견 이슈 (API 문서 대조, `docs/superpowers/specs/2026-06-11-kis-api-inventory.md`):**
 > ① 코드의 주문 TR(TTTC0802U/0801U)이 2026-05-28 KIS 문서에서 사라짐 — 신규 TR은 TTTC0012U(매수)/TTTC0011U(매도). **0-0에서 최우선 확인.**
 > ② TTTC0084R(미체결 조회)은 모의투자 미지원 — paper 모드 실패 양상 확인 필요 (0-0b).
