@@ -97,6 +97,16 @@ module.exports = {
       autorestart: false,
     },
     {
+      name: "mqk-v3-psearch-watcher",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_psearch_watcher.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      // KST 09:01 기동 → 내부 루프(90초 폴링)로 15:06까지 조건검색 편입 감시 (유사 웹훅).
+      // 신규 편입: 알림 + watchlist 병합 + intraday LLM 즉시 트리거 (낙주는 알림만).
+      cron_restart: "1 9 * * 1-5",
+      autorestart: false,
+    },
+    {
       name: "mqk-v3-close",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
