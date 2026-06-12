@@ -27,6 +27,7 @@ from market_intelligence import market as mil_market
 from market_intelligence import portfolio as mil_portfolio
 from market_intelligence import risk_filter as mil_risk_filter
 from market_intelligence import screening as mil_screening
+from market_intelligence import theme as mil_theme
 from market_intelligence.base import MILContext, ToolFailure
 from market_intelligence.cache import MILCache
 from market_intelligence.circuit_breaker import CircuitBreaker
@@ -181,6 +182,21 @@ class MQKOrchestratorV3(MQKOrchestrator):
                 self.run_scan_v3()
 
         watchlist = load_watchlist(path=_WATCHLIST_PATH)
+
+        # 비용 절감 게이트: 평가할 후보도, 청산할 보유 포지션도 없고 시장도 STABLE이면
+        # LLM을 호출하지 않는다. 보유 여부는 v3 포지션의 진실의 원천인 TradeJournal 기준
+        # (실계좌 잔고 기준이면 모의 매매 중 보유를 놓친다). 조회 실패 시 보수적으로 진행.
+        journal = getattr(self, "_journal", None)
+        if drift_judgment == "STABLE" and not watchlist and journal is not None:
+            try:
+                has_positions = bool(journal.get_open_positions())
+            except Exception as e:
+                logger.warning(f"[INTRADAY] 저널 조회 실패 — 스킵 게이트 미적용, LLM 진행: {e}")
+                has_positions = True
+            if not has_positions:
+                logger.info("[INTRADAY] watchlist 0 + 보유 0 + STABLE — LLM 미호출 스킵")
+                return {"action": "NO_TRADE", "reason": "idle_skip"}
+
         context = self._build_context(
             TradingPhase.INTRADAY, regime, drift_judgment,
             watchlist=watchlist, risk_guidance_override=risk_guidance,
@@ -325,26 +341,64 @@ class MQKOrchestratorV3(MQKOrchestrator):
 
     def _backfill_scan_result(self, result: dict, context: dict) -> dict:
         """SCAN 결과가 비면 거래대금/상태 기반 deterministic watchlist를 만든다."""
-        try:
-            movers = mil_screening.get_top_movers(self._mil, TradingPhase.SCAN.value)
-        except ToolFailure as e:
-            logger.warning(f"[SCAN BACKFILL] get_top_movers 실패: {e}")
-            return result
-
-        rows = movers.get("change_rate_top") or movers.get("movers") or []
         min_trading_value = float(context.get("risk_guidance", {}).get("min_trading_value_krw", 0) or 0)
         positions_left = int(context.get("risk_budget_remaining", {}).get("positions_left", 0) or 0)
         limit = min(10, max(positions_left, 0))
         if limit <= 0:
             return result
 
-        candidates = []
+        candidates_by_ticker: dict[str, dict] = {}
+        overheated_bias_warning = False
+
+        try:
+            theme_result = mil_theme.get_theme_candidates(self._mil, TradingPhase.SCAN.value)
+        except ToolFailure as e:
+            logger.warning(f"[SCAN BACKFILL] get_theme_candidates 실패: {e}")
+            theme_result = {"candidates": []}
+        for row in theme_result.get("candidates", []):
+            ticker = str(row.get("ticker") or "").strip()
+            if not re.fullmatch(r"\d{6}", ticker):
+                continue
+            candidates_by_ticker[ticker] = {
+                "ticker": ticker,
+                "name": row.get("name"),
+                "trading_value": _to_float(row.get("trading_value")),
+                "change_pct": _to_float(row.get("change_pct")),
+                "source": "kiwoom_theme",
+                "theme_name": row.get("theme_name"),
+            }
+
+        try:
+            movers = mil_screening.get_top_movers(self._mil, TradingPhase.SCAN.value)
+        except ToolFailure as e:
+            logger.warning(f"[SCAN BACKFILL] get_top_movers 실패: {e}")
+            movers = {"change_rate_top": [], "movers": []}
+        overheated_bias_warning = bool(movers.get("overheated_bias_warning"))
+
+        rows = movers.get("change_rate_top") or movers.get("movers") or []
         for row in rows:
             ticker = str(row.get("ticker") or "").strip()
             if not re.fullmatch(r"\d{6}", ticker):
                 continue
             trading_value = _to_float(row.get("trading_value_krw", row.get("trading_value", 0)))
-            if trading_value < min_trading_value:
+            existing = candidates_by_ticker.get(ticker)
+            if existing:
+                existing["trading_value"] = max(existing["trading_value"], trading_value)
+                existing["change_pct"] = max(existing["change_pct"], _to_float(row.get("change_pct")))
+                existing["source"] = f"{existing['source']}+top_movers"
+            else:
+                candidates_by_ticker[ticker] = {
+                    "ticker": ticker,
+                    "name": row.get("name"),
+                    "trading_value": trading_value,
+                    "change_pct": _to_float(row.get("change_pct")),
+                    "source": "top_movers",
+                    "theme_name": None,
+                }
+
+        candidates = []
+        for ticker, row in candidates_by_ticker.items():
+            if row["trading_value"] < min_trading_value:
                 continue
             try:
                 status = mil_risk_filter.get_stock_status(self._mil, TradingPhase.SCAN.value, ticker)
@@ -352,12 +406,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
                 continue
             if status.get("trading_halted") or status.get("administrative_issue") or status.get("is_limit_up"):
                 continue
-            candidates.append({
-                "ticker": ticker,
-                "name": row.get("name"),
-                "trading_value": trading_value,
-                "change_pct": _to_float(row.get("change_pct")),
-            })
+            candidates.append(row)
 
         candidates.sort(key=lambda x: (x["trading_value"], x["change_pct"]), reverse=True)
         watchlist = [row["ticker"] for row in candidates[:limit]]
@@ -373,12 +422,12 @@ class MQKOrchestratorV3(MQKOrchestrator):
                 {
                     "ticker": row["ticker"],
                     "confidence": 65,
-                    "reason": "orchestrator_scan_backfill",
-                    "setup": "RELATIVE_STRENGTH",
+                    "reason": f"orchestrator_scan_backfill:{row['source']}",
+                    "setup": "RELATIVE_STRENGTH" if "theme" not in row["source"] else "TREND",
                 }
                 for row in candidates[:limit]
             ],
-            "overheated_bias_warning": bool(movers.get("overheated_bias_warning")),
+            "overheated_bias_warning": overheated_bias_warning,
             "reason": f"{result.get('reason', '')} | orchestrator_scan_backfill".strip(" |"),
         }
 

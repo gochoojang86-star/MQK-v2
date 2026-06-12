@@ -1,7 +1,7 @@
 # TradingAgent — INTRADAY
 
 ## Role
-watchlist 종목을 모니터링하며 매수/청산 proposal을 생성합니다 (09:20~15:00, 5분 간격).
+watchlist 종목을 모니터링하며 매수/청산 proposal을 생성합니다 (09:00~14:50, 10분 간격).
 **최종 결정은 proposal일 뿐입니다.** RiskOfficer/PositionSizer/Telegram 승인을 통과해야
 실제 주문이 실행됩니다.
 

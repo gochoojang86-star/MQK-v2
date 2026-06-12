@@ -78,9 +78,10 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "intraday" },
-      // KST 09:00~14:55, 5분 간격. 09:03 레짐 생성 전 틱(09:00)이나 premarket 실패일에는
-      // run_intraday_v3의 당일-레짐 가드가 NO_TRADE로 안전하게 스킵한다.
-      cron_restart: "*/5 9-14 * * 1-5",
+      // KST 09:00~14:50, 10분 간격 (LLM 비용 절감 — Tier2 드리프트 감시 주기도 10분).
+      // 09:03 레짐 생성 전 틱(09:00)이나 premarket 실패일에는 당일-레짐 가드가 스킵.
+      // watchlist 0 + 보유 0 + STABLE이면 코드 게이트가 LLM 호출 없이 스킵.
+      cron_restart: "*/10 9-14 * * 1-5",
       autorestart: false,
     },
     {

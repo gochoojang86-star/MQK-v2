@@ -288,11 +288,18 @@ def test_run_scan_v3_backfills_watchlist_when_agent_returns_empty(monkeypatch, t
     import market_intelligence.portfolio as mil_portfolio
     import market_intelligence.screening as mil_screening
     import market_intelligence.risk_filter as mil_risk_filter
+    import market_intelligence.theme as mil_theme
 
     monkeypatch.setattr(mil_portfolio, "get_open_positions",
                          lambda ctx, phase: {"positions": [], "position_count": 0})
     monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
                          lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0, "total_eval_amt": 10_000_000})
+    monkeypatch.setattr(mil_theme, "get_theme_candidates",
+                         lambda ctx, phase: {
+                             "candidates": [
+                                 {"ticker": "357780", "name": "솔브레인", "change_pct": 27.89, "trading_value": 128_000_000_000, "theme_name": "반도체"},
+                             ]
+                         })
     monkeypatch.setattr(mil_screening, "get_top_movers",
                          lambda ctx, phase: {
                              "change_rate_top": [
@@ -396,6 +403,52 @@ def test_run_intraday_v3_skips_on_stale_regime(monkeypatch, tmp_path):
     result = orch.run_intraday_v3()
 
     assert result == {"action": "NO_TRADE", "reason": "stale_regime"}
+
+
+def test_run_intraday_v3_idle_skip_gate(monkeypatch, tmp_path):
+    """watchlist 0 + 보유 0 + STABLE이면 LLM을 호출하지 않는다 (비용 게이트)."""
+    import market_intelligence.market as mil_market
+
+    monkeypatch.setattr(mil_market, "get_market_context",
+                         lambda ctx, phase: {"kospi": 2520.0, "foreign_net_buy_krw": 0})
+    monkeypatch.setattr(mil_market, "get_intraday_index_candles",
+                         lambda ctx, phase: {"candles": [{"open": 2525.0, "high": 2526.0, "low": 2515.0, "close": 2520.0}]})
+    monkeypatch.setattr(mil_market, "get_sector_breadth",
+                         lambda ctx, phase: {"market_breadth": {"advancers": 400, "decliners": 300}})
+
+    orch = make_orchestrator(tmp_path)
+    orch._drift_detector = FakeDriftDetector({
+        "drift_judgment": "STABLE", "reason": "no_trigger_fired", "metrics": {}, "triggered": [],
+        "new_status": None, "risk_guidance_delta": {},
+        "drift_state": {"date": "2026-06-09", "last_trigger_time": {}, "today_caution_count": 0, "daily_lite_llm_calls": 0},
+    })
+    orch._trading_agent = FakeTradingAgent({"action": "NO_TRADE", "proposals": []})
+    orch._journal = type("J", (), {"get_open_positions": staticmethod(lambda: [])})()
+
+    regime = {"status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50,
+              "risk_guidance": {}, "drift_triggers": [], "cooldown_minutes": 60,
+              "max_daily_triggers": 3, "timestamp": "2026-06-09T09:03:00"}
+    import json as _json
+    (tmp_path / "last_regime.json").write_text(_json.dumps(regime), encoding="utf-8")
+    (tmp_path / "watchlist.json").write_text(_json.dumps({"watchlist": []}), encoding="utf-8")
+    monkeypatch.setattr("orchestrator_v3._LAST_REGIME_PATH", tmp_path / "last_regime.json")
+    monkeypatch.setattr("orchestrator_v3._DRIFT_STATE_PATH", tmp_path / "drift_state.json")
+    monkeypatch.setattr("orchestrator_v3._WATCHLIST_PATH", tmp_path / "watchlist.json")
+
+    result = orch.run_intraday_v3()
+
+    assert result == {"action": "NO_TRADE", "reason": "idle_skip"}
+    assert orch._trading_agent.calls == []  # LLM 미호출
+
+    # 보유 포지션이 있으면 게이트가 열리지 않는다
+    import market_intelligence.portfolio as mil_portfolio
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [], "position_count": 0})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0, "total_eval_amt": 1})
+    orch._journal = type("J", (), {"get_open_positions": staticmethod(lambda: [{"ticker": "095340"}])})()
+    result2 = orch.run_intraday_v3()
+    assert orch._trading_agent.calls  # 보유 있음 → LLM 호출됨
 
 
 def test_run_intraday_v3_regime_shift_updates_status_and_rescans(monkeypatch, tmp_path):
