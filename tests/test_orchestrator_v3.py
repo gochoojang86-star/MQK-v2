@@ -330,6 +330,20 @@ def test_run_intraday_v3_stable_executes_no_trade(monkeypatch, tmp_path):
     assert saved_drift["today_caution_count"] == 0
 
 
+def test_run_intraday_v3_skips_on_stale_regime(monkeypatch, tmp_path):
+    orch = make_orchestrator(tmp_path)  # _today = "2026-06-09"
+    regime = {"status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50,
+              "risk_guidance": {}, "drift_triggers": [],
+              "timestamp": "2026-06-08T09:03:00"}  # 전일 레짐
+    import json as _json
+    (tmp_path / "last_regime.json").write_text(_json.dumps(regime), encoding="utf-8")
+    monkeypatch.setattr("orchestrator_v3._LAST_REGIME_PATH", tmp_path / "last_regime.json")
+
+    result = orch.run_intraday_v3()
+
+    assert result == {"action": "NO_TRADE", "reason": "stale_regime"}
+
+
 def test_run_intraday_v3_regime_shift_updates_status_and_rescans(monkeypatch, tmp_path):
     import market_intelligence.portfolio as mil_portfolio
     import market_intelligence.market as mil_market

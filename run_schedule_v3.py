@@ -2,10 +2,10 @@
 """
 MQK v3 자동 운영 진입점 (PM2 cron_restart로 각 단계별 실행)
 
-MQK_PHASE 환경변수:
-  premarket    - 08:45 레짐 판단 + risk_guidance/drift_triggers 생성 + 보유종목 점검
-  scan         - 09:10 / 11:00 / 14:00 watchlist 생성/갱신
-  intraday     - 09:20~15:00, */5 드리프트 체크 + 매수/청산 proposal
+MQK_PHASE 환경변수 (KST, ecosystem.config.cjs 기준):
+  premarket    - 09:03 레짐 판단 (장 시작 후 시가/초반 흐름 반영) + risk_guidance/drift_triggers 생성
+  scan         - 09:17 / 11:17 / 14:17 watchlist 생성/갱신
+  intraday     - 09:00~14:55 */5 드리프트 체크 + 매수/청산 proposal (당일 레짐 없으면 스킵)
   close        - 15:30 청산 판단 + 거래 복기
   market_close - 17:00 장마감 분석 + 다음날 prior 생성
 

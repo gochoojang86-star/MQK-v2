@@ -120,12 +120,21 @@ class MQKOrchestratorV3(MQKOrchestrator):
         self._save_json("scan_v3.json", result)
         return result
 
-    # ── */5 09:20~15:00 INTRADAY (드리프트 체크 + 매수/청산 판단) ──────────────
+    # ── */5 INTRADAY (드리프트 체크 + 매수/청산 판단) ──────────────────────────
     def run_intraday_v3(self) -> dict:
         regime = load_last_regime(path=_LAST_REGIME_PATH)
         if regime is None:
             logger.warning("[INTRADAY] last_regime.json 없음 — premarket을 먼저 실행하세요.")
             return {"action": "NO_TRADE", "reason": "no_regime"}
+
+        # 당일 레짐 가드: 레짐 판단(09:03) 이전 틱이거나 premarket이 실패한 날,
+        # 전일 레짐으로 매매하지 않는다.
+        regime_date = str(regime.get("timestamp", ""))[:10]
+        if regime_date != self._today:
+            logger.warning(
+                f"[INTRADAY] 레짐이 당일 것이 아님 (regime={regime_date}, today={self._today}) — 매매 스킵"
+            )
+            return {"action": "NO_TRADE", "reason": "stale_regime"}
 
         drift_state = load_drift_state(path=_DRIFT_STATE_PATH, today=self._today)
         snapshot = self._collect_drift_snapshot()

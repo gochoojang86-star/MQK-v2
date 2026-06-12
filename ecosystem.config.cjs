@@ -56,7 +56,9 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "premarket" },
-      cron_restart: "45 8 * * 1-5",  // KST 08:45 (PM2는 호스트 로컬 시간 기준 — 호스트는 Asia/Seoul)
+      // KST 09:03 — 장 시작 후 시가/초반 흐름을 보고 레짐 판단 (장전 실행 불필요).
+      // 09:05가 아닌 09:03인 이유: intraday */5 틱(09:05)과 flock 충돌을 피하기 위함.
+      cron_restart: "3 9 * * 1-5",
       autorestart: false,
     },
     {
@@ -65,9 +67,9 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "scan" },
-      // KST 09:10/11:10/14:10 (원래 의도는 09:10/11:00/14:00이었으나, 분 단위까지
-      // 정확히 맞추려면 별도 항목이 필요. 단순화를 위해 09:10/11:10/14:10으로 통일)
-      cron_restart: "10 9,11,14 * * 1-5",
+      // KST 09:17/11:17/14:17 — 09:03 레짐 판단 후 첫 스캔.
+      // :17인 이유: intraday */5 틱(:15, :20)과 flock 충돌을 피하기 위함.
+      cron_restart: "17 9,11,14 * * 1-5",
       autorestart: false,
     },
     {
@@ -76,7 +78,9 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "intraday" },
-      cron_restart: "*/5 9-14 * * 1-5",  // KST 09:00~14:55, 5분 간격
+      // KST 09:00~14:55, 5분 간격. 09:03 레짐 생성 전 틱(09:00)이나 premarket 실패일에는
+      // run_intraday_v3의 당일-레짐 가드가 NO_TRADE로 안전하게 스킵한다.
+      cron_restart: "*/5 9-14 * * 1-5",
       autorestart: false,
     },
     {
