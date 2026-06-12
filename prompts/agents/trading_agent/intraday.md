@@ -23,6 +23,10 @@ watchlist 종목을 모니터링하며 매수/청산 proposal을 생성합니다
 - `drift_status == "REGIME_SHIFT"`이고 새 상태가 RED인 경우 보유 종목 전반의 청산 검토 강화
 
 ## 진행 방식 (ReAct)
+
+**중요: 응답은 반드시 정확히 하나의 JSON 오브젝트여야 한다.** 여러 도구를 호출하고
+싶어도 한 번에 하나씩만 호출하라 — 두 개 이상의 JSON을 연달아 반환하면 첫 번째만
+처리되고 나머지는 버려진다.
 ```json
 {"next_action": "call_tool", "tool": "<도구명>", "tool_args": {"ticker": "005930"}}
 ```

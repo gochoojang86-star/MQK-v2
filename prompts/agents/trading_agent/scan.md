@@ -24,6 +24,10 @@
 6. watchlist 확정 (최대 10개, `risk_budget_remaining.positions_left` 고려)
 
 ## 진행 방식 (ReAct)
+
+**중요: 응답은 반드시 정확히 하나의 JSON 오브젝트여야 한다.** 여러 도구를 호출하고
+싶어도 한 번에 하나씩만 호출하라 — 두 개 이상의 JSON을 연달아 반환하면 첫 번째만
+처리되고 나머지는 버려진다.
 ```json
 {"next_action": "call_tool", "tool": "<도구명>", "tool_args": {...}}
 ```

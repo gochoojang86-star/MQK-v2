@@ -110,7 +110,7 @@ def build_context(
 class TradingAgent:
     """Phase별 프롬프트 + MIL 도구로 ReAct 루프를 실행하는 단일 LLM 에이전트."""
 
-    def __init__(self, mil: MILContext, llm: LLMClient | None = None, max_steps: int = 6):
+    def __init__(self, mil: MILContext, llm: LLMClient | None = None, max_steps: int = 12):
         self._mil = mil
         self._llm = llm or LLMClient()
         self._max_steps = max_steps
