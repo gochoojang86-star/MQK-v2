@@ -284,6 +284,60 @@ class FakeTradingAgent:
         return self._response
 
 
+def test_run_scan_v3_backfills_watchlist_when_agent_returns_empty(monkeypatch, tmp_path):
+    import market_intelligence.portfolio as mil_portfolio
+    import market_intelligence.screening as mil_screening
+    import market_intelligence.risk_filter as mil_risk_filter
+
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [], "position_count": 0})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0, "total_eval_amt": 10_000_000})
+    monkeypatch.setattr(mil_screening, "get_top_movers",
+                         lambda ctx, phase: {
+                             "change_rate_top": [
+                                 {"ticker": "357780", "name": "솔브레인", "change_pct": 27.89, "trading_value_krw": 128_000_000_000},
+                                 {"ticker": "403870", "name": "HPSP", "change_pct": 30.0, "trading_value_krw": 1_102_000_000_000},
+                             ],
+                             "overheated_bias_warning": True,
+                         })
+    monkeypatch.setattr(mil_risk_filter, "get_stock_status",
+                         lambda ctx, phase, ticker: {
+                             "ticker": ticker,
+                             "trading_halted": False,
+                             "administrative_issue": False,
+                             "is_limit_up": ticker == "403870",
+                         })
+
+    orch = make_orchestrator(tmp_path)
+    orch._trading_agent = FakeTradingAgent({
+        "next_action": "final",
+        "action": "WATCHLIST_UPDATE",
+        "watchlist": [],
+        "candidates": [],
+        "reason": "llm empty",
+    })
+
+    regime = {
+        "status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50,
+        "risk_guidance": {"max_positions": 2, "buy_confidence_threshold": 75,
+                           "risk_per_trade_pct": 0.35, "min_trading_value_krw": 12_000_000_000},
+        "timestamp": "2026-06-09T08:45:00",
+    }
+    (tmp_path / "last_regime.json").write_text(json.dumps(regime), encoding="utf-8")
+
+    monkeypatch.setattr("orchestrator_v3._LAST_REGIME_PATH", tmp_path / "last_regime.json")
+    monkeypatch.setattr("orchestrator_v3._DRIFT_STATE_PATH", tmp_path / "drift_state.json")
+    monkeypatch.setattr("orchestrator_v3._WATCHLIST_PATH", tmp_path / "watchlist.json")
+
+    result = orch.run_scan_v3()
+
+    assert result["watchlist"] == ["357780"]
+    assert result["overheated_bias_warning"] is True
+    assert "orchestrator_scan_backfill" in result["reason"]
+    assert load_watchlist(path=tmp_path / "watchlist.json") == ["357780"]
+
+
 def test_run_intraday_v3_stable_executes_no_trade(monkeypatch, tmp_path):
     import market_intelligence.portfolio as mil_portfolio
     import market_intelligence.market as mil_market
@@ -390,6 +444,96 @@ def test_run_intraday_v3_regime_shift_updates_status_and_rescans(monkeypatch, tm
     updated = json.loads(last_regime_path.read_text(encoding="utf-8"))
     assert updated["status"] == "RED"
     assert updated["risk_guidance"]["max_positions"] == 2
+
+
+# ── run_late_intraday_v3 (폭락일 전용) ──────────────────────────────────────
+
+def _write_today_regime(tmp_path, monkeypatch, status="YELLOW"):
+    import json as _json
+    regime = {"status": status, "regime": "SIDEWAYS", "confidence": 50,
+              "risk_guidance": {"max_positions": 4}, "drift_triggers": [],
+              "timestamp": "2026-06-09T09:03:00"}
+    (tmp_path / "last_regime.json").write_text(_json.dumps(regime), encoding="utf-8")
+    monkeypatch.setattr("orchestrator_v3._LAST_REGIME_PATH", tmp_path / "last_regime.json")
+    monkeypatch.setattr("orchestrator_v3._DRIFT_STATE_PATH", tmp_path / "drift_state.json")
+    monkeypatch.setattr("orchestrator_v3._WATCHLIST_PATH", tmp_path / "watchlist.json")
+
+
+def test_late_intraday_skips_without_crash_gate(monkeypatch, tmp_path):
+    import market_intelligence.market as mil_market
+
+    monkeypatch.setattr(mil_market, "get_market_context",
+                         lambda ctx, phase: {"kospi_change_pct": -1.2, "kosdaq_change_pct": -2.0})
+
+    orch = make_orchestrator(tmp_path)
+    orch._trading_agent = FakeTradingAgent({"action": "BUY", "proposals": []})
+    _write_today_regime(tmp_path, monkeypatch, status="YELLOW")
+
+    result = orch.run_late_intraday_v3()
+
+    assert result == {"action": "NO_TRADE", "reason": "no_crash_gate"}
+    assert orch._trading_agent.calls == []  # LLM 미호출
+
+
+def test_late_intraday_runs_agent_on_crash(monkeypatch, tmp_path):
+    import market_intelligence.market as mil_market
+    import market_intelligence.portfolio as mil_portfolio
+
+    monkeypatch.setattr(mil_market, "get_market_context",
+                         lambda ctx, phase: {"kospi_change_pct": -3.5, "kosdaq_change_pct": -5.1})
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [], "position_count": 0})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0, "total_eval_amt": 1})
+
+    orch = make_orchestrator(tmp_path)
+    orch._trading_agent = FakeTradingAgent({"action": "NO_TRADE", "proposals": [], "reason": "후보 없음"})
+    _write_today_regime(tmp_path, monkeypatch, status="YELLOW")
+
+    result = orch.run_late_intraday_v3()
+
+    assert result["action"] == "NO_TRADE"
+    assert orch._trading_agent.calls[0][0] == TradingPhase.LATE_INTRADAY
+    allowed = orch._trading_agent.calls[0][1]["allowed_tools"]
+    assert "psearch_result" in allowed and "get_top_movers" in allowed
+
+
+def test_late_intraday_runs_on_red_regime_without_index_crash(monkeypatch, tmp_path):
+    import market_intelligence.market as mil_market
+    import market_intelligence.portfolio as mil_portfolio
+
+    monkeypatch.setattr(mil_market, "get_market_context",
+                         lambda ctx, phase: {"kospi_change_pct": -1.0, "kosdaq_change_pct": -1.5})
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [], "position_count": 0})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0, "total_eval_amt": 1})
+
+    orch = make_orchestrator(tmp_path)
+    orch._trading_agent = FakeTradingAgent({"action": "NO_TRADE", "proposals": []})
+    _write_today_regime(tmp_path, monkeypatch, status="RED")
+
+    result = orch.run_late_intraday_v3()
+    assert orch._trading_agent.calls  # RED면 지수 폭락 없어도 게이트 통과
+
+
+def test_late_intraday_skips_when_gate_data_unavailable(monkeypatch, tmp_path):
+    import market_intelligence.market as mil_market
+    from market_intelligence.base import ToolFailure
+
+    def boom(ctx, phase):
+        raise ToolFailure("get_market_context: 500")
+
+    monkeypatch.setattr(mil_market, "get_market_context", boom)
+
+    orch = make_orchestrator(tmp_path)
+    orch._trading_agent = FakeTradingAgent({"action": "BUY", "proposals": []})
+    _write_today_regime(tmp_path, monkeypatch, status="RED")
+
+    result = orch.run_late_intraday_v3()
+
+    assert result == {"action": "NO_TRADE", "reason": "gate_data_unavailable"}
+    assert orch._trading_agent.calls == []
 
 
 # ── BUY proposal → Safety Layer ──────────────────────────────────────────────

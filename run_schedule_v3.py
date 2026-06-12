@@ -6,6 +6,7 @@ MQK_PHASE 환경변수 (KST, ecosystem.config.cjs 기준):
   premarket    - 09:03 레짐 판단 (장 시작 후 시가/초반 흐름 반영) + risk_guidance/drift_triggers 생성
   scan         - 09:17 / 11:17 / 14:17 watchlist 생성/갱신
   intraday     - 09:00~14:55 */5 드리프트 체크 + 매수/청산 proposal (당일 레짐 없으면 스킵)
+  late_intraday - 15:12/15:17 폭락일 전용 과매도 낙주 종가 진입 (지수 -3%↓ 또는 RED만, 아니면 LLM 미호출 스킵)
   close        - 15:30 청산 판단 + 거래 복기
   market_close - 17:00 장마감 분석 + 다음날 prior 생성
 
@@ -92,6 +93,13 @@ def run_intraday() -> None:
     logger.info(f"[v3 INTRADAY] action={result.get('action')}")
 
 
+def run_late_intraday() -> None:
+    _guard_trading_day()
+    orch = _make_orchestrator()
+    result = orch.run_late_intraday_v3()
+    logger.info(f"[v3 LATE_INTRADAY] action={result.get('action')} reason={result.get('reason', '')[:60]}")
+
+
 def run_close() -> None:
     _guard_trading_day()
     orch = _make_orchestrator()
@@ -110,6 +118,7 @@ _RUNNERS = {
     "premarket": run_premarket,
     "scan": run_scan,
     "intraday": run_intraday,
+    "late_intraday": run_late_intraday,
     "close": run_close,
     "market_close": run_market_close,
 }

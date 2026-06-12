@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from enum import Enum
 from typing import Any, Callable
 
@@ -22,6 +23,7 @@ class TradingPhase(str, Enum):
     PREMARKET = "PREMARKET"
     SCAN = "SCAN"
     INTRADAY = "INTRADAY"
+    LATE_INTRADAY = "LATE_INTRADAY"  # 폭락일 전용 장 후반(15:1x) 과매도 낙주 진입
     CLOSE = "CLOSE"
     MARKET_CLOSE = "MARKET_CLOSE"
 
@@ -30,6 +32,7 @@ _PHASE_PROMPT_NAMES = {
     TradingPhase.PREMARKET: "trading_agent/premarket",
     TradingPhase.SCAN: "trading_agent/scan",
     TradingPhase.INTRADAY: "trading_agent/intraday",
+    TradingPhase.LATE_INTRADAY: "trading_agent/late_intraday",
     TradingPhase.CLOSE: "trading_agent/close",
     TradingPhase.MARKET_CLOSE: "trading_agent/market_close",
 }
@@ -66,6 +69,11 @@ PHASE_TOOLS: dict[TradingPhase, list[str]] = {
     ],
     TradingPhase.INTRADAY: [
         "get_ohlcv", "get_intraday_candles", "get_flow", "get_news_stock", "get_stock_status",
+    ],
+    TradingPhase.LATE_INTRADAY: [
+        "get_market_context", "psearch_title", "psearch_result", "get_top_movers",
+        "get_ohlcv", "get_intraday_candles", "get_realtime_price",
+        "get_flow", "get_news_stock", "get_stock_status",
     ],
     TradingPhase.CLOSE: [
         "get_market_context", "get_sector_breadth", "get_news_market",
@@ -118,6 +126,7 @@ class TradingAgent:
     def run(self, phase: TradingPhase, context: dict) -> dict:
         system_prompt = inject_agent(_PHASE_PROMPT_NAMES[phase])
         transcript = [json.dumps({"context": context}, ensure_ascii=False)]
+        tool_history: list[dict[str, Any]] = []
 
         llm_failures = 0
         for _ in range(self._max_steps):
@@ -142,12 +151,19 @@ class TradingAgent:
 
             next_action = response.get("next_action")
             if next_action == "final":
+                if phase == TradingPhase.SCAN:
+                    response = self._maybe_backfill_scan_result(context, tool_history, response)
                 return response
 
             if next_action == "call_tool":
                 tool_name = response.get("tool", "")
                 tool_args = response.get("tool_args", {})
                 tool_result = self._execute_tool(phase, tool_name, tool_args)
+                tool_history.append({
+                    "tool": tool_name,
+                    "args": tool_args,
+                    "result": tool_result,
+                })
                 transcript.append(json.dumps(
                     {"tool_call": {"tool": tool_name, "args": tool_args}, "tool_result": tool_result},
                     ensure_ascii=False,
@@ -157,7 +173,110 @@ class TradingAgent:
             return {"next_action": "final", "action": "NO_TRADE",
                     "reason": f"unknown_next_action:{next_action}"}
 
+        if phase == TradingPhase.SCAN:
+            return self._fallback_scan_result(context, tool_history, reason="max_steps_exceeded")
         return {"next_action": "final", "action": "NO_TRADE", "reason": "max_steps_exceeded"}
+
+    def _fallback_scan_result(self, context: dict, tool_history: list[dict[str, Any]], reason: str) -> dict:
+        """LLM scan 루프가 끝까지 수렴하지 못하면 수집한 도구 결과로 보수적 watchlist를 만든다."""
+        min_trading_value = float(context.get("risk_guidance", {}).get("min_trading_value_krw", 0) or 0)
+        positions_left = int(context.get("risk_budget_remaining", {}).get("positions_left", 0) or 0)
+        max_watchlist = min(10, max(positions_left, 0))
+
+        candidates: dict[str, dict[str, Any]] = {}
+        overheated_bias_warning = False
+        stock_status: dict[str, dict[str, Any]] = {}
+
+        for item in tool_history:
+            tool = item.get("tool")
+            result = item.get("result") or {}
+            if not isinstance(result, dict):
+                continue
+
+            if tool == "get_top_movers":
+                overheated_bias_warning = bool(result.get("overheated_bias_warning"))
+                rows = result.get("change_rate_top") or result.get("movers") or []
+                for row in rows:
+                    ticker = str(row.get("ticker") or "").strip()
+                    if not _is_six_digit_ticker(ticker):
+                        continue
+                    trading_value = _coerce_float(
+                        row.get("trading_value_krw", row.get("trading_value", row.get("volume", 0)))
+                    )
+                    candidates.setdefault(ticker, {
+                        "ticker": ticker,
+                        "name": row.get("name"),
+                        "trading_value": trading_value,
+                        "change_pct": _coerce_float(row.get("change_pct")),
+                        "setup": "RELATIVE_STRENGTH",
+                        "reason": "fallback:get_top_movers",
+                    })
+                    candidates[ticker]["trading_value"] = max(candidates[ticker]["trading_value"], trading_value)
+
+            elif tool == "psearch_result":
+                for row in result.get("candidates", []):
+                    ticker = str(row.get("ticker") or "").strip()
+                    if not _is_six_digit_ticker(ticker):
+                        continue
+                    candidates.setdefault(ticker, {
+                        "ticker": ticker,
+                        "name": row.get("name"),
+                        "trading_value": _coerce_float(row.get("trading_value")),
+                        "change_pct": _coerce_float(row.get("change_pct")),
+                        "setup": "TREND",
+                        "reason": "fallback:psearch_result",
+                    })
+
+            elif tool == "get_stock_status":
+                ticker = str(result.get("ticker") or item.get("args", {}).get("ticker") or "").strip()
+                if ticker:
+                    stock_status[ticker] = result
+
+        ranked: list[dict[str, Any]] = []
+        for ticker, row in candidates.items():
+            if row.get("trading_value", 0.0) < min_trading_value:
+                continue
+            status = stock_status.get(ticker, {})
+            if status.get("trading_halted") or status.get("administrative_issue") or status.get("is_limit_up"):
+                continue
+            ranked.append(row)
+
+        ranked.sort(key=lambda x: (x.get("trading_value", 0.0), x.get("change_pct", 0.0)), reverse=True)
+        watchlist = [row["ticker"] for row in ranked[:max_watchlist]]
+
+        fallback_candidates = [
+            {
+                "ticker": row["ticker"],
+                "confidence": 65,
+                "reason": row["reason"],
+                "setup": row["setup"],
+            }
+            for row in ranked[:max_watchlist]
+        ]
+
+        return {
+            "next_action": "final",
+            "action": "WATCHLIST_UPDATE",
+            "watchlist": watchlist,
+            "candidates": fallback_candidates,
+            "overheated_bias_warning": overheated_bias_warning,
+            "reason": f"{reason}; deterministic_scan_fallback",
+        }
+
+    def _maybe_backfill_scan_result(
+        self, context: dict, tool_history: list[dict[str, Any]], response: dict[str, Any]
+    ) -> dict[str, Any]:
+        """SCAN final 응답이 비어 있으면 deterministic fallback으로 watchlist를 보강한다."""
+        if response.get("action") != "WATCHLIST_UPDATE":
+            return response
+        if response.get("watchlist"):
+            return response
+
+        fallback = self._fallback_scan_result(context, tool_history, reason="empty_watchlist_from_llm")
+        if fallback.get("watchlist"):
+            fallback["reason"] = f"{response.get('reason', '')} | {fallback['reason']}".strip(" |")
+            return fallback
+        return response
 
     def _execute_tool(self, phase: TradingPhase, tool_name: str, tool_args: dict) -> dict:
         if tool_name not in TOOL_REGISTRY:
@@ -180,3 +299,16 @@ class TradingAgent:
             return {"error": "tool_failure", "tool": tool_name, "message": str(e)}
         except Exception as e:
             return {"error": "tool_execution_error", "tool": tool_name, "message": str(e)}
+
+
+def _coerce_float(value: Any) -> float:
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_six_digit_ticker(value: str) -> bool:
+    return bool(re.fullmatch(r"\d{6}", value))

@@ -12,9 +12,24 @@
 ## 권장 흐름
 1. `get_market_context`로 시장 배경 확인 (프로그램매매 순매수 `program_net_buy_krw`,
    투자자별 일별 동향 `investor_trend_days` 포함)
-2. `psearch_result`로 조건검색 후보 탐색 (실패 시 `get_top_movers`로 백업,
+2. `psearch_title`로 조건검색식 목록을 확인한 뒤, **아래 가이드에 따라 상황에 맞는
+   검색식을 골라** `psearch_result`로 후보를 탐색한다 (실패 시 `get_top_movers`로 백업,
    백업 사용 시 최종 결과에 `"overheated_bias_warning": true` 포함; 체결강도 상위
    `volume_power_top`, 등락률 순위 `change_rate_top`도 참고 가능)
+
+## 조건검색식 선택 가이드 (이름으로 식별)
+- **주도주 베이스 식** (이름에 "주도주"/"베이스"/"MQK1" 포함): 평상시(GREEN/YELLOW) 기본
+  검색식. 정배열+거래대금 주도주 풀. 결과 중 **당일 -2%~-5% 하락하면서 거래량이 전일
+  대비 30% 미만으로 마른 종목**이 최우선 타겟이다 — 박스 돌파 후 첫 음봉 눌림(VCP 수축)
+  셋업으로, setup은 `TREND`로 표기.
+- **EP/돌파 식** (이름에 "EP"/"돌파"/"MQK2" 포함): **09시대 첫 스캔에서 우선 확인.**
+  갭상승+동시간대 거래량 급증 종목 — 반드시 `get_news_stock`으로 촉매(대규모 수주/정책/
+  세계 최초급 뉴스)를 확인하고, 촉매가 약하면 단순 과열로 보고 제외. `is_limit_up`이면
+  추격 금지. setup은 `RELATIVE_STRENGTH` 또는 `INTRADAY_RECOVERY`.
+- **폭락 낙주 식** (이름에 "낙주"/"폭락"/"MQK3" 포함): **지수(코스피/코스닥)가 당일 -3%
+  이상 폭락 중이거나 레짐 RED일 때만 조회**한다. 평상시에는 사용 금지. 결과는 "최근
+  거래대금 2,000억+ 이력의 대장주가 이격도 80% 이하로 찢어진 투매" 후보 — setup은
+  `REVERSAL`. 진입 판단은 장 후반 전용 phase가 담당하므로 watchlist 등재까지만.
 3. 후보별 `get_stock_status`로 VI/관리종목/거래정지/상하한가(`is_limit_up`,
    `is_limit_down`) 확인 → 문제 있으면 후보에서 제외
 4. 후보별 `get_ohlcv` + `get_flow` + `get_news_stock`으로 분석

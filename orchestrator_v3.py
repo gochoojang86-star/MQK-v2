@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from codes.risk_officer import RiskViolation, TradeProposal
 from config.settings import RISK
 from market_intelligence import market as mil_market
 from market_intelligence import portfolio as mil_portfolio
+from market_intelligence import risk_filter as mil_risk_filter
+from market_intelligence import screening as mil_screening
 from market_intelligence.base import MILContext, ToolFailure
 from market_intelligence.cache import MILCache
 from market_intelligence.circuit_breaker import CircuitBreaker
@@ -38,6 +41,15 @@ _WATCHLIST_PATH = _DATA_DIR / "watchlist.json"
 
 def _default_drift_state(date: str) -> dict:
     return {"date": date, "last_trigger_time": {}, "today_caution_count": 0, "daily_lite_llm_calls": 0}
+
+
+def _to_float(value) -> float:
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(str(value).replace(",", ""))
+    except (ValueError, TypeError):
+        return 0.0
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -116,6 +128,8 @@ class MQKOrchestratorV3(MQKOrchestrator):
         drift_state = load_drift_state(path=_DRIFT_STATE_PATH, today=self._today)
         context = self._build_context(TradingPhase.SCAN, regime, _drift_status(drift_state), watchlist=[])
         result = self._trading_agent.run(TradingPhase.SCAN, context)
+        if not result.get("watchlist"):
+            result = self._backfill_scan_result(result, context)
         save_watchlist(result.get("watchlist", []), path=_WATCHLIST_PATH)
         self._save_json("scan_v3.json", result)
         return result
@@ -174,6 +188,55 @@ class MQKOrchestratorV3(MQKOrchestrator):
         result = self._trading_agent.run(TradingPhase.INTRADAY, context)
         self._handle_proposals(result.get("proposals", []))
         self._save_json(f"intraday_v3_{datetime.now().strftime('%H%M%S')}.json", result)
+        return result
+
+    # ── 15:12/15:17 LATE_INTRADAY (폭락일 전용 과매도 낙주 종가 진입) ──────────
+    _CRASH_GATE_CHANGE_PCT = -3.0  # 코스피/코스닥 당일 등락률이 이 이하면 폭락일
+
+    def run_late_intraday_v3(self) -> dict:
+        """지수 폭락일에만 LLM을 호출하는 장 후반 REVERSAL 진입 phase.
+
+        게이트는 코드가 강제한다: 코스피/코스닥 당일 -3% 이하 또는 레짐 RED가
+        아니면 LLM을 호출하지 않고 즉시 스킵한다 (비용 0, 진입 0).
+        """
+        regime = load_last_regime(path=_LAST_REGIME_PATH)
+        if regime is None or str(regime.get("timestamp", ""))[:10] != self._today:
+            logger.warning("[LATE_INTRADAY] 당일 레짐 없음 — 스킵")
+            return {"action": "NO_TRADE", "reason": "stale_regime"}
+
+        try:
+            market_ctx = mil_market.get_market_context(self._mil, TradingPhase.LATE_INTRADAY.value)
+            kospi_chg = _to_float(market_ctx.get("kospi_change_pct"))
+            kosdaq_chg = _to_float(market_ctx.get("kosdaq_change_pct"))
+        except ToolFailure as e:
+            # 게이트 판단 불가 → 보수적으로 진입하지 않는다.
+            logger.warning(f"[LATE_INTRADAY] 시장 데이터 조회 실패 — 게이트 판단 불가, 스킵: {e}")
+            return {"action": "NO_TRADE", "reason": "gate_data_unavailable"}
+
+        is_crash = (
+            kospi_chg <= self._CRASH_GATE_CHANGE_PCT
+            or kosdaq_chg <= self._CRASH_GATE_CHANGE_PCT
+            or regime.get("status") == "RED"
+        )
+        if not is_crash:
+            logger.info(
+                f"[LATE_INTRADAY] 폭락 게이트 미충족 (KOSPI {kospi_chg:+.2f}%, KOSDAQ {kosdaq_chg:+.2f}%, "
+                f"status={regime.get('status')}) — LLM 미호출 스킵"
+            )
+            return {"action": "NO_TRADE", "reason": "no_crash_gate"}
+
+        logger.warning(
+            f"[LATE_INTRADAY] 폭락 게이트 통과 (KOSPI {kospi_chg:+.2f}%, KOSDAQ {kosdaq_chg:+.2f}%, "
+            f"status={regime.get('status')}) — 낙주 진입 판단 시작"
+        )
+        drift_state = load_drift_state(path=_DRIFT_STATE_PATH, today=self._today)
+        watchlist = load_watchlist(path=_WATCHLIST_PATH)
+        context = self._build_context(
+            TradingPhase.LATE_INTRADAY, regime, _drift_status(drift_state), watchlist=watchlist,
+        )
+        result = self._trading_agent.run(TradingPhase.LATE_INTRADAY, context)
+        self._handle_proposals(result.get("proposals", []))
+        self._save_json(f"late_intraday_v3_{datetime.now().strftime('%H%M%S')}.json", result)
         return result
 
     # ── 15:30 CLOSE ────────────────────────────────────────────────────────────
@@ -253,6 +316,65 @@ class MQKOrchestratorV3(MQKOrchestrator):
                 "now": datetime.now().isoformat(),
             },
         )
+
+    def _backfill_scan_result(self, result: dict, context: dict) -> dict:
+        """SCAN 결과가 비면 거래대금/상태 기반 deterministic watchlist를 만든다."""
+        try:
+            movers = mil_screening.get_top_movers(self._mil, TradingPhase.SCAN.value)
+        except ToolFailure as e:
+            logger.warning(f"[SCAN BACKFILL] get_top_movers 실패: {e}")
+            return result
+
+        rows = movers.get("change_rate_top") or movers.get("movers") or []
+        min_trading_value = float(context.get("risk_guidance", {}).get("min_trading_value_krw", 0) or 0)
+        positions_left = int(context.get("risk_budget_remaining", {}).get("positions_left", 0) or 0)
+        limit = min(10, max(positions_left, 0))
+        if limit <= 0:
+            return result
+
+        candidates = []
+        for row in rows:
+            ticker = str(row.get("ticker") or "").strip()
+            if not re.fullmatch(r"\d{6}", ticker):
+                continue
+            trading_value = _to_float(row.get("trading_value_krw", row.get("trading_value", 0)))
+            if trading_value < min_trading_value:
+                continue
+            try:
+                status = mil_risk_filter.get_stock_status(self._mil, TradingPhase.SCAN.value, ticker)
+            except ToolFailure:
+                continue
+            if status.get("trading_halted") or status.get("administrative_issue") or status.get("is_limit_up"):
+                continue
+            candidates.append({
+                "ticker": ticker,
+                "name": row.get("name"),
+                "trading_value": trading_value,
+                "change_pct": _to_float(row.get("change_pct")),
+            })
+
+        candidates.sort(key=lambda x: (x["trading_value"], x["change_pct"]), reverse=True)
+        watchlist = [row["ticker"] for row in candidates[:limit]]
+        if not watchlist:
+            return result
+
+        logger.info(f"[SCAN BACKFILL] deterministic watchlist={watchlist}")
+        return {
+            "next_action": "final",
+            "action": "WATCHLIST_UPDATE",
+            "watchlist": watchlist,
+            "candidates": [
+                {
+                    "ticker": row["ticker"],
+                    "confidence": 65,
+                    "reason": "orchestrator_scan_backfill",
+                    "setup": "RELATIVE_STRENGTH",
+                }
+                for row in candidates[:limit]
+            ],
+            "overheated_bias_warning": bool(movers.get("overheated_bias_warning")),
+            "reason": f"{result.get('reason', '')} | orchestrator_scan_backfill".strip(" |"),
+        }
 
     def _collect_drift_snapshot(self) -> dict | None:
         """드리프트 스냅샷을 수집한다. 실패/이상 데이터 시 None을 반환한다 (호출부에서 STABLE로 강등).

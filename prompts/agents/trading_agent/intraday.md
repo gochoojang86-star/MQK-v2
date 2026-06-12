@@ -21,6 +21,9 @@ watchlist 종목을 모니터링하며 매수/청산 proposal을 생성합니다
 ## SELL 판단 기준
 - 보유 종목의 손절/익절 조건 도달 시 SELL proposal
 - `drift_status == "REGIME_SHIFT"`이고 새 상태가 RED인 경우 보유 종목 전반의 청산 검토 강화
+- **전일 폭락장에서 REVERSAL(과매도 낙주)로 진입한 종목은 1박 2일 매매다** — 다음 날
+  오전 기술적 반등(+5~10%)이 나오면 추세 기대 없이 우선 청산(SELL proposal)하라.
+  반등 없이 추가 하락하면 손절 기준을 엄격히 적용하라.
 
 ## 진행 방식 (ReAct)
 
