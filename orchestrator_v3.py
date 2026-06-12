@@ -241,13 +241,18 @@ class MQKOrchestratorV3(MQKOrchestrator):
 
     # ── 15:30 CLOSE ────────────────────────────────────────────────────────────
     def run_close_v3(self) -> dict:
+        """15:18 — 정규장 내 청산 판단. 일반 주문으로 즉시(또는 동시호가) 체결된다.
+
+        모의투자가 장후 시간외(06) 주문을 지원하지 않아 정규장 내로 당겼다.
+        거래 복기는 마감 확정 데이터로 market_close(17:00)가 수행한다.
+        실전 전환 후 늦은 청산이 필요하면 after_hours=True 경로(06)를 쓸 수 있다.
+        """
         regime = load_last_regime(path=_LAST_REGIME_PATH) or {}
         drift_state = load_drift_state(path=_DRIFT_STATE_PATH, today=self._today)
         context = self._build_context(TradingPhase.CLOSE, regime, _drift_status(drift_state), watchlist=[])
         result = self._trading_agent.run(TradingPhase.CLOSE, context)
         self._handle_sell_proposals(result.get("sell_proposals", []))
         self._save_json("close_v3.json", result)
-        self.run_close_review()  # v2 거래 복기 재사용
         return result
 
     # ── 17:00 MARKET_CLOSE ───────────────────────────────────────────────────
@@ -255,6 +260,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         regime = load_last_regime(path=_LAST_REGIME_PATH) or {}
         context = self._build_context(TradingPhase.MARKET_CLOSE, regime, "STABLE", watchlist=[])
         result = self._trading_agent.run(TradingPhase.MARKET_CLOSE, context)
+        self.run_close_review()  # v2 거래 복기 — 마감 확정 데이터 기준
         self._save_json("market_close_snapshot.json", result.get("market_close_snapshot", {}))
         self._save_json("close_market_read.json", result.get("close_market_read", {}))
         self._save_json("next_day_premarket_context.json", result.get("next_day_premarket_context", {}))
@@ -446,13 +452,13 @@ class MQKOrchestratorV3(MQKOrchestrator):
                 results.append({"action": "SKIP", "reason": "malformed_proposal", "proposal": _safe_summary(p)})
         return results
 
-    def _handle_sell_proposals(self, proposals: list[dict]) -> list[dict]:
+    def _handle_sell_proposals(self, proposals: list[dict], after_hours: bool = False) -> list[dict]:
         results = []
         for p in proposals:
             try:
                 if not isinstance(p, dict):
                     raise TypeError(f"proposal이 dict가 아님: {type(p).__name__}")
-                results.append(self._process_v3_sell_proposal(p))
+                results.append(self._process_v3_sell_proposal(p, after_hours=after_hours))
             except (KeyError, TypeError, ValueError, AttributeError) as e:
                 logger.warning(f"[V3 SELL PROPOSAL] 잘못된 proposal 무시: {e} | proposal={_safe_summary(p)}")
                 results.append({"action": "SKIP", "reason": "malformed_proposal", "proposal": _safe_summary(p)})
@@ -541,7 +547,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         result = self._order_manager.execute_buy(order)
         return {"action": "BUY_EXECUTED", "ticker": ticker, "success": result.success}
 
-    def _process_v3_sell_proposal(self, proposal: dict) -> dict:
+    def _process_v3_sell_proposal(self, proposal: dict, after_hours: bool = False) -> dict:
         ticker = proposal["ticker"]
         open_pos = self._journal.get_open_positions()
         match = next((p for p in open_pos if p["ticker"] == ticker), None)
@@ -556,6 +562,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
             stop_loss_price=float(match["stop_loss_price"]),
             reason=proposal.get("reason", ""),
             confidence=100,
+            after_hours=after_hours,  # close phase: 장후 시간외(당일 종가) 청산
         )
         result = self._order_manager.execute_sell(order)
         return {"action": "SELL_EXECUTED", "ticker": ticker, "success": result.success}

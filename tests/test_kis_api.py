@@ -647,3 +647,28 @@ def test_get_daily_minute_candles_parses_output2(tmp_path, monkeypatch):
     assert params["FID_INPUT_HOUR_1"] == "130000"
     assert params["FID_PW_DATA_INCU_YN"] == "Y"
     assert params["FID_FAKE_TICK_INCU_YN"] == ""
+
+def test_sell_after_hours_close_uses_ord_dvsn_06(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"rt_cd": "0", "output": {"ODNO": "AH001"}}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append({"url": url, "tr_id": headers.get("tr_id"), "body": json})
+        return FakeResponse()
+
+    monkeypatch.setattr("broker.kis_api.requests.post", fake_post)
+    monkeypatch.setattr(KISApi, "_get_token", lambda self, mode=None: "token")
+    api = KISApi(config=FakeKISConfig(), token_cache_path=tmp_path / "token.json")
+
+    result = api.sell_after_hours_close("095340", 6)
+
+    assert result.success is True
+    assert calls[0]["body"]["ORD_DVSN"] == "06"
+    assert calls[0]["body"]["ORD_UNPR"] == "0"
+

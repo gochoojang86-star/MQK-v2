@@ -33,6 +33,7 @@ class OrderRequest:
     approval_request_id: Optional[str] = None
     entry_date: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
     strategy_type: str = "TREND"
+    after_hours: bool = False  # True면 장후 시간외(06, 당일 종가) 주문 — close phase 청산용
 
 
 @dataclass
@@ -162,7 +163,10 @@ class OrderManager:
         if self._kis is None:
             raise RuntimeError("KIS API is required for live sell execution. Pass dry_run=True for order dry-run.")
 
-        if order.price == 0:
+        if order.after_hours and hasattr(self._kis, "sell_after_hours_close"):
+            # 정규장 마감 후(15:40~16:00) 당일 종가 청산
+            result = self._kis.sell_after_hours_close(order.ticker, order.quantity)
+        elif order.price == 0:
             result = self._kis.sell_market(order.ticker, order.quantity)
         else:
             result = self._kis.sell_limit(order.ticker, order.quantity, order.price)

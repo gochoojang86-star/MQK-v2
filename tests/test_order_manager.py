@@ -151,3 +151,32 @@ def test_cancel_stale_orders_delegates_cancelable_orders(tmp_path):
     assert results[0].success is True
     assert kis.cancel_call["order_no"] == "123456"
     assert kis.cancel_call["all_quantity"] is True
+
+def test_execute_sell_after_hours_routes_to_close_price_order(tmp_path):
+    class FakeKis:
+        def __init__(self):
+            self.after_hours_calls = []
+
+        def sell_after_hours_close(self, ticker, quantity):
+            self.after_hours_calls.append((ticker, quantity))
+            from broker.kis_api import OrderResult
+            return OrderResult(success=True, order_no="AH1", ticker=ticker,
+                               quantity=quantity, price=230000.0, side="SELL",
+                               timestamp="2026-06-12T15:42:00")
+
+        def sell_market(self, ticker, quantity):
+            raise AssertionError("after_hours 주문이 시장가로 라우팅되면 안 된다")
+
+    journal = TradeJournal(db_path=tmp_path / "trades.db")
+    seed = OrderManager(dry_run=True, journal=journal, log_dir=tmp_path)
+    seed.execute_buy(OrderRequest("095340", "ISC", "BUY", 6, 243000, 205607, "test", 80,
+                                   approval_request_id="REQ1"))
+    kis = FakeKis()
+    om = OrderManager(kis_api=kis, dry_run=False, journal=journal, log_dir=tmp_path)
+    sell = OrderRequest("095340", "ISC", "SELL", 6, 230000, 0, "손절", 100, after_hours=True)
+    result = om.execute_sell(sell)
+
+    assert result.success is True
+    assert kis.after_hours_calls == [("095340", 6)]
+    assert journal.get_open_positions() == []
+

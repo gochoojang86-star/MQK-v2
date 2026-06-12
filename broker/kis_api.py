@@ -578,6 +578,13 @@ class KISApi:
         """지정가 매도"""
         return self._place_order(ticker, quantity, price, "SELL", market=False)
 
+    def sell_after_hours_close(self, ticker: str, quantity: int) -> OrderResult:
+        """장후 시간외 매도 (ORD_DVSN 06) — 15:40~16:00 접수, 당일 종가로 체결.
+
+        정규장 마감(15:30) 후 close phase의 청산 주문에 사용한다.
+        """
+        return self._place_order(ticker, quantity, 0, "SELL", market=False, order_type="06")
+
     def get_open_orders(self, side: str | None = None) -> list[dict]:
         """정정/취소 가능 미체결 주문 조회.
 
@@ -674,7 +681,8 @@ class KISApi:
             )
 
     def _place_order(
-        self, ticker: str, quantity: int, price: float, side: str, market: bool
+        self, ticker: str, quantity: int, price: float, side: str, market: bool,
+        order_type: str | None = None,
     ) -> OrderResult:
         order_mode = self._cfg.mode
         url = f"{self._base_url_for(order_mode)}/uapi/domestic-stock/v1/trading/order-cash"
@@ -684,14 +692,17 @@ class KISApi:
         else:
             tr_id = "TTTC0801U" if order_mode == KISMode.REAL else "VTTC0801U"
 
+        # order_type 명시 시 우선 (06=장후 시간외 등). 시장가/장후 시간외는 가격 0.
+        ord_dvsn = order_type or ("01" if market else "00")
+        no_price = market or ord_dvsn in ("01", "05", "06")
         acct_parts = self._account_no_for(order_mode).split("-")
         body = {
             "CANO": acct_parts[0],
             "ACNT_PRDT_CD": acct_parts[1],
             "PDNO": ticker,
-            "ORD_DVSN": "01" if market else "00",   # 01=시장가, 00=지정가
+            "ORD_DVSN": ord_dvsn,
             "ORD_QTY": str(quantity),
-            "ORD_UNPR": "0" if market else str(int(price)),
+            "ORD_UNPR": "0" if no_price else str(int(price)),
         }
         try:
             resp = requests.post(url, headers=self._headers(tr_id, mode=order_mode), json=body, timeout=10)

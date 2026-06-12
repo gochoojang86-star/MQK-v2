@@ -89,10 +89,10 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "late_intraday" },
-      // KST 15:12/15:17 — 폭락일(지수 -3%↓ 또는 RED) 전용 과매도 낙주 종가 진입.
+      // KST 15:08/15:13 — 폭락일(지수 -3%↓ 또는 RED) 전용 과매도 낙주 종가 부근 진입.
       // 평상시에는 코드 게이트가 LLM 호출 없이 즉시 스킵한다 (비용 0).
-      // :12/:17인 이유: 종가 동시호가(15:20) 전 연속거래 구간 + close(15:30)와 충돌 회피.
-      cron_restart: "12,17 15 * * 1-5",
+      // close(15:18)와의 flock 충돌을 피해 앞당김.
+      cron_restart: "8,13 15 * * 1-5",
       autorestart: false,
     },
     {
@@ -101,7 +101,9 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "close" },
-      cron_restart: "30 15 * * 1-5",  // KST 15:30
+      // KST 15:18 — 정규장 내 청산 판단(일반 주문, 동시호가 직전 = 사실상 종가 청산).
+      // 모의투자가 장후 시간외(06) 주문을 미지원하므로 정규장 내로 당김. 복기는 market_close(17:00)가 수행.
+      cron_restart: "18 15 * * 1-5",
       autorestart: false,
     },
     {
