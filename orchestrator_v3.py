@@ -529,6 +529,8 @@ class MQKOrchestratorV3(MQKOrchestrator):
         stop_loss_price = float(proposal["stop_loss_price"])
         snapshot = self._market_data.get_snapshot(ticker)
         entry_price = snapshot.current_price
+        # 텔레그램 승인/주문 로그에 종목명이 보이도록 스냅샷에서 해석 (없으면 코드로 폴백)
+        stock_name = getattr(snapshot, "name", "") or ticker
         atr = self._estimate_atr(ticker)
         portfolio_state = self.build_portfolio_state()
 
@@ -569,7 +571,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         approval_request_id = None
         if RISK.require_telegram_approval:
             approval_req = ApprovalRequest(
-                ticker=ticker, name=ticker, decision="BUY",
+                ticker=ticker, name=stock_name, decision="BUY",
                 entry_price=entry_price,
                 stop_loss_price=sizing.stop_loss_price,
                 quantity=sizing.quantity,
@@ -584,7 +586,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
                 return {"action": "REJECTED", "ticker": ticker, "reason": "텔레그램 거부"}
 
         order = OrderRequest(
-            ticker=ticker, name=ticker, side="BUY",
+            ticker=ticker, name=stock_name, side="BUY",
             quantity=sizing.quantity,
             price=entry_price,
             stop_loss_price=sizing.stop_loss_price,

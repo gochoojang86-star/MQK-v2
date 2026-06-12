@@ -745,6 +745,31 @@ def test_handle_proposals_skips_non_numeric_stop_loss_price(tmp_path, monkeypatc
     assert results[0]["reason"] == "malformed_proposal"
 
 
+def test_process_v3_buy_proposal_resolves_stock_name_for_approval(tmp_path, monkeypatch):
+    """텔레그램 승인 요청과 주문에 종목명이 포함되어야 한다 (코드만 ❌)."""
+    orch = make_orchestrator(tmp_path)
+    orch._risk_officer = FakeRiskOfficer()
+    orch._position_sizer = FakePositionSizer()
+    orch._telegram = FakeTelegramApproval(approved=True)
+    orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
+    monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
+
+    class NamedSnapshot:
+        current_price = 70000.0
+        name = "삼성전자"
+
+    monkeypatch.setattr(orch, "_market_data",
+                         type("MD", (), {"get_snapshot": staticmethod(lambda t: NamedSnapshot())})())
+
+    proposal = {"ticker": "005930", "side": "BUY", "confidence": 82,
+                "stop_loss_price": 68000, "reason": "테스트"}
+    orch._process_v3_buy_proposal(proposal)
+
+    assert orch._telegram.requests[0].name == "삼성전자"
+    assert orch._order_manager.buy_calls[0].name == "삼성전자"
+
+
 def test_process_v3_buy_proposal_blocked_by_risk_officer(tmp_path, monkeypatch):
     orch = make_orchestrator(tmp_path)
     orch._risk_officer = FakeRiskOfficer(raise_violation=True)
