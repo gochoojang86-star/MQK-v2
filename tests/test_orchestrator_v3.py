@@ -146,7 +146,7 @@ def test_collect_drift_snapshot_returns_none_on_tool_failure(monkeypatch, tmp_pa
     monkeypatch.setattr(mil_market, "get_intraday_index_candles",
                          lambda ctx, phase: {"candles": []})
     monkeypatch.setattr(mil_market, "get_sector_breadth",
-                         lambda ctx, phase: {"sectors": []})
+                         lambda ctx, phase: {"market_breadth": {}})
 
     orch = make_orchestrator(tmp_path)
     assert orch._collect_drift_snapshot() is None
@@ -160,7 +160,7 @@ def test_collect_drift_snapshot_returns_none_when_kospi_is_none(monkeypatch, tmp
     monkeypatch.setattr(mil_market, "get_intraday_index_candles",
                          lambda ctx, phase: {"candles": []})
     monkeypatch.setattr(mil_market, "get_sector_breadth",
-                         lambda ctx, phase: {"sectors": []})
+                         lambda ctx, phase: {"market_breadth": {}})
 
     orch = make_orchestrator(tmp_path)
     assert orch._collect_drift_snapshot() is None
@@ -183,7 +183,7 @@ def test_run_intraday_v3_degrades_when_snapshot_unavailable(monkeypatch, tmp_pat
     monkeypatch.setattr(mil_market, "get_intraday_index_candles",
                          lambda ctx, phase: {"candles": []})
     monkeypatch.setattr(mil_market, "get_sector_breadth",
-                         lambda ctx, phase: {"sectors": []})
+                         lambda ctx, phase: {"market_breadth": {}})
 
     orch = make_orchestrator(tmp_path)
 
@@ -230,10 +230,7 @@ def test_collect_drift_snapshot_combines_market_tools(monkeypatch, tmp_path):
                              {"open": 2528.0, "high": 2529.0, "low": 2470.0, "close": 2480.0},
                          ]})
     monkeypatch.setattr(mil_market, "get_sector_breadth",
-                         lambda ctx, phase: {"sectors": [
-                             {"advancers": 100, "decliners": 300},
-                             {"advancers": 50, "decliners": 250},
-                         ]})
+                         lambda ctx, phase: {"market_breadth": {"advancers": 150, "decliners": 550}})
 
     orch = make_orchestrator(tmp_path)
     snapshot = orch._collect_drift_snapshot()
@@ -279,7 +276,7 @@ def test_run_intraday_v3_stable_executes_no_trade(monkeypatch, tmp_path):
     monkeypatch.setattr(mil_market, "get_intraday_index_candles",
                          lambda ctx, phase: {"candles": [{"open": 2525.0, "high": 2526.0, "low": 2515.0, "close": 2520.0}]})
     monkeypatch.setattr(mil_market, "get_sector_breadth",
-                         lambda ctx, phase: {"sectors": [{"advancers": 400, "decliners": 300}]})
+                         lambda ctx, phase: {"market_breadth": {"advancers": 400, "decliners": 300}})
 
     orch = make_orchestrator(tmp_path)
     orch._drift_detector = FakeDriftDetector({
@@ -325,7 +322,7 @@ def test_run_intraday_v3_regime_shift_updates_status_and_rescans(monkeypatch, tm
     monkeypatch.setattr(mil_market, "get_intraday_index_candles",
                          lambda ctx, phase: {"candles": [{"open": 2530.0, "high": 2531.0, "low": 2465.0, "close": 2470.0}]})
     monkeypatch.setattr(mil_market, "get_sector_breadth",
-                         lambda ctx, phase: {"sectors": [{"advancers": 100, "decliners": 600}]})
+                         lambda ctx, phase: {"market_breadth": {"advancers": 100, "decliners": 600}})
 
     orch = make_orchestrator(tmp_path)
     orch._drift_detector = FakeDriftDetector({

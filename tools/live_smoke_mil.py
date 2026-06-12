@@ -71,7 +71,8 @@ def run_checks(ctx: MILContext, ticker: str, hts_id: str) -> list[tuple[str, str
                      f"investor_days={len(o.get('investor_trend_days') or [])} "
                      f"missing={o.get('missing_fields')}"))
     check("get_sector_breadth", lambda: market.get_sector_breadth(ctx, "SCAN"),
-          lambda o: (len(o.get("sectors", [])) > 0, f"sectors={len(o.get('sectors', []))}"))
+          lambda o: (len(o.get("sectors", [])) > 0 and o.get("market_breadth", {}).get("advancers", 0) + o.get("market_breadth", {}).get("decliners", 0) > 0,
+                     f"sectors={len(o.get('sectors', []))} breadth={o.get('market_breadth')}"))
     check("get_intraday_index_candles", lambda: market.get_intraday_index_candles(ctx, "SCAN"),
           lambda o: (len(o.get("candles", [])) > 0, f"candles={len(o.get('candles', []))}"),
           intraday_only=True)

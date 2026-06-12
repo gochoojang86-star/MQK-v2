@@ -239,7 +239,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         try:
             market_ctx = mil_market.get_market_context(self._mil, "INTRADAY")
             candles = mil_market.get_intraday_index_candles(self._mil, "INTRADAY").get("candles", [])
-            sectors = mil_market.get_sector_breadth(self._mil, "INTRADAY").get("sectors", [])
+            breadth = mil_market.get_sector_breadth(self._mil, "INTRADAY").get("market_breadth", {})
 
             kospi_current = market_ctx.get("kospi", 0.0)
             kospi_open = candles[0]["open"] if candles else kospi_current
@@ -256,8 +256,8 @@ class MQKOrchestratorV3(MQKOrchestrator):
                 "kospi_open": kospi_open,
                 "kospi_low": kospi_low,
                 "foreign_net_buy_bln": market_ctx.get("foreign_net_buy_krw", 0.0) / 1e8,
-                "advance_count": sum(s.get("advancers", 0) for s in sectors),
-                "decline_count": sum(s.get("decliners", 0) for s in sectors),
+                "advance_count": breadth.get("advancers", 0),
+                "decline_count": breadth.get("decliners", 0),
             }
         except ToolFailure as e:
             logger.warning(f"[V3 DRIFT] 드리프트 스냅샷 수집 실패(ToolFailure) — 드리프트 체크 스킵: {e}")

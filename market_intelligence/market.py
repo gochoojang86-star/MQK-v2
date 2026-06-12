@@ -118,9 +118,13 @@ def get_market_context(ctx: MILContext, phase: str) -> dict:
 
 
 def get_sector_breadth(ctx: MILContext, phase: str) -> dict:
-    """업종별 지수·등락률 + 상승/하락/보합/상한/하한 종목 수 (브레드스 통합)."""
+    """시장 전체 브레드스(output1) + 업종별 등락률/거래대금 비중(output2).
 
-    # 합계/규모별 지수 행 — 산업별 행만 남기지 않으면 breadth 합산이 이중계산된다.
+    상승/하락/보합/상한/하한 종목 수는 기준지수(output1)에만 제공된다 —
+    업종별 행(output2)에는 해당 필드가 없다 (D1 라이브 테스트로 확인).
+    """
+
+    # 합계/규모별 지수 행 — 산업별 행만 남긴다.
     _AGGREGATE_CODES = {"0001", "0002", "0003", "0004"}  # 종합/대형주/중형주/소형주
 
     def fetch():
@@ -135,21 +139,25 @@ def get_sector_breadth(ctx: MILContext, phase: str) -> dict:
                 "FID_BLNG_CLS_CODE": "0",
             },
         )
+        out1 = raw.get("output1", {}) or {}
+        market_breadth = {
+            "advancers": _to_int(out1.get("ascn_issu_cnt")),
+            "decliners": _to_int(out1.get("down_issu_cnt")),
+            "unchanged": _to_int(out1.get("stnr_issu_cnt")),
+            "upper_limit": _to_int(out1.get("uplm_issu_cnt")),
+            "lower_limit": _to_int(out1.get("lslm_issu_cnt")),
+        }
         sectors = [
             {
                 "sector_name": row.get("hts_kor_isnm"),
                 "sector_code": row.get("bstp_cls_code"),
                 "change_pct": _to_float(row.get("bstp_nmix_prdy_ctrt")),
-                "advancers": _to_int(row.get("ascn_issu_cnt")),
-                "decliners": _to_int(row.get("down_issu_cnt")),
-                "unchanged": _to_int(row.get("stnr_issu_cnt")),
-                "upper_limit": _to_int(row.get("uplm_issu_cnt")),
-                "lower_limit": _to_int(row.get("lslm_issu_cnt")),
+                "trading_value_share_pct": _to_float(row.get("acml_vol_rlim")),
             }
             for row in raw.get("output2", [])
             if row.get("bstp_cls_code") not in _AGGREGATE_CODES
         ]
-        return {"sectors": sectors}
+        return {"market_breadth": market_breadth, "sectors": sectors}
 
     return ctx.cached_call("get_sector_breadth", phase, {}, fetch)
 

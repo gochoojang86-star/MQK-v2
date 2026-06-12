@@ -115,21 +115,31 @@ def test_get_sector_breadth_parses_output():
     ctx = make_ctx(
         raw_responses={
             "FHPUP02140000": {
+                # 상승/하락 종목수는 output1(기준지수)에만 제공된다
+                "output1": {
+                    "ascn_issu_cnt": "778", "down_issu_cnt": "114",
+                    "stnr_issu_cnt": "19", "uplm_issu_cnt": "2", "lslm_issu_cnt": "0",
+                },
                 "output2": [
                     {
-                        "hts_kor_isnm": "전기전자", "bstp_cls_code": "031",
-                        "bstp_nmix_prdy_ctrt": "1.20",
-                        "ascn_issu_cnt": "120", "down_issu_cnt": "60",
-                        "stnr_issu_cnt": "10", "uplm_issu_cnt": "2", "lslm_issu_cnt": "0",
+                        "hts_kor_isnm": "종합", "bstp_cls_code": "0001",
+                        "bstp_nmix_prdy_ctrt": "7.59", "acml_vol_rlim": "",
+                    },
+                    {
+                        "hts_kor_isnm": "전기전자", "bstp_cls_code": "0013",
+                        "bstp_nmix_prdy_ctrt": "9.57", "acml_vol_rlim": "19.31",
                     },
                 ]
             },
         },
     )
     result = get_sector_breadth(ctx, "SCAN")
-    assert result["sectors"][0]["sector_name"] == "전기전자"
-    assert result["sectors"][0]["advancers"] == 120
-    assert result["sectors"][0]["upper_limit"] == 2
+    assert result["market_breadth"]["advancers"] == 778
+    assert result["market_breadth"]["decliners"] == 114
+    assert result["market_breadth"]["upper_limit"] == 2
+    # 집계 행(0001 종합)은 sectors에서 제외된다
+    assert [x["sector_name"] for x in result["sectors"]] == ["전기전자"]
+    assert result["sectors"][0]["trading_value_share_pct"] == 19.31
 
 
 def test_get_intraday_index_candles_parses_output2():
