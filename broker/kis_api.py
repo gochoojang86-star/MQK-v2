@@ -171,6 +171,7 @@ class KISApi:
             "appkey": self._app_key_for(mode),
             "appsecret": self._app_secret_for(mode),
             "tr_id": tr_id,
+            "custtype": "P",  # 개인 고객 — 일부 API(조건검색 등)에서 문서상 필수 헤더
         }
 
     def _app_key_for(self, mode: str) -> str:
@@ -1046,7 +1047,10 @@ class KISApi:
 
     def get_balance(self) -> dict:
         """잔고 조회"""
-        account_mode = self._data_mode
+        # 잔고/손익은 주문 계좌 기준으로 조회해야 한다.
+        # 시세는 real, 주문은 paper인 혼합 운영에서 _data_mode를 쓰면
+        # 실전 계좌 잔고 API를 잘못 호출하게 된다.
+        account_mode = self._cfg.mode
         url = f"{self._base_url_for(account_mode)}/uapi/domestic-stock/v1/trading/inquire-balance"
         tr_id = "TTTC8434R" if account_mode == KISMode.REAL else "VTTC8434R"
         acct_parts = self._account_no_for(account_mode).split("-")

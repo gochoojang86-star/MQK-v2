@@ -35,17 +35,30 @@ def test_psearch_title_returns_conditions():
     assert result["conditions"] == [{"seq": "0", "name": "SEPA 1차 통과"}]
 
 
+def test_psearch_result_exposes_error_as_note_not_empty():
+    ctx = make_ctx(
+        raw_responses={
+            "HHKST03900400": {"rt_cd": "1", "msg1": "종목코드 오류입니다."},
+        },
+    )
+    result = psearch_result(ctx, "SCAN", user_id="test_user", seq="2")
+    assert result["candidates"] == []
+    assert "종목코드 오류" in result["note"]
+
+
 def test_psearch_result_includes_52week_high_low():
     ctx = make_ctx(
         raw_responses={
             "HHKST03900400": {
+                "rt_cd": "0",
                 "output2": [
                     {
                         "code": "005930", "name": "삼성전자",
                         "price": "70000", "chgrate": "1.5",
-                        "acml_vol": "1000000", "acml_tr_pbmn": "70000000000",
-                        "stck_dryy_hgpr": "85000", "stck_dryy_lwpr": "60000",
-                        "mrkt_total_amt": "420000000000000",
+                        "acml_vol": "1000000", "trade_amt": "70000000000",
+                        "cttr": "132.5", "chgrate2": "210.0",
+                        "high52": "85000", "low52": "60000",
+                        "stotprice": "420000000000000",
                     },
                 ],
             },

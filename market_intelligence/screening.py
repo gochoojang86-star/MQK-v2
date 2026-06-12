@@ -11,7 +11,7 @@ def psearch_title(ctx: MILContext, phase: str, user_id: str) -> dict:
         raw = ctx.kis_api.raw_get(
             "HHKST03900300",
             "domestic-stock/v1/quotations/psearch-title",
-            {"USER_ID": user_id},
+            {"user_id": user_id},
         )
         conditions = [
             {"seq": row.get("seq"), "name": row.get("condition_nm")}
@@ -29,8 +29,13 @@ def psearch_result(ctx: MILContext, phase: str, user_id: str, seq: str) -> dict:
         raw = ctx.kis_api.raw_get(
             "HHKST03900400",
             "domestic-stock/v1/quotations/psearch-result",
-            {"USER_ID": user_id, "SEQ": seq},
+            {"user_id": user_id, "seq": seq},
         )
+        # KIS는 조건검색 결과 0건일 때 rt_cd=1("종목코드 오류입니다")을 반환하기도 한다.
+        # 오류를 빈 결과로 가리지 않고 note로 노출해 LLM이 0건/오류를 구분하게 한다.
+        if raw.get("rt_cd") != "0":
+            return {"seq": seq, "candidates": [],
+                    "note": f"KIS 응답: {raw.get('msg1', '')} (결과 0건이거나 조건식 오류일 수 있음)"}
         candidates = [
             {
                 "ticker": row.get("code"),
@@ -38,10 +43,12 @@ def psearch_result(ctx: MILContext, phase: str, user_id: str, seq: str) -> dict:
                 "price": _to_float(row.get("price")),
                 "change_pct": _to_float(row.get("chgrate")),
                 "volume": _to_float(row.get("acml_vol")),
-                "trading_value": _to_float(row.get("acml_tr_pbmn")),
-                "high_52w": _to_float(row.get("stck_dryy_hgpr")),
-                "low_52w": _to_float(row.get("stck_dryy_lwpr")),
-                "market_cap": _to_float(row.get("mrkt_total_amt")),
+                "trading_value": _to_float(row.get("trade_amt")),
+                "volume_power": _to_float(row.get("cttr")),
+                "prev_volume_ratio_pct": _to_float(row.get("chgrate2")),
+                "high_52w": _to_float(row.get("high52")),
+                "low_52w": _to_float(row.get("low52")),
+                "market_cap": _to_float(row.get("stotprice")),
             }
             for row in raw.get("output2", [])
         ]
