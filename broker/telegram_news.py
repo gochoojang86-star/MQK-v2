@@ -94,6 +94,38 @@ def _init_db() -> None:
 
 # ── 헬퍼 ──────────────────────────────────────────────────────────────────────
 
+_UNIVERSE_CSV = Path(__file__).parent.parent / "data" / "universe.csv"
+_NAME_MAP: list[tuple[str, str]] | None = None  # (종목명, 코드), 이름 긴 순
+
+
+def _load_name_map(path: Path = _UNIVERSE_CSV, force: bool = False) -> list[tuple[str, str]]:
+    """전 상장종목 종목명→코드 매핑 (universe.csv 기반, 실패 시 COMPANY_MAP 폴백).
+
+    이름이 긴 순으로 정렬해 부분 문자열 오매핑을 방지한다
+    (예: "삼성전자우"가 먼저 매칭되어야 "삼성전자"로 잘못 잡히지 않는다).
+    """
+    global _NAME_MAP
+    if _NAME_MAP is not None and not force:
+        return _NAME_MAP
+    import csv
+
+    pairs: list[tuple[str, str]] = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                name = (row.get("name") or "").strip()
+                ticker = (row.get("ticker") or "").strip()
+                if len(name) >= 2 and len(ticker) == 6 and ticker.isdigit():
+                    pairs.append((name, ticker))
+    except OSError:
+        pass
+    if not pairs:
+        pairs = list(COMPANY_MAP.items())
+    pairs.sort(key=lambda p: len(p[0]), reverse=True)
+    _NAME_MAP = pairs
+    return _NAME_MAP
+
+
 def _extract_ticker(text: str) -> str:
     m = re.search(r"code=(\d{6})", text)
     if m:
@@ -101,7 +133,7 @@ def _extract_ticker(text: str) -> str:
     m = re.search(r"\b[A-Z]?(\d{6})\b", text)
     if m:
         return m.group(1)
-    for name, code in COMPANY_MAP.items():
+    for name, code in _load_name_map():
         if name in text:
             return code
     return ""
