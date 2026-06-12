@@ -161,9 +161,12 @@ def get_intraday_index_candles(ctx: MILContext, phase: str, index_code: str = "0
             "domestic-stock/v1/quotations/inquire-time-indexchartprice",
             {
                 "FID_COND_MRKT_DIV_CODE": "U",
+                "FID_ETC_CLS_CODE": "0",
                 "FID_INPUT_ISCD": index_code,
                 "FID_INPUT_HOUR_1": "60",
-                "FID_PW_DATA_INCU_YN": "Y",
+                # N=당일만 — Y(과거 포함)는 전일 분봉이 섞여 당일 시가/저가 계산을
+                # 오염시킨다 (드리프트 스냅샷의 kospi_open/kospi_low 입력).
+                "FID_PW_DATA_INCU_YN": "N",
             },
         )
         candles = [
@@ -173,10 +176,13 @@ def get_intraday_index_candles(ctx: MILContext, phase: str, index_code: str = "0
                 "high": _to_float(row.get("bstp_nmix_hgpr")),
                 "low": _to_float(row.get("bstp_nmix_lwpr")),
                 "close": _to_float(row.get("bstp_nmix_prpr")),
-                "volume": _to_float(row.get("acml_vol")),
+                "volume": _to_float(row.get("cntg_vol")),
             }
             for row in raw.get("output2", [])
         ]
+        # KIS 응답은 최신 분봉 우선 — 시간 오름차순으로 정렬해 candles[0]이
+        # 개장 분봉(당일 시가)이 되도록 보장한다 (_collect_drift_snapshot 가정).
+        candles.sort(key=lambda c: c["time"] or "")
         return {"index_code": index_code, "candles": candles}
 
     return ctx.cached_call("get_intraday_index_candles", phase, {"index_code": index_code}, fetch)

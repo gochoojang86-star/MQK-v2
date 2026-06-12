@@ -121,16 +121,23 @@ def test_get_intraday_index_candles_parses_output2():
         raw_responses={
             "FHKUP03500200": {
                 "output2": [
+                    # KIS 응답은 최신 분봉 우선 — 도구가 오름차순으로 정렬해야 한다
                     {"stck_cntg_hour": "100000", "bstp_nmix_oprc": "2800",
                      "bstp_nmix_hgpr": "2810", "bstp_nmix_lwpr": "2795",
-                     "bstp_nmix_prpr": "2805", "acml_vol": "12345"},
+                     "bstp_nmix_prpr": "2805", "cntg_vol": "12345"},
+                    {"stck_cntg_hour": "090000", "bstp_nmix_oprc": "2790",
+                     "bstp_nmix_hgpr": "2801", "bstp_nmix_lwpr": "2788",
+                     "bstp_nmix_prpr": "2800", "cntg_vol": "54321"},
                 ]
             },
         },
     )
     result = get_intraday_index_candles(ctx, "INTRADAY", index_code="0001")
     assert result["index_code"] == "0001"
-    assert result["candles"][0]["close"] == 2805.0
+    assert result["candles"][0]["time"] == "090000"  # 오름차순: [0]=개장 분봉
+    assert result["candles"][0]["open"] == 2790.0
+    assert result["candles"][1]["close"] == 2805.0
+    assert result["candles"][1]["volume"] == 12345.0
 
 
 def test_get_news_market_parses_headlines():
