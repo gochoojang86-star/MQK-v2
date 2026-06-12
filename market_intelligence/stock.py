@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from broker.telegram_news import get_recent_news
+from codes.news_fetcher import NaverNewsFetcher
 from market_intelligence.base import MILContext, ToolFailure
 
 
@@ -170,9 +172,16 @@ def get_flow(ctx: MILContext, phase: str, ticker: str) -> dict:
 
 
 def get_news_stock(ctx: MILContext, phase: str, ticker: str) -> dict:
-    """ticker 필터 뉴스/공시 제목."""
+    """ticker 필터 뉴스 3종 통합: KIS 공시/시황 + 텔레그램 속보 + 네이버 뉴스 검색.
+
+    텔레그램(최근 2시간)은 속보성, 네이버(종목명 검색)는 촉매 맥락 보강용.
+    각 소스는 개별 격리 — 실패는 missing_fields에 기록하고 0건으로 해석하지 않는다.
+    """
 
     def fetch():
+        result: dict = {"ticker": ticker}
+        missing: list[str] = []
+
         raw = ctx.kis_api.raw_get(
             "FHKST01011800",
             "domestic-stock/v1/quotations/news-title",
@@ -187,7 +196,7 @@ def get_news_stock(ctx: MILContext, phase: str, ticker: str) -> dict:
                 "FID_INPUT_SRNO": "",
             },
         )
-        headlines = [
+        result["headlines"] = [
             {
                 "title": row.get("hts_pbnt_titl_cntt"),
                 "date": row.get("data_dt"),
@@ -195,7 +204,42 @@ def get_news_stock(ctx: MILContext, phase: str, ticker: str) -> dict:
             }
             for row in raw.get("output", [])
         ]
-        return {"ticker": ticker, "headlines": headlines}
+
+        # 텔레그램 속보 (수집기 mqk-telegram-news가 sqlite에 적재)
+        try:
+            result["telegram_headlines"] = [
+                {"title": n.get("title"), "sentiment": n.get("sentiment"),
+                 "source": n.get("source"), "date": n.get("date")}
+                for n in get_recent_news(ticker=ticker, hours=2)[:10]
+            ]
+        except Exception:
+            result["telegram_headlines"] = []
+            missing.append("telegram_headlines")
+
+        # 네이버 뉴스 검색 (종목명 기준 — 촉매 맥락)
+        try:
+            stock_name = ""
+            try:
+                stock_name = (ctx.kis_api.get_snapshot(ticker) or {}).get("name", "")
+            except Exception:
+                pass
+            if stock_name:
+                items = NaverNewsFetcher().search(stock_name, display=5)
+                result["naver_headlines"] = [
+                    {"title": n.title, "summary": n.description[:120],
+                     "date": n.pub_date, "url": n.url}
+                    for n in items
+                ]
+            else:
+                result["naver_headlines"] = []
+                missing.append("naver_headlines")
+        except Exception:
+            result["naver_headlines"] = []
+            missing.append("naver_headlines")
+
+        if missing:
+            result["missing_fields"] = missing
+        return result
 
     return ctx.cached_call("get_news_stock", phase, {"ticker": ticker}, fetch)
 

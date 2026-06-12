@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from broker.telegram_news import get_recent_news
 from market_intelligence.base import MILContext
 
 
@@ -199,7 +200,7 @@ def get_intraday_index_candles(ctx: MILContext, phase: str, index_code: str = "0
 
 
 def get_news_market(ctx: MILContext, phase: str) -> dict:
-    """전체 시황/공시 제목 목록."""
+    """전체 시황/공시 제목 목록 + 텔레그램 속보 (최근 2시간, 시장 전체)."""
 
     def fetch():
         raw = ctx.kis_api.raw_get(
@@ -224,7 +225,19 @@ def get_news_market(ctx: MILContext, phase: str) -> dict:
             }
             for row in raw.get("output", [])
         ]
-        return {"headlines": headlines}
+        result: dict = {"headlines": headlines}
+
+        # 텔레그램 속보 (수집기 mqk-telegram-news가 sqlite에 적재) — 실패 격리
+        try:
+            result["telegram_headlines"] = [
+                {"title": n.get("title"), "ticker": n.get("ticker"),
+                 "sentiment": n.get("sentiment"), "source": n.get("source"), "date": n.get("date")}
+                for n in get_recent_news(ticker="", hours=2)[:15]
+            ]
+        except Exception:
+            result["telegram_headlines"] = []
+            result["missing_fields"] = ["telegram_headlines"]
+        return result
 
     return ctx.cached_call("get_news_market", phase, {}, fetch)
 

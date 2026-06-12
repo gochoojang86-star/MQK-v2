@@ -114,7 +114,21 @@ def test_get_flow_parses_investor_breakdown():
     assert result["days"][0]["institution_net_qty"] == 5000.0
 
 
-def test_get_news_stock_filters_by_ticker():
+def _patch_news_sources(monkeypatch, telegram=None, naver=None):
+    import market_intelligence.stock as mil_stock
+
+    monkeypatch.setattr(mil_stock, "get_recent_news",
+                         lambda ticker="", hours=2: telegram or [])
+
+    class FakeNaver:
+        def search(self, query, display=5):
+            return naver or []
+
+    monkeypatch.setattr(mil_stock, "NaverNewsFetcher", FakeNaver)
+
+
+def test_get_news_stock_filters_by_ticker(monkeypatch):
+    _patch_news_sources(monkeypatch)
     ctx = make_ctx(
         raw_responses={
             "FHKST01011800": {
@@ -234,3 +248,55 @@ def test_get_fundamentals_caches_per_ticker():
     get_fundamentals(ctx, "SCAN", ticker="005930")
     get_fundamentals(ctx, "SCAN", ticker="005930")
     assert len(ctx.kis_api.raw_get_calls) == 4
+
+def test_get_news_stock_merges_telegram_and_naver(monkeypatch):
+    from codes.news_fetcher import NewsItem
+    _patch_news_sources(
+        monkeypatch,
+        telegram=[{"title": "삼성전자 대규모 수주", "sentiment": "positive",
+                    "score": 0.8, "source": "FastStockNews", "date": "2026-06-12T10:00:00"}],
+        naver=[NewsItem(title="삼성전자, 세계 최초 공정 발표", description="2나노 양산" * 30,
+                         url="https://n.news", pub_date="Fri, 12 Jun 2026", source="naver")],
+    )
+
+    class SnapshotKis(StubKisApi):
+        def get_snapshot(self, ticker):
+            return {"name": "삼성전자"}
+
+    from market_intelligence.cache import MILCache
+    from market_intelligence.circuit_breaker import CircuitBreaker
+    ctx = MILContext(
+        kis_api=SnapshotKis(raw_responses={"FHKST01011800": {"output": []}}),
+        mcp_client=StubMcpClient(), cache=MILCache(), circuit_breaker=CircuitBreaker(),
+    )
+    result = get_news_stock(ctx, "SCAN", ticker="005930")
+
+    assert result["telegram_headlines"][0]["title"] == "삼성전자 대규모 수주"
+    assert result["naver_headlines"][0]["title"].startswith("삼성전자")
+    assert len(result["naver_headlines"][0]["summary"]) <= 120
+    assert "missing_fields" not in result
+
+
+def test_get_news_stock_isolates_source_failures(monkeypatch):
+    import market_intelligence.stock as mil_stock
+
+    def boom(ticker="", hours=2):
+        raise RuntimeError("sqlite down")
+
+    monkeypatch.setattr(mil_stock, "get_recent_news", boom)
+
+    class BoomNaver:
+        def search(self, query, display=5):
+            raise RuntimeError("network down")
+
+    monkeypatch.setattr(mil_stock, "NaverNewsFetcher", BoomNaver)
+
+    ctx = make_ctx(raw_responses={"FHKST01011800": {"output": [
+        {"hts_pbnt_titl_cntt": "KIS 뉴스", "data_dt": "20260612", "data_tm": "100000"}]}})
+    result = get_news_stock(ctx, "SCAN", ticker="005930")
+
+    assert result["headlines"][0]["title"] == "KIS 뉴스"  # KIS는 정상
+    assert result["telegram_headlines"] == []
+    assert result["naver_headlines"] == []
+    assert set(result["missing_fields"]) == {"telegram_headlines", "naver_headlines"}
+

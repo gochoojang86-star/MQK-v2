@@ -166,7 +166,11 @@ def test_get_intraday_index_candles_parses_output2():
     assert result["candles"][1]["volume"] == 12345.0
 
 
-def test_get_news_market_parses_headlines():
+def test_get_news_market_parses_headlines(monkeypatch):
+    import market_intelligence.market as mil_market
+    monkeypatch.setattr(mil_market, "get_recent_news",
+                         lambda ticker="", hours=2: [{"title": "텔레속보", "ticker": "005930",
+                                                       "sentiment": "positive", "source": "ch", "date": "d"}])
     ctx = make_ctx(
         raw_responses={
             "FHKST01011800": {
