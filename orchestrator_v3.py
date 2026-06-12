@@ -273,14 +273,52 @@ class MQKOrchestratorV3(MQKOrchestrator):
 
     # ── 17:00 MARKET_CLOSE ───────────────────────────────────────────────────
     def run_market_close_v3(self) -> dict:
+        """장마감 분석. 팩트(snapshot)는 코드가 결정론적으로 수집해 컨텍스트에 주입하고
+        파일로 저장한다 — LLM의 도구 호출 재량에 맡기면 수집을 건너뛸 수 있다 (D1 확인).
+        LLM은 해석(close_market_read)과 다음날 prior 생성만 담당한다."""
         regime = load_last_regime(path=_LAST_REGIME_PATH) or {}
+        snapshot = self._collect_market_close_snapshot()
+        self._save_json("market_close_snapshot.json", snapshot)
+
         context = self._build_context(TradingPhase.MARKET_CLOSE, regime, "STABLE", watchlist=[])
+        context["market_close_data"] = snapshot
         result = self._trading_agent.run(TradingPhase.MARKET_CLOSE, context)
         self.run_close_review()  # v2 거래 복기 — 마감 확정 데이터 기준
-        self._save_json("market_close_snapshot.json", result.get("market_close_snapshot", {}))
         self._save_json("close_market_read.json", result.get("close_market_read", {}))
         self._save_json("next_day_premarket_context.json", result.get("next_day_premarket_context", {}))
         return result
+
+    def _collect_market_close_snapshot(self) -> dict:
+        """마감 팩트 스냅샷 (코드 수집, 섹션별 실패 격리 + missing_fields 기록)."""
+        snapshot: dict = {"date": self._today}
+        missing: list[str] = []
+        try:
+            ctx = mil_market.get_market_context(self._mil, TradingPhase.MARKET_CLOSE.value)
+            for k in ("kospi", "kospi_change_pct", "kosdaq", "kosdaq_change_pct",
+                      "foreign_net_buy_krw", "institution_net_buy_krw",
+                      "program_net_buy_krw", "investor_trend_days"):
+                snapshot[k] = ctx.get(k)
+        except (ToolFailure, Exception) as e:
+            logger.warning(f"[MARKET_CLOSE] 시장 컨텍스트 수집 실패: {e}")
+            missing.append("market_context")
+        try:
+            breadth_out = mil_market.get_sector_breadth(self._mil, TradingPhase.MARKET_CLOSE.value)
+            snapshot["market_breadth"] = breadth_out.get("market_breadth", {})
+            sectors = sorted(breadth_out.get("sectors", []),
+                             key=lambda s: s.get("change_pct", 0.0), reverse=True)
+            snapshot["top_sectors"] = sectors[:5]
+            snapshot["bottom_sectors"] = sectors[-5:]
+        except (ToolFailure, Exception) as e:
+            logger.warning(f"[MARKET_CLOSE] 업종 브레드스 수집 실패: {e}")
+            missing.append("sector_breadth")
+        try:
+            news = mil_market.get_news_market(self._mil, TradingPhase.MARKET_CLOSE.value)
+            snapshot["headlines"] = news.get("headlines", [])[:15]
+        except (ToolFailure, Exception) as e:
+            logger.warning(f"[MARKET_CLOSE] 뉴스 수집 실패: {e}")
+            missing.append("news")
+        snapshot["data_quality"] = {"missing_fields": missing}
+        return snapshot
 
     # ── 컨텍스트/스냅샷 빌더 ───────────────────────────────────────────────────
 

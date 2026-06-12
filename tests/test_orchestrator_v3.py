@@ -589,6 +589,46 @@ def test_late_intraday_skips_when_gate_data_unavailable(monkeypatch, tmp_path):
     assert orch._trading_agent.calls == []
 
 
+def test_market_close_snapshot_collected_by_code(monkeypatch, tmp_path):
+    """market_close_snapshot은 LLM 출력이 아니라 코드가 수집해 저장한다."""
+    import market_intelligence.market as mil_market
+    import market_intelligence.portfolio as mil_portfolio
+    import json as _json
+
+    monkeypatch.setattr(mil_market, "get_market_context",
+                         lambda ctx, phase: {"kospi": 8294.95, "kospi_change_pct": 7.59,
+                                              "kosdaq": 1030.66, "kosdaq_change_pct": 4.97,
+                                              "foreign_net_buy_krw": 1.0, "institution_net_buy_krw": 2.0,
+                                              "program_net_buy_krw": 3.0, "investor_trend_days": []})
+    monkeypatch.setattr(mil_market, "get_sector_breadth",
+                         lambda ctx, phase: {"market_breadth": {"advancers": 800, "decliners": 90},
+                                              "sectors": [{"sector_name": "반도체", "change_pct": 9.5}]})
+    monkeypatch.setattr(mil_market, "get_news_market",
+                         lambda ctx, phase: {"headlines": [{"title": "마감"}]})
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [], "position_count": 0})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0, "total_eval_amt": 1})
+
+    orch = make_orchestrator(tmp_path)
+    orch._trading_agent = FakeTradingAgent({"action": "MARKET_CLOSE_ANALYSIS",
+                                             "close_market_read": {"market_quality": "GOOD"},
+                                             "next_day_premarket_context": {}})
+    monkeypatch.setattr(orch, "run_close_review", lambda: None)
+    monkeypatch.setattr(orch, "_save_json",
+                         lambda name, data: (tmp_path / name).write_text(_json.dumps(data, ensure_ascii=False), encoding="utf-8"))
+    monkeypatch.setattr("orchestrator_v3._LAST_REGIME_PATH", tmp_path / "last_regime.json")
+
+    orch.run_market_close_v3()
+
+    snap = _json.loads((tmp_path / "market_close_snapshot.json").read_text(encoding="utf-8"))
+    assert snap["kospi_change_pct"] == 7.59
+    assert snap["market_breadth"]["advancers"] == 800
+    assert snap["data_quality"]["missing_fields"] == []
+    # LLM 컨텍스트에 팩트가 주입되었는지
+    assert orch._trading_agent.calls[0][1]["market_close_data"]["kospi"] == 8294.95
+
+
 # ── BUY proposal → Safety Layer ──────────────────────────────────────────────
 
 class FakeOrderManager:

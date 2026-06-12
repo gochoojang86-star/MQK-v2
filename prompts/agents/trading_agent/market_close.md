@@ -6,12 +6,13 @@
 
 ## Inputs (사전주입 컨텍스트)
 - `regime` (오늘 아침 판단), `daily_pnl`, `portfolio`
+- **`market_close_data`: 마감 팩트 스냅샷이 이미 주입되어 있다** — 지수/등락률,
+  수급(외인/기관/프로그램/투자자동향), 시장 브레드스, 상승/하락 상위 업종, 주요 헤드라인.
+  `data_quality.missing_fields`에 기재된 항목은 결측이다 (0으로 해석 금지).
 
 ## 권장 흐름
-1. `get_market_context` + `get_sector_breadth`로 마감 지수/업종 현황 확인
-   (프로그램매매 순매수 `program_net_buy_krw`, 투자자별 일별 동향 `investor_trend_days` 참고)
-2. `get_news_market`으로 마감 후 주요 뉴스 확인
-3. 보유/관심 종목 중 의미 있는 종목은 `get_ohlcv`로 마감 흐름 확인
+1. 주입된 `market_close_data`를 기반으로 시장 품질/주도력/수급을 해석한다.
+2. 보유/관심 종목 중 추가 확인이 필요한 종목만 `get_ohlcv`로 마감 흐름 확인 (선택).
 
 ## 진행 방식 (ReAct)
 
@@ -28,11 +29,6 @@
 {
   "next_action": "final",
   "action": "MARKET_CLOSE_ANALYSIS",
-  "market_close_snapshot": {
-    "kospi_change_pct": 0.0,
-    "kosdaq_change_pct": 0.0,
-    "data_quality": {"missing_fields": []}
-  },
   "close_market_read": {
     "market_quality": "GOOD|NEUTRAL|POOR",
     "leadership_quality": "STRONG|MIXED|WEAK",
