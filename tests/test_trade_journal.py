@@ -10,11 +10,17 @@ def journal(tmp_path):
     return TradeJournal(db_path=tmp_path / "trades.db")
 
 
+from datetime import datetime, timedelta
+
+_TODAY = datetime.now().strftime("%Y-%m-%d")
+_YESTERDAY = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
 def test_open_and_close_trade(journal):
     journal.open_trade(
         ticker="005930",
         name="삼성전자",
-        entry_date="2026-06-04",
+        entry_date=_YESTERDAY,
         entry_price=75000,
         quantity=10,
         stop_loss_price=73000,
@@ -28,7 +34,7 @@ def test_open_and_close_trade(journal):
 
     journal.close_trade(
         ticker="005930",
-        exit_date="2026-06-05",
+        exit_date=_TODAY,
         exit_price=78000,
         exit_reason="TARGET_1",
     )
@@ -47,7 +53,7 @@ def test_partial_close_keeps_remaining_position_and_marks_target1(journal):
     journal.open_trade(
         ticker="005930",
         name="삼성전자",
-        entry_date="2026-06-04",
+        entry_date=_YESTERDAY,
         entry_price=75000,
         quantity=10,
         stop_loss_price=73000,
@@ -57,7 +63,7 @@ def test_partial_close_keeps_remaining_position_and_marks_target1(journal):
 
     journal.close_trade(
         ticker="005930",
-        exit_date="2026-06-05",
+        exit_date=_TODAY,
         exit_price=78000,
         exit_reason="TARGET_1",
         quantity=5,
@@ -78,7 +84,7 @@ def test_update_position_management_never_lowers_stop(journal):
     journal.open_trade(
         "005930",
         "삼성전자",
-        "2026-06-04",
+        _YESTERDAY,
         75000,
         10,
         73000,
@@ -98,7 +104,7 @@ def test_update_position_management_persists_trailing_state(journal):
     journal.open_trade(
         "005930",
         "삼성전자",
-        "2026-06-04",
+        _YESTERDAY,
         75000,
         10,
         73000,
@@ -123,7 +129,7 @@ def test_daily_summary(journal):
     journal.open_trade(
         "000660",
         "SK하이닉스",
-        "2026-06-04",
+        _YESTERDAY,
         200000,
         5,
         195000,
@@ -131,8 +137,8 @@ def test_daily_summary(journal):
         75,
         "ORD002",
     )
-    journal.close_trade("000660", "2026-06-05", 195000, "STOP_LOSS")
-    summary = journal.get_daily_summary("2026-06-05")
+    journal.close_trade("000660", _TODAY, 195000, "STOP_LOSS")
+    summary = journal.get_daily_summary(_TODAY)
     assert summary["total_trades"] == 1
     assert summary["win_trades"] == 0
     assert summary["total_pnl"] < 0
