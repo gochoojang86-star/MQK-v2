@@ -97,12 +97,38 @@ def _init_db() -> None:
 _UNIVERSE_CSV = Path(__file__).parent.parent / "data" / "universe.csv"
 _NAME_MAP: list[tuple[str, str]] | None = None  # (종목명, 코드), 이름 긴 순
 
+# ETF 브랜드 prefix — 한국 ETF는 "브랜드 + 공백 + ..." 명명 규칙
+_ETF_BRANDS = (
+    "KODEX", "TIGER", "PLUS", "SOL", "ACE", "KBSTAR", "RISE", "HANARO",
+    "ARIRANG", "KOSEF", "KIWOOM", "WON", "마이다스", "에셋플러스", "TIMEFOLIO",
+    "BNK", "DAISHIN", "FOCUS", "HK", "ITF", "KCGI", "KoAct", "TREX",
+    "UNICORN", "VITA", "WOORI", "1Q", "히어로즈", "파워", "마이티",
+)
+
+
+def _is_tradable_common_stock(name: str, ticker: str) -> bool:
+    """뉴스 태깅 대상인 보통주만 남긴다 — 우선주/ETF/ETN/스팩 제외.
+
+    우선주는 이름('~우')이 아니라 KRX 코드 규칙(보통주=끝자리 0)으로 거른다 —
+    '에코글로우'/'성우'처럼 '우'로 끝나는 보통주가 있어 이름 휴리스틱은 위험하다.
+    """
+    if ticker[-1] != "0":  # 우선주/전환우선주 등 (KRX 보통주는 끝자리 0)
+        return False
+    upper = name.upper()
+    if "ETN" in upper or "스팩" in name:
+        return False
+    first_word = upper.split(" ")[0] if " " in upper else ""
+    if first_word and first_word in (b.upper() for b in _ETF_BRANDS):
+        return False
+    return True
+
 
 def _load_name_map(path: Path = _UNIVERSE_CSV, force: bool = False) -> list[tuple[str, str]]:
-    """전 상장종목 종목명→코드 매핑 (universe.csv 기반, 실패 시 COMPANY_MAP 폴백).
+    """보통주 종목명→코드 매핑 (universe.csv 기반, 실패 시 COMPANY_MAP 폴백).
 
-    이름이 긴 순으로 정렬해 부분 문자열 오매핑을 방지한다
-    (예: "삼성전자우"가 먼저 매칭되어야 "삼성전자"로 잘못 잡히지 않는다).
+    이름이 긴 순으로 정렬해 부분 문자열 오매핑을 방지한다.
+    우선주가 사전에서 빠지므로 "삼성전자우 배당" 같은 텍스트는 본주(005930)로
+    정규화되어 태깅된다 (v3 매매 대상이 보통주뿐이므로 의도된 동작).
     """
     global _NAME_MAP
     if _NAME_MAP is not None and not force:
@@ -115,7 +141,8 @@ def _load_name_map(path: Path = _UNIVERSE_CSV, force: bool = False) -> list[tupl
             for row in csv.DictReader(f):
                 name = (row.get("name") or "").strip()
                 ticker = (row.get("ticker") or "").strip()
-                if len(name) >= 2 and len(ticker) == 6 and ticker.isdigit():
+                if (len(name) >= 2 and len(ticker) == 6 and ticker.isdigit()
+                        and _is_tradable_common_stock(name, ticker)):
                     pairs.append((name, ticker))
     except OSError:
         pass
