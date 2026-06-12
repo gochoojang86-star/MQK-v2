@@ -99,8 +99,11 @@ def get_intraday_candles(ctx: MILContext, phase: str, ticker: str) -> dict:
                 "FID_ETC_CLS_CODE": "",
                 "FID_COND_MRKT_DIV_CODE": "J",
                 "FID_INPUT_ISCD": ticker,
-                "FID_INPUT_HOUR_1": "60",
-                "FID_PW_DATA_INCU_YN": "Y",
+                # 기준시각(HHMMSS) 이전 최대 30건 — "60" 같은 비정상 값을 주면
+                # 전일 15시대 캔들이 반환된다 (D1 라이브 테스트에서 확인).
+                "FID_INPUT_HOUR_1": datetime.now().strftime("%H%M%S"),
+                # N=당일만 — Y는 전일 캔들이 섞인다.
+                "FID_PW_DATA_INCU_YN": "N",
             },
         )
         candles = [
@@ -114,6 +117,8 @@ def get_intraday_candles(ctx: MILContext, phase: str, ticker: str) -> dict:
             }
             for row in raw.get("output2", [])
         ]
+        # 최신 우선 응답 → 시간 오름차순 정렬 (candles[0]=가장 이른 분봉)
+        candles.sort(key=lambda c: c["time"] or "")
         return {"ticker": ticker, "candles": candles}
 
     return ctx.cached_call("get_intraday_candles", phase, {"ticker": ticker}, fetch)
