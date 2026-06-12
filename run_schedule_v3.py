@@ -34,6 +34,35 @@ PHASE = os.environ.get("MQK_PHASE", "")
 
 _LOCK_PATH = Path(__file__).parent / "data" / "mqk_v3.lock"
 
+# phase별 운영 시간창 (KST "HH:MM"). PM2는 `pm2 start` 시점에 앱을 즉시 1회
+# 실행하므로(cron_restart는 이후 재시작용), 스케줄 외 시각의 실행을 차단한다.
+# 수동 강제 실행은 MQK_FORCE=1.
+_PHASE_WINDOWS: dict[str, tuple[str, str]] = {
+    "premarket": ("09:00", "09:15"),
+    "scan": ("09:10", "14:30"),
+    "intraday": ("08:55", "15:05"),
+    "late_intraday": ("15:05", "15:20"),
+    "close": ("15:15", "15:28"),
+    "market_close": ("16:50", "18:00"),
+}
+
+
+def _within_window(phase: str, now_hhmm: str | None = None) -> bool:
+    window = _PHASE_WINDOWS.get(phase)
+    if window is None:
+        return True
+    now_hhmm = now_hhmm or __import__("datetime").datetime.now().strftime("%H:%M")
+    return window[0] <= now_hhmm <= window[1]
+
+
+def _guard_phase_window() -> None:
+    if os.environ.get("MQK_FORCE") == "1":
+        return
+    if not _within_window(PHASE):
+        lo, hi = _PHASE_WINDOWS[PHASE]
+        logger.info(f"[시간창 가드] {PHASE}는 {lo}~{hi}에만 실행 — 현재 시각 스킵 (강제: MQK_FORCE=1)")
+        sys.exit(0)
+
 
 def _guard_trading_day() -> None:
     from codes.market_calendar import check_trading_day, read_cached_trading_day
@@ -134,6 +163,8 @@ if __name__ == "__main__":
             f"premarket | scan | intraday | close | market_close 중 하나를 설정하세요."
         )
         sys.exit(1)
+
+    _guard_phase_window()
 
     _lock_file = _acquire_lock()
     if _lock_file is None:

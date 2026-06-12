@@ -71,3 +71,17 @@ def test_runner_exits_zero_when_lock_held_by_other_process(tmp_path):
     finally:
         fcntl.flock(held, fcntl.LOCK_UN)
         held.close()
+
+
+def test_phase_window_guard():
+    from run_schedule_v3 import _within_window
+
+    assert _within_window("premarket", "09:03") is True
+    assert _within_window("premarket", "18:30") is False
+    assert _within_window("intraday", "12:00") is True
+    assert _within_window("intraday", "15:10") is False
+    assert _within_window("late_intraday", "15:13") is True
+    assert _within_window("close", "15:18") is True
+    assert _within_window("close", "15:32") is False
+    assert _within_window("market_close", "17:00") is True
+    assert _within_window("unknown_phase", "03:00") is True  # 미정의 phase는 통과
