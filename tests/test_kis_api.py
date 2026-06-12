@@ -386,6 +386,7 @@ def test_get_open_orders_uses_real_admin_endpoint_by_default(tmp_path, monkeypat
 
     monkeypatch.setattr("broker.kis_api.requests.get", fake_get)
     monkeypatch.setattr(KISApi, "_get_token", lambda self, mode=None: "token")
+    monkeypatch.delenv("KIS_ORDER_ADMIN_MODE", raising=False)  # 기본값 검증 — 운영 .env에 독립
     api = KISApi(config=FakeKISConfig(), token_cache_path=tmp_path / "token.json")
 
     orders = api.get_open_orders(side="BUY")
@@ -414,6 +415,7 @@ def test_cancel_order_uses_real_admin_endpoint_by_default(tmp_path, monkeypatch)
 
     monkeypatch.setattr("broker.kis_api.requests.post", fake_post)
     monkeypatch.setattr(KISApi, "_get_token", lambda self, mode=None: "token")
+    monkeypatch.delenv("KIS_ORDER_ADMIN_MODE", raising=False)  # 기본값 검증 — 운영 .env에 독립
     api = KISApi(config=FakeKISConfig(), token_cache_path=tmp_path / "token.json")
 
     result = api.cancel_order("123456", org_no="00000", all_quantity=True)
