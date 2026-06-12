@@ -199,13 +199,28 @@ class MQKOrchestratorV3(MQKOrchestrator):
         risk_guidance_override: dict | None = None,
     ) -> dict:
         risk_guidance = risk_guidance_override or regime.get("risk_guidance", {})
-        positions = mil_portfolio.get_open_positions(self._mil, phase.value)
-        daily_pnl = mil_portfolio.get_daily_pnl(self._mil, phase.value)
+
+        # 잔고 조회는 일시적 KIS 500 등으로 실패할 수 있다 (D1 라이브 테스트에서
+        # 발생). phase 전체가 죽는 대신 보수적으로 강등한다: 포트폴리오 미상 →
+        # positions_left=0, 손실예산 0 — LLM이 신규 매수를 제안하지 않게 된다.
+        try:
+            positions = mil_portfolio.get_open_positions(self._mil, phase.value)
+            daily_pnl = mil_portfolio.get_daily_pnl(self._mil, phase.value)
+            portfolio_unavailable = False
+        except ToolFailure as e:
+            logger.warning(f"[V3 CONTEXT] 포트폴리오 조회 실패 — 보수적 강등(매수 예산 0): {e}")
+            positions = {"positions": [], "position_count": 0, "data_unavailable": True}
+            daily_pnl = {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0.0,
+                         "total_eval_amt": 0.0, "data_unavailable": True}
+            portfolio_unavailable = True
 
         max_positions = risk_guidance.get("max_positions", RISK.max_positions)
         positions_left = max(max_positions - positions.get("position_count", 0), 0)
         realized_loss_pct = abs(min(daily_pnl.get("realized_pnl_pct", 0.0), 0.0))
         daily_loss_remaining = max(RISK.max_daily_loss_pct - realized_loss_pct, 0.0)
+        if portfolio_unavailable:
+            positions_left = 0
+            daily_loss_remaining = 0.0
 
         return build_context(
             phase=phase,

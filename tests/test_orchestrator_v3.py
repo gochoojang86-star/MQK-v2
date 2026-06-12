@@ -219,6 +219,27 @@ def test_run_intraday_v3_degrades_when_snapshot_unavailable(monkeypatch, tmp_pat
     assert orch._trading_agent.calls[0][0] == TradingPhase.INTRADAY
 
 
+def test_build_context_degrades_conservatively_when_portfolio_unavailable(monkeypatch, tmp_path):
+    import market_intelligence.portfolio as mil_portfolio
+    from market_intelligence.base import ToolFailure
+
+    def boom(ctx, phase):
+        raise ToolFailure("get_open_positions: 500 Server Error")
+
+    monkeypatch.setattr(mil_portfolio, "get_open_positions", boom)
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl", boom)
+
+    orch = make_orchestrator(tmp_path)
+    regime = {"status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50,
+              "risk_guidance": {"max_positions": 4}, "timestamp": "2026-06-12T08:45:00"}
+
+    ctx = orch._build_context(TradingPhase.INTRADAY, regime, "STABLE", watchlist=[])
+
+    assert ctx["risk_budget_remaining"]["positions_left"] == 0
+    assert ctx["risk_budget_remaining"]["daily_loss_remaining_pct"] == 0.0
+    assert ctx["portfolio"]["data_unavailable"] is True
+
+
 def test_collect_drift_snapshot_combines_market_tools(monkeypatch, tmp_path):
     import market_intelligence.market as mil_market
 
