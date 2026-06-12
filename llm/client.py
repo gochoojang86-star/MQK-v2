@@ -110,6 +110,18 @@ class LLMClient:
         try:
             return json.loads(raw)
         except json.JSONDecodeError as e:
+            # 모델이 JSON 오브젝트를 줄바꿈으로 연달아 반환하는 경우("Extra data")
+            # 첫 번째 완전한 오브젝트만 취한다 (D1 라이브 테스트에서 gpt-5.4가
+            # call_tool JSON 두 개를 한 응답에 반환해 phase 전체가 죽은 사례).
+            try:
+                obj, end = json.JSONDecoder().raw_decode(raw)
+                logger.warning(
+                    f"LLM 응답에 여분 데이터 — 첫 JSON 오브젝트만 사용 "
+                    f"(전체 {len(raw)}자 중 {end}자, 모델={self._cfg.model_for(tier)})"
+                )
+                return obj
+            except json.JSONDecodeError:
+                pass
             raise ValueError(
                 f"LLM이 유효한 JSON을 반환하지 않았습니다. "
                 f"모델={self._cfg.model_for(tier)}, 오류={e}, "

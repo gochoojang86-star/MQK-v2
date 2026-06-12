@@ -119,11 +119,26 @@ class TradingAgent:
         system_prompt = inject_agent(_PHASE_PROMPT_NAMES[phase])
         transcript = [json.dumps({"context": context}, ensure_ascii=False)]
 
+        llm_failures = 0
         for _ in range(self._max_steps):
             user_msg = "\n\n---\n\n".join(transcript)
-            response = self._llm.call(
-                system=system_prompt, user=user_msg, tier=ModelTier.STANDARD, expect_json=True
-            )
+            try:
+                response = self._llm.call(
+                    system=system_prompt, user=user_msg, tier=ModelTier.STANDARD, expect_json=True
+                )
+            except ValueError as e:
+                # LLM이 유효한 JSON을 반환하지 못한 경우 — 스케줄된 phase 전체가
+                # 죽지 않도록 1회 재시도 후 NO_TRADE로 강등한다.
+                llm_failures += 1
+                if llm_failures >= 2:
+                    return {"next_action": "final", "action": "NO_TRADE",
+                            "reason": f"llm_invalid_json: {e}"}
+                transcript.append(json.dumps(
+                    {"error": "invalid_json_response",
+                     "instruction": "직전 응답이 유효한 단일 JSON 오브젝트가 아니었다. 반드시 JSON 오브젝트 하나만 반환하라."},
+                    ensure_ascii=False,
+                ))
+                continue
 
             next_action = response.get("next_action")
             if next_action == "final":

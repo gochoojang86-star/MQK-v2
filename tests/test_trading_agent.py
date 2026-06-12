@@ -216,3 +216,22 @@ def test_psearch_tools_inject_hts_user_id_from_env(monkeypatch):
     agent.run(TradingPhase.SCAN, context)
 
     assert captured["user_id"] == "test-hts-id"
+
+class FailingJsonLLM:
+    """항상 ValueError(잘못된 JSON)를 던지는 LLM 스텁."""
+    def __init__(self):
+        self.calls = 0
+
+    def call(self, system, user, tier=None, expect_json=True):
+        self.calls += 1
+        raise ValueError("LLM이 유효한 JSON을 반환하지 않았습니다.")
+
+
+def test_run_degrades_to_no_trade_on_persistent_invalid_json():
+    from agents.trading_agent import TradingAgent, TradingPhase
+    agent = TradingAgent(mil=object(), llm=FailingJsonLLM())
+    result = agent.run(TradingPhase.SCAN, {"watchlist": []})
+    assert result["action"] == "NO_TRADE"
+    assert "llm_invalid_json" in result["reason"]
+    assert agent._llm.calls == 2  # 1회 재시도 후 강등
+
