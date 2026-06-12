@@ -67,7 +67,7 @@ def test_buy_logs_to_file(tmp_path):
 
 def test_execute_buy_records_to_journal(tmp_path):
     journal = TradeJournal(db_path=tmp_path / "trades.db")
-    om = OrderManager(dry_run=True, journal=journal)
+    om = OrderManager(dry_run=True, journal=journal, log_dir=tmp_path)
     order = OrderRequest(
         ticker="005930", name="삼성전자", side="BUY",
         quantity=10, price=75000, stop_loss_price=73000,
@@ -84,7 +84,7 @@ def test_execute_sell_closes_journal(tmp_path):
     today = datetime.now().strftime("%Y-%m-%d")
 
     journal = TradeJournal(db_path=tmp_path / "trades.db")
-    om = OrderManager(dry_run=True, journal=journal)
+    om = OrderManager(dry_run=True, journal=journal, log_dir=tmp_path)
     buy = OrderRequest("005930", "삼성전자", "BUY", 10, 75000, 73000, "VCP", 80,
                        approval_request_id="005930_1234567890", entry_date=yesterday)
     om.execute_buy(buy)
