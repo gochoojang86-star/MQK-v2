@@ -65,7 +65,7 @@ def test_get_market_context_combines_index_and_flow():
         },
     )
     result = get_market_context(ctx, "PREMARKET")
-    assert result["kospi"] == "2800.50"
+    assert result["kospi"] == 2800.5
     assert result["foreign_net_buy_krw"] == -3000.0
     assert result["institution_net_buy_krw"] == 2000.0
     assert result["prev_kospi_change_pct"] == -8.29
@@ -93,6 +93,22 @@ def test_get_market_context_marks_missing_when_program_and_investor_empty():
     assert result["investor_trend_days"] == []
     assert "program_net_buy_krw" in result["missing_fields"]
     assert "investor_trend_days" in result["missing_fields"]
+
+
+def test_get_market_context_coerces_string_index_values():
+    ctx = make_ctx(
+        raw_responses={
+            "FHPTJ04400000": {"output2": []},
+            "FHPPG04600101": {"output": []},
+            "FHPTJ04040000": {"output": []},
+        },
+        index_status={"kospi": "8342.33", "kosdaq": "1036.59",
+                       "kospi_change_pct": "7.45", "kospi_advancers": "782"},
+    )
+    result = get_market_context(ctx, "INTRADAY")
+    assert result["kospi"] == 8342.33
+    assert result["kospi_change_pct"] == 7.45
+    assert result["kospi_advancers"] == 782
 
 
 def test_get_sector_breadth_parses_output():

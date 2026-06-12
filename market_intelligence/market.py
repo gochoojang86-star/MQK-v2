@@ -27,19 +27,21 @@ def get_market_context(ctx: MILContext, phase: str) -> dict:
         foreign_net = sum(_to_float(r.get("frgn_ntby_tr_pbmn")) for r in flow_rows)
         institution_net = sum(_to_float(r.get("orgn_ntby_tr_pbmn")) for r in flow_rows)
 
+        # get_index_status는 KIS raw 문자열을 그대로 반환할 수 있다 ("8342.33" 등).
+        # MIL 경계에서 숫자로 정규화 — 드리프트 스냅샷 검증과 LLM 컨텍스트 일관성 보장.
         result = {
-            "kospi": index_status.get("kospi"),
-            "kospi_change_pct": index_status.get("kospi_change_pct"),
-            "kosdaq": index_status.get("kosdaq"),
-            "kosdaq_change_pct": index_status.get("kosdaq_change_pct"),
-            "kospi_advancers": index_status.get("kospi_advancers"),
-            "kospi_decliners": index_status.get("kospi_decliners"),
+            "kospi": _to_float(index_status.get("kospi")),
+            "kospi_change_pct": _to_float(index_status.get("kospi_change_pct")),
+            "kosdaq": _to_float(index_status.get("kosdaq")),
+            "kosdaq_change_pct": _to_float(index_status.get("kosdaq_change_pct")),
+            "kospi_advancers": _to_int(index_status.get("kospi_advancers")),
+            "kospi_decliners": _to_int(index_status.get("kospi_decliners")),
             "foreign_net_buy_krw": foreign_net,
             "institution_net_buy_krw": institution_net,
-            "prev_kospi_change_pct": index_status.get("prev_kospi_change_pct"),
-            "prev_kospi_trading_value": index_status.get("prev_kospi_trading_value"),
-            "prev_kosdaq_change_pct": index_status.get("prev_kosdaq_change_pct"),
-            "prev_kosdaq_trading_value": index_status.get("prev_kosdaq_trading_value"),
+            "prev_kospi_change_pct": _to_float(index_status.get("prev_kospi_change_pct")),
+            "prev_kospi_trading_value": _to_float(index_status.get("prev_kospi_trading_value")),
+            "prev_kosdaq_change_pct": _to_float(index_status.get("prev_kosdaq_change_pct")),
+            "prev_kosdaq_trading_value": _to_float(index_status.get("prev_kosdaq_trading_value")),
         }
 
         missing_fields: list[str] = []
