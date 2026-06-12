@@ -131,17 +131,24 @@ def get_flow(ctx: MILContext, phase: str, ticker: str) -> dict:
     """
 
     def fetch():
-        raw = ctx.kis_api.raw_get(
-            "FHPTJ04160001",
-            "domestic-stock/v1/quotations/investor-trade-by-stock-daily",
-            {
-                "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_INPUT_ISCD": ticker,
-                "FID_INPUT_DATE_1": datetime.now().strftime("%Y%m%d"),
-                "FID_ORG_ADJ_PRC": "",
-                "FID_ETC_CLS_CODE": "1",
-            },
-        )
+        # 당일 기준 조회는 장 종료 후에만 가능 (장중엔 rt_cd=2/빈 결과 — D1 확인).
+        # 오늘부터 최대 4일 거슬러가며 데이터가 있는 기준일을 찾는다.
+        raw = {}
+        for days_back in range(5):
+            base_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
+            raw = ctx.kis_api.raw_get(
+                "FHPTJ04160001",
+                "domestic-stock/v1/quotations/investor-trade-by-stock-daily",
+                {
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": ticker,
+                    "FID_INPUT_DATE_1": base_date,
+                    "FID_ORG_ADJ_PRC": "",
+                    "FID_ETC_CLS_CODE": "1",
+                },
+            )
+            if raw.get("output2"):
+                break
         days = [
             {
                 "date": row.get("stck_bsop_date"),
