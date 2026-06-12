@@ -26,7 +26,7 @@
 | 5-3 intraday 1틱 | ✅ | Tier3 Lite LLM 1회(daily_lite_llm_calls=1, 캡 추적 OK), drift STABLE, NO_TRADE(확신도<78) — proposals 미발생으로 Telegram 승인 왕복은 ⏭️ (자연 발생 대기) |
 | 5-4 RiskOfficer 차단 | ⏭️ | proposal 미발생 — 단위테스트로는 검증됨, 라이브는 BUY 발생 시 |
 | 5-3b intraday 매수 체결 (오후 재실행) | ✅ | GREEN/89 레짐 → scan watchlist(backfill) → **BUY proposal(095340, 확신도 82) → Telegram 승인 실왕복 → 모의계좌 6주 @243,000 체결** — 전 안전체인 라이브 완주. 현금가드/RiskOfficer 통과 확인 |
-| 5-5 close | ✅* | 크래시 없음. LLM이 SELL 2건 제안(005930 익절/095340 손절) — 095340은 저널 보유라 주문 실행, 005930은 v3 저널 외 종목이라 SKIP(설계대로). v2 close review 연계 정상. ***단, 15:32 매도 주문은 "모의투자 장종료"로 거부 — close(15:30) 단계의 SELL은 구조적으로 체결 불가** (운영 결정 필요: ①close를 15:18로 당겨 종가 동시호가 참여 ②시간외 종가 주문 사용 ③청산 판단을 intraday 14:5x까지로 한정) |
+| 5-5 close | ✅* | 크래시 없음. LLM이 SELL 2건 제안(005930 익절/095340 손절) — 095340은 저널 보유라 주문 실행, 005930은 v3 저널 외 종목이라 SKIP(설계대로). v2 close review 연계 정상. ***단, 15:32 매도 주문은 "모의투자 장종료"로 거부 — close(15:30) 단계의 SELL은 구조적으로 체결 불가.** 장후 시간외(06) 주문도 라이브 검증 결과 모의투자 미지원("모의투자에서 제공하지 않는 주문유형"). **→ 해결(6b503bd)**: close를 15:18(정규장 내)로 당김 — 일반 주문으로 즉시/동시호가 체결, 복기는 market_close(17:00)로 이동, 06 주문은 실전 전용 보조로 유지. late_intraday는 15:08/15:13으로 이동 |
 
 **D1에서 발견·수정된 실버그 6건** (전부 라이브 전용 — mock 테스트로는 검출 불가):
 1. `get_intraday_index_candles`: 필수 `FID_ETC_CLS_CODE` 누락으로 **개통 이래 모든 호출이 거부**(rt_cd=2가 빈 candles로 은폐) + 과거일 캔들 혼입 + 내림차순 (`d717452`)
