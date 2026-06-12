@@ -22,7 +22,7 @@ class FakeTelegramApproval(TelegramApproval):
         self._updates = list(updates)
         self.sent = []
 
-    def _send_message(self, text: str, reply_markup=None, chat_id=None) -> None:
+    def _send_message(self, text: str, reply_markup=None, chat_id=None, parse_mode=None) -> None:
         self.sent.append({"text": text, "reply_markup": reply_markup, "chat_id": chat_id})
 
     def _get_updates(self) -> list:
@@ -39,7 +39,7 @@ class FakeNotifyTelegramApproval(TelegramApproval):
         super().__init__(bot_token="token", chat_id="primary", notify_chat_ids=notify_chat_ids)
         self.sent = []
 
-    def _send_message(self, text: str, reply_markup=None, chat_id=None) -> None:
+    def _send_message(self, text: str, reply_markup=None, chat_id=None, parse_mode=None) -> None:
         self.sent.append({"text": text, "chat_id": chat_id, "reply_markup": reply_markup})
 
 
