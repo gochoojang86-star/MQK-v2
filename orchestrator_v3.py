@@ -140,6 +140,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         context = self._build_context(TradingPhase.PREMARKET, regime_dict, "STABLE", watchlist=[])
         review = self._trading_agent.run(TradingPhase.PREMARKET, context)
         self._record_tool_request(review, TradingPhase.PREMARKET, regime_dict)
+        self._alert_on_tool_failures(review, TradingPhase.PREMARKET)
         self._save_json("premarket_review.json", review)
         return market_status
 
@@ -150,6 +151,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         context = self._build_context(TradingPhase.SCAN, regime, _drift_status(drift_state), watchlist=[])
         result = self._trading_agent.run(TradingPhase.SCAN, context)
         self._record_tool_request(result, TradingPhase.SCAN, regime)
+        self._alert_on_tool_failures(result, TradingPhase.SCAN)
         if not result.get("watchlist"):
             result = self._backfill_scan_result(result, context)
         save_watchlist(result.get("watchlist", []), path=_WATCHLIST_PATH)
@@ -224,6 +226,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         )
         result = self._trading_agent.run(TradingPhase.INTRADAY, context)
         self._record_tool_request(result, TradingPhase.INTRADAY, regime)
+        self._alert_on_tool_failures(result, TradingPhase.INTRADAY)
         self._merge_watchlist_additions(result)
         self._handle_proposals(result.get("proposals", []))
         self._save_json(f"intraday_v3_{datetime.now().strftime('%H%M%S')}.json", result)
@@ -275,6 +278,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         )
         result = self._trading_agent.run(TradingPhase.LATE_INTRADAY, context)
         self._record_tool_request(result, TradingPhase.LATE_INTRADAY, regime)
+        self._alert_on_tool_failures(result, TradingPhase.LATE_INTRADAY)
         self._merge_watchlist_additions(result)
         self._handle_proposals(result.get("proposals", []))
         self._save_json(f"late_intraday_v3_{datetime.now().strftime('%H%M%S')}.json", result)
@@ -293,6 +297,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         context = self._build_context(TradingPhase.CLOSE, regime, _drift_status(drift_state), watchlist=[])
         result = self._trading_agent.run(TradingPhase.CLOSE, context)
         self._record_tool_request(result, TradingPhase.CLOSE, regime)
+        self._alert_on_tool_failures(result, TradingPhase.CLOSE)
         self._handle_sell_proposals(result.get("sell_proposals", []))
         self._save_json("close_v3.json", result)
         return result
@@ -310,6 +315,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         context["market_close_data"] = snapshot
         result = self._trading_agent.run(TradingPhase.MARKET_CLOSE, context)
         self._record_tool_request(result, TradingPhase.MARKET_CLOSE, regime)
+        self._alert_on_tool_failures(result, TradingPhase.MARKET_CLOSE)
         self.run_close_review()  # v2 거래 복기 — 마감 확정 데이터 기준
         self._save_json("close_market_read.json", result.get("close_market_read", {}))
         self._save_json("next_day_premarket_context.json", result.get("next_day_premarket_context", {}))
@@ -702,6 +708,18 @@ class MQKOrchestratorV3(MQKOrchestrator):
             self._telegram.notify("\n".join(lines))
         except Exception as e:
             logger.warning(f"[드리프트 알림] 텔레그램 발송 실패: {e}")
+
+    def _alert_on_tool_failures(self, result: dict, phase: TradingPhase) -> None:
+        failures = result.get("tool_failures")
+        if not failures:
+            return
+        lines = [f"⚠️ [{phase.value}] 도구 {len(failures)}개 연속 실패 — NO_TRADE로 강제 전환"]
+        for f in failures:
+            lines.append(f"- {f.get('tool')}: {f.get('message')}")
+        try:
+            self._telegram.notify("\n".join(lines))
+        except Exception as e:
+            logger.warning(f"[도구 실패 알림] 텔레그램 발송 실패: {e}")
 
     # ── proposal → Safety Layer ─────────────────────────────────────────────
 

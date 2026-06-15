@@ -625,6 +625,49 @@ def test_summarize_tool_gaps_prunes_old_records(monkeypatch, tmp_path):
     assert remaining[0]["missing_capability"] == "realtime_orderbook_imbalance"
 
 
+def test_alert_on_tool_failures_notifies_telegram(tmp_path):
+    class FakeTelegram:
+        def __init__(self):
+            self.messages = []
+
+        def notify(self, message):
+            self.messages.append(message)
+
+    orch = make_orchestrator(tmp_path)
+    orch._telegram = FakeTelegram()
+    result = {
+        "action": "NO_TRADE",
+        "reason": "tool_failures_exceeded",
+        "tool_failures": [
+            {"tool": "get_market_context", "error": "tool_failure", "message": "get_market_context: timeout"},
+            {"tool": "get_flow", "error": "tool_failure", "message": "get_flow: circuit breaker open"},
+            {"tool": "get_flow", "error": "tool_failure", "message": "get_flow: circuit breaker open"},
+        ],
+    }
+
+    orch._alert_on_tool_failures(result, TradingPhase.INTRADAY)
+
+    assert len(orch._telegram.messages) == 1
+    assert "INTRADAY" in orch._telegram.messages[0]
+    assert "get_market_context" in orch._telegram.messages[0]
+
+
+def test_alert_on_tool_failures_skips_when_no_failures(tmp_path):
+    class FakeTelegram:
+        def __init__(self):
+            self.messages = []
+
+        def notify(self, message):
+            self.messages.append(message)
+
+    orch = make_orchestrator(tmp_path)
+    orch._telegram = FakeTelegram()
+
+    orch._alert_on_tool_failures({"action": "NO_TRADE", "reason": "no_trading_signal"}, TradingPhase.INTRADAY)
+
+    assert orch._telegram.messages == []
+
+
 def test_run_intraday_v3_idle_skip_gate(monkeypatch, tmp_path):
     """watchlist 0 + 보유 0 + STABLE이면 LLM을 호출하지 않는다 (비용 게이트)."""
     import market_intelligence.market as mil_market

@@ -122,6 +122,37 @@ def test_run_handles_tool_failure(monkeypatch):
     assert "tool_failure" in llm.calls[1][1]
 
 
+def test_run_aborts_to_no_trade_after_three_tool_failures(monkeypatch):
+    def failing_get_flow(ctx, phase, ticker):
+        raise ToolFailure("get_flow: circuit breaker open")
+
+    def failing_get_market_context(ctx, phase):
+        raise ToolFailure("get_market_context: timeout")
+
+    monkeypatch.setitem(TOOL_REGISTRY, "get_flow", failing_get_flow)
+    monkeypatch.setitem(TOOL_REGISTRY, "get_market_context", failing_get_market_context)
+
+    llm = FakeLLMClient([
+        {"next_action": "call_tool", "tool": "get_market_context", "tool_args": {}},
+        {"next_action": "call_tool", "tool": "get_flow", "tool_args": {"ticker": "005930"}},
+        {"next_action": "call_tool", "tool": "get_flow", "tool_args": {"ticker": "000660"}},
+    ])
+    agent = TradingAgent(mil=object(), llm=llm)
+    context = build_context(
+        phase=TradingPhase.INTRADAY, trading_date="2026-06-09",
+        regime={"status": "YELLOW"}, drift_status="STABLE",
+        risk_guidance={}, portfolio_snapshot={}, daily_pnl={}, risk_budget_remaining={},
+        watchlist=["005930", "000660"],
+    )
+
+    result = agent.run(TradingPhase.INTRADAY, context)
+
+    assert result["action"] == "NO_TRADE"
+    assert result["reason"] == "tool_failures_exceeded"
+    assert len(result["tool_failures"]) == 3
+    assert len(llm.calls) == 3  # 3번째 실패 후 LLM을 더 호출하지 않고 즉시 종료
+
+
 def test_run_handles_unexpected_tool_exception(monkeypatch):
     def crashing_get_flow(ctx, phase, ticker):
         raise TypeError("get_flow() missing 1 required positional argument")

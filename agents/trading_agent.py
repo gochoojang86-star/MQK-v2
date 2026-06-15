@@ -159,6 +159,7 @@ class TradingAgent:
         tool_history: list[dict[str, Any]] = []
         tier = self._tier_for_phase(phase)
 
+        tool_failures: list[dict[str, Any]] = []
         llm_failures = 0
         for _ in range(self._max_steps):
             user_msg = "\n\n---\n\n".join(transcript)
@@ -198,6 +199,19 @@ class TradingAgent:
                     "args": tool_args,
                     "result": tool_result,
                 })
+                if "error" in tool_result:
+                    tool_failures.append({
+                        "tool": tool_name,
+                        "error": tool_result.get("error"),
+                        "message": tool_result.get("message"),
+                    })
+                    if len(tool_failures) >= 3:
+                        return {
+                            "next_action": "final",
+                            "action": "NO_TRADE",
+                            "reason": "tool_failures_exceeded",
+                            "tool_failures": tool_failures,
+                        }
                 transcript.append(json.dumps(
                     {"tool_call": {"tool": tool_name, "args": tool_args}, "tool_result": tool_result},
                     ensure_ascii=False,
