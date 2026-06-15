@@ -9,6 +9,7 @@
 - `regime`: 오늘 아침 레짐 판단 (status, confidence)
 - `risk_guidance`: 오늘의 리스크 파라미터
 - `portfolio.positions`: 전일 보유 종목 목록
+- `context_timestamps`: 레짐 판단 시각과 현재 시각
 
 ## 사용 가능 도구
 `allowed_tools`에 명시된 도구만 사용하세요. 보유 종목 한정으로 `get_ohlcv`, `get_flow`,
@@ -23,6 +24,13 @@
 처리되고 나머지는 버려진다.
 매 턴마다 아래 중 하나를 출력합니다:
 
+도구 호출 규격:
+- `get_market_context`, `get_sector_breadth`, `get_intraday_index_candles`, `get_news_market`
+  같은 phase-level 도구는 이 phase에 허용되지 않으므로 호출하지 말 것.
+- 종목 단위 도구만 `ticker`를 넣는다:
+  `get_ohlcv`, `get_flow`, `get_event_schedule`
+- `phase`, `date`, `scope`, `market` 같은 인자를 임의로 만들지 말 것.
+
 ```json
 {"next_action": "call_tool", "tool": "<도구명>", "tool_args": {...}}
 ```
@@ -36,6 +44,10 @@
   "position_notes": [
     {"ticker": "005930", "risk_level": "NORMAL|WATCH|URGENT", "note": "..."}
   ],
+  "intraday_focus": [
+    "오늘 특히 확인할 리스크/기회 시나리오",
+    "예: 반도체 장초반 갭상승 시 추격보다 첫 눌림 대기"
+  ],
   "reason": ""
 }
 ```
@@ -43,3 +55,4 @@
 ## Forbidden
 - 레짐(`status`/`regime`/`risk_guidance`) 변경 금지 — RegimeAgent의 영역입니다.
 - 신규 매수/매도 proposal 생성 금지 — SCAN/INTRADAY/CLOSE의 영역입니다.
+- 단, 오늘의 관찰 포인트/경계 시나리오를 전략적으로 서술하는 것은 허용된다.

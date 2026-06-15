@@ -1,4 +1,4 @@
-"""종목분석 도구 5개: get_ohlcv, get_realtime_price, get_intraday_candles, get_flow, get_news_stock
+"""종목분석 도구 6개: get_ohlcv, get_realtime_price, get_intraday_candles, get_flow, get_news_stock, get_watchlist_intraday_snapshot
 
 get_snapshot은 제거되었다 — get_ohlcv의 output1이 현재가+호가+밸류에이션을 포함한다.
 """
@@ -244,6 +244,105 @@ def get_news_stock(ctx: MILContext, phase: str, ticker: str) -> dict:
     return ctx.cached_call("get_news_stock", phase, {"ticker": ticker}, fetch)
 
 
+def get_watchlist_intraday_snapshot(ctx: MILContext, phase: str, tickers: list[str]) -> dict:
+    """watchlist 장중 판단용 번들 스냅샷.
+
+    가격/등락률/거래량은 멀티시세로 배치 조회하고, 분봉/뉴스/상태는 종목별로 보강한다.
+    개별 종목 실패가 전체 번들을 깨지 않도록 missing_fields에 격리한다.
+    """
+
+    def fetch():
+        normalized = _normalize_tickers(tickers)
+        if not normalized:
+            return {"tickers": []}
+
+        batched_prices: dict[str, dict] = {}
+        try:
+            price_rows = get_realtime_price(ctx, phase, normalized).get("prices", [])
+            batched_prices = {str(row.get("ticker") or "").strip(): row for row in price_rows}
+        except Exception:
+            batched_prices = {}
+
+        from market_intelligence.risk_filter import get_stock_status
+
+        rows: list[dict] = []
+        for ticker in normalized:
+            item: dict = {"ticker": ticker}
+            missing_fields: list[str] = []
+
+            price_row = batched_prices.get(ticker, {})
+            item["price"] = _to_float(price_row.get("price"))
+            item["change_pct"] = _to_float(price_row.get("change_pct"))
+            item["volume"] = _to_float(price_row.get("volume"))
+            if not price_row:
+                missing_fields.append("realtime_price")
+
+            try:
+                snap = ctx.kis_api.get_snapshot(ticker) or {}
+                item["name"] = snap.get("name") or ticker
+                item["trading_value"] = _to_float(snap.get("trading_value") or snap.get("acml_tr_pbmn"))
+                item["market_cap"] = _to_float(snap.get("market_cap"))
+            except Exception:
+                item["name"] = ticker
+                item["trading_value"] = 0.0
+                item["market_cap"] = 0.0
+                missing_fields.append("snapshot")
+
+            try:
+                intraday = get_intraday_candles(ctx, phase, ticker)
+                candles = intraday.get("candles", [])
+                item["latest_candle"] = candles[-1] if candles else None
+                item["intraday_trend"] = _infer_intraday_trend(candles)
+            except Exception:
+                item["latest_candle"] = None
+                item["intraday_trend"] = "unknown"
+                missing_fields.append("intraday_candles")
+
+            try:
+                news = get_news_stock(ctx, phase, ticker)
+                headlines = news.get("headlines", []) or []
+                telegram = news.get("telegram_headlines", []) or []
+                naver = news.get("naver_headlines", []) or []
+                item["headline_count"] = len(headlines)
+                item["telegram_headline_count"] = len(telegram)
+                item["naver_headline_count"] = len(naver)
+                item["latest_headlines"] = [
+                    h.get("title") for h in (headlines[:1] + telegram[:1] + naver[:1]) if h.get("title")
+                ][:3]
+            except Exception:
+                item["headline_count"] = 0
+                item["telegram_headline_count"] = 0
+                item["naver_headline_count"] = 0
+                item["latest_headlines"] = []
+                missing_fields.append("news")
+
+            try:
+                status = get_stock_status(ctx, phase, ticker)
+                item["status"] = {
+                    "trading_halted": bool(status.get("trading_halted")),
+                    "administrative_issue": bool(status.get("administrative_issue")),
+                    "is_limit_up": bool(status.get("is_limit_up")),
+                    "is_limit_down": bool(status.get("is_limit_down")),
+                    "is_vi": bool(status.get("is_vi")),
+                }
+            except Exception:
+                item["status"] = {}
+                missing_fields.append("status")
+
+            if missing_fields:
+                item["missing_fields"] = missing_fields
+            rows.append(item)
+
+        return {"tickers": rows}
+
+    return ctx.cached_call(
+        "get_watchlist_intraday_snapshot",
+        phase,
+        {"tickers": _normalize_tickers(tickers)},
+        fetch,
+    )
+
+
 def get_fundamentals(ctx: MILContext, phase: str, ticker: str) -> dict:
     """SEPA 펀더멘털 스크리닝용 재무 데이터 4종 조합.
 
@@ -367,3 +466,32 @@ def _to_float(value) -> float:
         return float(str(value).replace(",", ""))
     except (ValueError, TypeError):
         return 0.0
+
+
+def _normalize_tickers(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in values[:30]:
+        ticker = str(raw).strip()
+        if len(ticker) != 6 or not ticker.isdigit():
+            continue
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        normalized.append(ticker)
+    return normalized
+
+
+def _infer_intraday_trend(candles: list[dict]) -> str:
+    if len(candles) < 2:
+        return "unknown"
+    first = _to_float(candles[0].get("close"))
+    last = _to_float(candles[-1].get("close"))
+    if first <= 0 or last <= 0:
+        return "unknown"
+    diff_pct = (last - first) / first * 100
+    if diff_pct >= 0.7:
+        return "up"
+    if diff_pct <= -0.7:
+        return "down"
+    return "flat"

@@ -104,6 +104,7 @@ class KISApi:
         self._access_tokens: dict[str, Optional[str]] = {}
         self._token_expires: dict[str, float] = {}
         self._stock_info_cache: dict[str, dict] = {}
+        self._balance_cache: dict[str, dict[str, Any]] = {}
         self._token_cache_path = token_cache_path or (
             Path(__file__).parent.parent / "data" / "cache" / f"kis_token_{self._cfg.mode}.json"
         )
@@ -1078,6 +1079,31 @@ class KISApi:
             "CTX_AREA_FK100": "",
             "CTX_AREA_NK100": "",
         }
-        resp = requests.get(url, headers=self._headers(tr_id, mode=account_mode), params=params, timeout=10)
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = self._get_with_retry(
+                url,
+                headers=self._headers(tr_id, mode=account_mode),
+                params=params,
+                timeout=10,
+            )
+            data = resp.json()
+            if data.get("rt_cd") not in (None, "0"):
+                raise RuntimeError(
+                    f"KIS balance query failed: rt_cd={data.get('rt_cd')} msg={data.get('msg1')}"
+                )
+        except (requests.RequestException, RuntimeError) as exc:
+            cached = self._balance_cache.get(account_mode)
+            if cached and (time.time() - float(cached.get("cached_at", 0))) <= 300:
+                logger.warning(
+                    "KIS balance query failed; using cached balance for mode=%s: %s",
+                    account_mode,
+                    exc,
+                )
+                return cached["data"]
+            raise
+
+        self._balance_cache[account_mode] = {
+            "data": data,
+            "cached_at": time.time(),
+        }
+        return data

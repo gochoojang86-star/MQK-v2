@@ -12,11 +12,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
 
-from config.settings import LLM_CONFIG, ModelTier
+from config.settings import LLM_CONFIG, LOG_CONFIG, ModelTier
 from llm.oauth_loader import load_openai_token
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,7 @@ class LLMClient:
     def __init__(self, config=None):
         self._cfg = config or LLM_CONFIG
         self._client = OpenAI(api_key=_resolve_api_key())
+        self._usage_log_dir = LOG_CONFIG.base_dir
 
     def call(
         self,
@@ -88,6 +91,7 @@ class LLMClient:
 
         response = self._client.chat.completions.create(**kwargs)
         raw = response.choices[0].message.content.strip()
+        self._log_usage(response, model, tier, system, user, raw, expect_json)
 
         # ── Anthropic (원복용 주석) ───────────────────────────────────────────
         # response = self._client.messages.create(
@@ -127,3 +131,45 @@ class LLMClient:
                 f"모델={self._cfg.model_for(tier)}, 오류={e}, "
                 f"응답(앞 200자)={raw[:200]!r}"
             ) from e
+
+    def _log_usage(
+        self,
+        response: Any,
+        model: str,
+        tier: ModelTier,
+        system: str,
+        user: str,
+        raw: str,
+        expect_json: bool,
+    ) -> None:
+        usage = getattr(response, "usage", None)
+        record = {
+            "timestamp": datetime.now().isoformat(),
+            "model": model,
+            "tier": str(tier.value if hasattr(tier, "value") else tier),
+            "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+            "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+            "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+            "cached_prompt_tokens": int(
+                getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+            ),
+            "reasoning_tokens": int(
+                getattr(getattr(usage, "completion_tokens_details", None), "reasoning_tokens", 0) or 0
+            ),
+            "system_chars": len(system),
+            "user_chars": len(user),
+            "output_chars": len(raw),
+            "expect_json": bool(expect_json),
+        }
+        try:
+            self._append_usage_record(record)
+        except OSError as e:
+            logger.warning(f"LLM usage 로그 기록 실패: {e}")
+
+    def _append_usage_record(self, record: dict[str, Any]) -> None:
+        today = datetime.now().strftime("%Y-%m-%d")
+        log_dir = Path(self._usage_log_dir) / today
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "llm_usage.jsonl"
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")

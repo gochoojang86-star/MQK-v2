@@ -12,7 +12,8 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from agents.drift_detector import RegimeDriftDetector
@@ -38,6 +39,7 @@ logger = logging.getLogger("mqk_v3")
 _DATA_DIR = Path(__file__).parent / "data"
 _DRIFT_STATE_PATH = _DATA_DIR / "drift_state.json"
 _WATCHLIST_PATH = _DATA_DIR / "watchlist.json"
+_TOOL_GAP_LOG_RETENTION_DAYS = 30
 
 
 def _default_drift_state(date: str) -> dict:
@@ -58,6 +60,20 @@ def _atomic_write_text(path: Path, content: str) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(content, encoding="utf-8")
     os.replace(tmp_path, path)
+
+
+def _normalize_watchlist(watchlist: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in watchlist:
+        ticker = str(raw).strip()
+        if not re.fullmatch(r"\d{6}", ticker):
+            continue
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        normalized.append(ticker)
+    return normalized
 
 
 def load_drift_state(path: Path = _DRIFT_STATE_PATH, today: str | None = None) -> dict:
@@ -82,16 +98,18 @@ def load_watchlist(path: Path = _WATCHLIST_PATH) -> list[str]:
     if not path.exists():
         return []
     try:
-        return json.loads(path.read_text(encoding="utf-8")).get("watchlist", [])
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"[orchestrator_v3] watchlist.json 손상 — 빈 목록 반환: {e}")
         return []
+    return _normalize_watchlist(data.get("watchlist", []))
 
 
 def save_watchlist(watchlist: list[str], path: Path = _WATCHLIST_PATH) -> None:
+    normalized = _normalize_watchlist(watchlist)
     _atomic_write_text(
         path,
-        json.dumps({"watchlist": watchlist, "updated_at": datetime.now().isoformat()}, ensure_ascii=False, indent=2),
+        json.dumps({"watchlist": normalized, "updated_at": datetime.now().isoformat()}, ensure_ascii=False, indent=2),
     )
 
 
@@ -108,6 +126,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         )
         self._drift_detector = RegimeDriftDetector()
         self._trading_agent = TradingAgent(mil=self._mil)
+        self._last_portfolio_snapshot: tuple[dict, dict] | None = None
 
     # ── 08:45 PREMARKET ──────────────────────────────────────────────────────
     def run_premarket_v3(self) -> dict:
@@ -120,6 +139,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         regime_dict = _regime_to_dict(regime)
         context = self._build_context(TradingPhase.PREMARKET, regime_dict, "STABLE", watchlist=[])
         review = self._trading_agent.run(TradingPhase.PREMARKET, context)
+        self._record_tool_request(review, TradingPhase.PREMARKET, regime_dict)
         self._save_json("premarket_review.json", review)
         return market_status
 
@@ -129,6 +149,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         drift_state = load_drift_state(path=_DRIFT_STATE_PATH, today=self._today)
         context = self._build_context(TradingPhase.SCAN, regime, _drift_status(drift_state), watchlist=[])
         result = self._trading_agent.run(TradingPhase.SCAN, context)
+        self._record_tool_request(result, TradingPhase.SCAN, regime)
         if not result.get("watchlist"):
             result = self._backfill_scan_result(result, context)
         save_watchlist(result.get("watchlist", []), path=_WATCHLIST_PATH)
@@ -202,6 +223,8 @@ class MQKOrchestratorV3(MQKOrchestrator):
             watchlist=watchlist, risk_guidance_override=risk_guidance,
         )
         result = self._trading_agent.run(TradingPhase.INTRADAY, context)
+        self._record_tool_request(result, TradingPhase.INTRADAY, regime)
+        self._merge_watchlist_additions(result)
         self._handle_proposals(result.get("proposals", []))
         self._save_json(f"intraday_v3_{datetime.now().strftime('%H%M%S')}.json", result)
         return result
@@ -251,6 +274,8 @@ class MQKOrchestratorV3(MQKOrchestrator):
             TradingPhase.LATE_INTRADAY, regime, _drift_status(drift_state), watchlist=watchlist,
         )
         result = self._trading_agent.run(TradingPhase.LATE_INTRADAY, context)
+        self._record_tool_request(result, TradingPhase.LATE_INTRADAY, regime)
+        self._merge_watchlist_additions(result)
         self._handle_proposals(result.get("proposals", []))
         self._save_json(f"late_intraday_v3_{datetime.now().strftime('%H%M%S')}.json", result)
         return result
@@ -267,6 +292,7 @@ class MQKOrchestratorV3(MQKOrchestrator):
         drift_state = load_drift_state(path=_DRIFT_STATE_PATH, today=self._today)
         context = self._build_context(TradingPhase.CLOSE, regime, _drift_status(drift_state), watchlist=[])
         result = self._trading_agent.run(TradingPhase.CLOSE, context)
+        self._record_tool_request(result, TradingPhase.CLOSE, regime)
         self._handle_sell_proposals(result.get("sell_proposals", []))
         self._save_json("close_v3.json", result)
         return result
@@ -283,10 +309,123 @@ class MQKOrchestratorV3(MQKOrchestrator):
         context = self._build_context(TradingPhase.MARKET_CLOSE, regime, "STABLE", watchlist=[])
         context["market_close_data"] = snapshot
         result = self._trading_agent.run(TradingPhase.MARKET_CLOSE, context)
+        self._record_tool_request(result, TradingPhase.MARKET_CLOSE, regime)
         self.run_close_review()  # v2 거래 복기 — 마감 확정 데이터 기준
         self._save_json("close_market_read.json", result.get("close_market_read", {}))
         self._save_json("next_day_premarket_context.json", result.get("next_day_premarket_context", {}))
+        self._save_json("tool_gap_summary.json", self._summarize_tool_gaps())
         return result
+
+    def _record_tool_request(self, result: dict, phase: TradingPhase, regime: dict) -> None:
+        if result.get("action") != "TOOL_REQUEST":
+            return
+        tool_request = result.get("tool_request") or {}
+        record = {
+            "timestamp": datetime.now().isoformat(),
+            "agent": "TradingAgent",
+            "phase": phase.value,
+            "regime": regime.get("status", ""),
+            "missing_capability": tool_request.get("missing_capability", ""),
+            "priority": tool_request.get("priority", "medium"),
+            "why_needed": tool_request.get("why_needed", ""),
+            "affected_tickers": tool_request.get("affected_tickers", []),
+            "suggested_data_source": tool_request.get("suggested_data_source", []),
+            "fallback_action": tool_request.get("fallback_action", "NO_TRADE"),
+            "status": "open",
+        }
+        log_path = self._log_dir / "tool_gap_log.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def _summarize_tool_gaps(self, path: Path | None = None) -> dict:
+        path = path or (self._log_dir / "tool_gap_log.jsonl")
+        if not path.exists():
+            return {
+                "date": self._today,
+                "top_missing_capabilities": [],
+                "high_priority_count": 0,
+                "recommendation": "no_tool_gaps_detected",
+            }
+
+        cutoff = (
+            datetime.strptime(self._today, "%Y-%m-%d") - timedelta(days=_TOOL_GAP_LOG_RETENTION_DAYS)
+        ).strftime("%Y-%m-%d")
+
+        records: list[dict] = []
+        retained_rows: list[dict] = []
+        total_lines = 0
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                total_lines += 1
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                row_date = str(row.get("timestamp", ""))[:10]
+                if row_date >= cutoff:
+                    retained_rows.append(row)
+                if row_date == self._today:
+                    records.append(row)
+
+        if len(retained_rows) < total_lines:
+            with path.open("w", encoding="utf-8") as f:
+                for row in retained_rows:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+        if not records:
+            return {
+                "date": self._today,
+                "top_missing_capabilities": [],
+                "high_priority_count": 0,
+                "recommendation": "no_tool_gaps_detected",
+            }
+
+        grouped: dict[str, dict] = {}
+        high_priority_count = 0
+        for row in records:
+            name = str(row.get("missing_capability") or "unspecified_capability")
+            item = grouped.setdefault(name, {
+                "name": name,
+                "count": 0,
+                "phases": set(),
+                "priorities": set(),
+                "tickers": [],
+            })
+            item["count"] += 1
+            item["phases"].add(str(row.get("phase") or ""))
+            priority = str(row.get("priority") or "medium")
+            item["priorities"].add(priority)
+            if priority == "high":
+                high_priority_count += 1
+            for ticker in row.get("affected_tickers", []):
+                if ticker not in item["tickers"]:
+                    item["tickers"].append(ticker)
+
+        top = sorted(grouped.values(), key=lambda x: x["count"], reverse=True)[:5]
+        top_missing = [
+            {
+                "name": item["name"],
+                "count": item["count"],
+                "phases": sorted(p for p in item["phases"] if p),
+                "priority": "high" if "high" in item["priorities"] else ("medium" if "medium" in item["priorities"] else "low"),
+                "example_tickers": item["tickers"][:5],
+            }
+            for item in top
+        ]
+        recommendation = (
+            f"prioritize_{top_missing[0]['name']}"
+            if top_missing else "no_tool_gaps_detected"
+        )
+        return {
+            "date": self._today,
+            "top_missing_capabilities": top_missing,
+            "high_priority_count": high_priority_count,
+            "recommendation": recommendation,
+        }
 
     def _collect_market_close_snapshot(self) -> dict:
         """마감 팩트 스냅샷 (코드 수집, 섹션별 실패 격리 + missing_fields 기록)."""
@@ -332,15 +471,39 @@ class MQKOrchestratorV3(MQKOrchestrator):
     ) -> dict:
         risk_guidance = risk_guidance_override or regime.get("risk_guidance", {})
 
-        # 잔고 조회는 일시적 KIS 500 등으로 실패할 수 있다 (D1 라이브 테스트에서
-        # 발생). phase 전체가 죽는 대신 보수적으로 강등한다: 포트폴리오 미상 →
-        # positions_left=0, 손실예산 0 — LLM이 신규 매수를 제안하지 않게 된다.
-        try:
-            positions = mil_portfolio.get_open_positions(self._mil, phase.value)
-            daily_pnl = mil_portfolio.get_daily_pnl(self._mil, phase.value)
-            portfolio_unavailable = False
-        except ToolFailure as e:
-            logger.warning(f"[V3 CONTEXT] 포트폴리오 조회 실패 — 보수적 강등(매수 예산 0): {e}")
+        # 잔고 조회는 일시적 KIS 500/타임아웃으로 실패할 수 있다 (D1 라이브 테스트 및
+        # 2026-06-15 발견). 최대 3회 재시도 후에도 실패하면, 직전에 성공한 스냅샷을
+        # (stale 표시 후) 재사용한다. 당일 첫 조회부터 실패하면 스냅샷이 없으므로
+        # 그때만 보수적으로 강등한다: positions_left=0, 손실예산 0.
+        positions = daily_pnl = None
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                positions = mil_portfolio.get_open_positions(self._mil, phase.value)
+                daily_pnl = mil_portfolio.get_daily_pnl(self._mil, phase.value)
+                break
+            except ToolFailure as e:
+                last_exc = e
+                if attempt < 3:
+                    breaker = getattr(self._mil, "circuit_breaker", None)
+                    if breaker is not None:
+                        breaker.reset("get_open_positions")
+                        breaker.reset("get_daily_pnl")
+                    time.sleep(1.0)
+
+        portfolio_unavailable = False
+        last_snapshot = getattr(self, "_last_portfolio_snapshot", None)
+        if positions is not None:
+            self._last_portfolio_snapshot = (positions, daily_pnl)
+        elif last_snapshot is not None:
+            logger.warning(
+                f"[V3 CONTEXT] 포트폴리오 조회 3회 실패 — 직전 스냅샷으로 대체(stale): {last_exc}"
+            )
+            cached_positions, cached_daily_pnl = last_snapshot
+            positions = {**cached_positions, "data_unavailable": True, "stale": True}
+            daily_pnl = {**cached_daily_pnl, "data_unavailable": True, "stale": True}
+        else:
+            logger.warning(f"[V3 CONTEXT] 포트폴리오 조회 3회 실패 — 보수적 강등(매수 예산 0): {last_exc}")
             positions = {"positions": [], "position_count": 0, "data_unavailable": True}
             daily_pnl = {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0.0,
                          "total_eval_amt": 0.0, "data_unavailable": True}
@@ -371,11 +534,31 @@ class MQKOrchestratorV3(MQKOrchestrator):
                 "daily_loss_remaining_pct": daily_loss_remaining,
             },
             watchlist=watchlist,
+            exploration_policy={
+                "allow_intraday_discovery": phase == TradingPhase.INTRADAY,
+                "max_new_tickers": 2 if phase == TradingPhase.INTRADAY else 0,
+                "require_strong_evidence": True,
+                "discovery_priority": "watchlist_first_then_new_leaders",
+            },
             context_timestamps={
                 "regime": regime.get("timestamp", ""),
                 "now": datetime.now().isoformat(),
             },
         )
+
+    def _merge_watchlist_additions(self, result: dict) -> None:
+        additions = [
+            str(ticker).strip()
+            for ticker in (result.get("watchlist_additions") or [])
+            if re.fullmatch(r"\d{6}", str(ticker).strip())
+        ]
+        if not additions:
+            return
+        current = load_watchlist(path=_WATCHLIST_PATH)
+        merged = current + [ticker for ticker in additions if ticker not in current]
+        if merged != current:
+            save_watchlist(merged, path=_WATCHLIST_PATH)
+            logger.info(f"[WATCHLIST MERGE] intraday additions={additions} → {merged}")
 
     def _backfill_scan_result(self, result: dict, context: dict) -> dict:
         """SCAN 결과가 비면 거래대금/상태 기반 deterministic watchlist를 만든다."""

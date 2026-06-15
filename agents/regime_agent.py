@@ -111,7 +111,7 @@ class RegimeAgent:
 전일 확정 데이터를 주요 근거로, 당일 실시간 데이터를 보조 참고로 사용하여
 시장 체제와 매매 가능 여부를 판단하고 JSON으로 출력하세요."""
 
-        raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.STANDARD)
+        raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.FAST)
         return RegimeJudgment(
             status=MarketStatus(raw["status"]),
             regime=Regime(raw["regime"]),

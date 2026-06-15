@@ -60,7 +60,7 @@ class ThemeAgent:
 
 현재 주도 테마를 분석하고 JSON으로 출력하세요."""
 
-        raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.STANDARD)
+        raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.FAST)
         items = [
             ThemeItem(
                 theme=t["theme"],

@@ -19,6 +19,13 @@
 **중요: 응답은 반드시 정확히 하나의 JSON 오브젝트여야 한다.** 여러 도구를 호출하고
 싶어도 한 번에 하나씩만 호출하라 — 두 개 이상의 JSON을 연달아 반환하면 첫 번째만
 처리되고 나머지는 버려진다.
+
+도구 호출 규격:
+- `get_market_context`, `get_sector_breadth`, `get_news_market`는 이 phase에서 이미
+  필요한 팩트가 `market_close_data`로 주입되므로 기본적으로 다시 호출할 필요가 없다.
+- 추가 확인이 필요하면 `get_ohlcv`만 `tool_args: {"ticker": "<종목코드>"}` 형식으로 호출한다.
+- `phase`, `date`, `scope`, `include`, `market` 같은 인자를 임의로 만들지 말 것.
+
 ```json
 {"next_action": "call_tool", "tool": "<도구명>", "tool_args": {...}}
 ```
@@ -42,6 +49,9 @@
     "previous_close_prior": {},
     "tomorrow_bias": {"risk_posture": "NORMAL|DEFENSIVE", "scanner_bias": "NORMAL|RELATIVE_STRENGTH_ONLY"}
   },
+  "tomorrow_watch_items": [
+    "내일 장초반 반드시 확인할 섹터/뉴스/수급 포인트"
+  ],
   "reason": ""
 }
 ```

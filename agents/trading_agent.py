@@ -15,7 +15,7 @@ from typing import Any, Callable
 from config.settings import ModelTier
 from llm.client import LLMClient
 from llm.soul import inject_agent
-from market_intelligence import market, portfolio, risk_filter, screening, stock
+from market_intelligence import market, portfolio, risk_filter, screening, stock, theme
 from market_intelligence.base import MILContext, ToolFailure
 
 
@@ -42,11 +42,13 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "get_sector_breadth": market.get_sector_breadth,
     "get_intraday_index_candles": market.get_intraday_index_candles,
     "get_news_market": market.get_news_market,
+    "get_theme_candidates": theme.get_theme_candidates,
     "psearch_title": screening.psearch_title,
     "psearch_result": screening.psearch_result,
     "get_top_movers": screening.get_top_movers,
     "get_ohlcv": stock.get_ohlcv,
     "get_realtime_price": stock.get_realtime_price,
+    "get_watchlist_intraday_snapshot": stock.get_watchlist_intraday_snapshot,
     "get_intraday_candles": stock.get_intraday_candles,
     "get_flow": stock.get_flow,
     "get_news_stock": stock.get_news_stock,
@@ -64,15 +66,19 @@ PHASE_TOOLS: dict[TradingPhase, list[str]] = {
     ],
     TradingPhase.SCAN: [
         "get_market_context", "get_sector_breadth", "get_intraday_index_candles", "get_news_market",
+        "get_theme_candidates",
         "psearch_title", "psearch_result", "get_top_movers",
         "get_ohlcv", "get_flow", "get_stock_status", "get_news_stock", "get_fundamentals",
     ],
     TradingPhase.INTRADAY: [
-        "get_ohlcv", "get_intraday_candles", "get_flow", "get_news_stock", "get_stock_status",
+        "get_market_context", "get_sector_breadth", "get_theme_candidates",
+        "psearch_title", "psearch_result", "get_top_movers",
+        "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot", "get_intraday_candles",
+        "get_flow", "get_news_stock", "get_stock_status",
     ],
     TradingPhase.LATE_INTRADAY: [
         "get_market_context", "psearch_title", "psearch_result", "get_top_movers",
-        "get_ohlcv", "get_intraday_candles", "get_realtime_price",
+        "get_ohlcv", "get_intraday_candles", "get_realtime_price", "get_watchlist_intraday_snapshot",
         "get_flow", "get_news_stock", "get_stock_status",
     ],
     TradingPhase.CLOSE: [
@@ -85,6 +91,28 @@ PHASE_TOOLS: dict[TradingPhase, list[str]] = {
 }
 
 _TOOLS_REQUIRING_USER_ID = {"psearch_title", "psearch_result"}
+_NO_ARG_TOOLS = {
+    "get_market_context",
+    "get_sector_breadth",
+    "get_intraday_index_candles",
+    "get_news_market",
+    "get_top_movers",
+    "get_open_positions",
+    "get_daily_pnl",
+}
+_ALLOWED_TOOL_ARGS: dict[str, set[str]] = {
+    "get_theme_candidates": {"topn_themes", "theme_date_tp", "component_date_tp"},
+    "psearch_result": {"seq"},
+    "get_ohlcv": {"ticker", "period"},
+    "get_realtime_price": {"tickers"},
+    "get_watchlist_intraday_snapshot": {"tickers"},
+    "get_intraday_candles": {"ticker"},
+    "get_flow": {"ticker"},
+    "get_news_stock": {"ticker"},
+    "get_fundamentals": {"ticker"},
+    "get_stock_status": {"ticker"},
+    "get_event_schedule": {"ticker"},
+}
 
 
 def build_context(
@@ -98,6 +126,7 @@ def build_context(
     risk_budget_remaining: dict,
     watchlist: list[str] | None = None,
     context_timestamps: dict | None = None,
+    exploration_policy: dict | None = None,
 ) -> dict:
     """TradingAgent에 사전 주입할 컨텍스트를 구성한다 (스펙 섹션 2.4)."""
     return {
@@ -110,6 +139,7 @@ def build_context(
         "daily_pnl": daily_pnl,
         "risk_budget_remaining": risk_budget_remaining,
         "watchlist": watchlist or [],
+        "exploration_policy": exploration_policy or {},
         "allowed_tools": list(PHASE_TOOLS[phase]),
         "context_timestamps": context_timestamps or {},
     }
@@ -127,13 +157,14 @@ class TradingAgent:
         system_prompt = inject_agent(_PHASE_PROMPT_NAMES[phase])
         transcript = [json.dumps({"context": context}, ensure_ascii=False)]
         tool_history: list[dict[str, Any]] = []
+        tier = self._tier_for_phase(phase)
 
         llm_failures = 0
         for _ in range(self._max_steps):
             user_msg = "\n\n---\n\n".join(transcript)
             try:
                 response = self._llm.call(
-                    system=system_prompt, user=user_msg, tier=ModelTier.STANDARD, expect_json=True
+                    system=system_prompt, user=user_msg, tier=tier, expect_json=True
                 )
             except ValueError as e:
                 # LLM이 유효한 JSON을 반환하지 못한 경우 — 스케줄된 phase 전체가
@@ -154,6 +185,9 @@ class TradingAgent:
                 if phase == TradingPhase.SCAN:
                     response = self._maybe_backfill_scan_result(context, tool_history, response)
                 return response
+
+            if next_action == "tool_request":
+                return self._finalize_tool_request(phase, context, response)
 
             if next_action == "call_tool":
                 tool_name = response.get("tool", "")
@@ -176,6 +210,33 @@ class TradingAgent:
         if phase == TradingPhase.SCAN:
             return self._fallback_scan_result(context, tool_history, reason="max_steps_exceeded")
         return {"next_action": "final", "action": "NO_TRADE", "reason": "max_steps_exceeded"}
+
+    def _tier_for_phase(self, phase: TradingPhase) -> ModelTier:
+        if phase in {TradingPhase.PREMARKET, TradingPhase.CLOSE, TradingPhase.MARKET_CLOSE}:
+            return ModelTier.FAST
+        return ModelTier.STANDARD
+
+    def _finalize_tool_request(
+        self,
+        phase: TradingPhase,
+        context: dict[str, Any],
+        response: dict[str, Any],
+    ) -> dict[str, Any]:
+        tool_request = {
+            "missing_capability": str(response.get("missing_capability") or "unspecified_capability"),
+            "why_needed": str(response.get("why_needed") or "missing capability reduced decision quality"),
+            "priority": str(response.get("priority") or "medium").lower(),
+            "phase": str(response.get("phase") or phase.value),
+            "affected_tickers": _normalize_tickers(response.get("affected_tickers"), context.get("watchlist", [])),
+            "suggested_data_source": _normalize_str_list(response.get("suggested_data_source")),
+            "fallback_action": str(response.get("fallback_action") or "NO_TRADE"),
+        }
+        return {
+            "next_action": "final",
+            "action": "TOOL_REQUEST",
+            "tool_request": tool_request,
+            "reason": "missing_capability_detected",
+        }
 
     def _fallback_scan_result(self, context: dict, tool_history: list[dict[str, Any]], reason: str) -> dict:
         """LLM scan 루프가 끝까지 수렴하지 못하면 수집한 도구 결과로 보수적 watchlist를 만든다."""
@@ -289,7 +350,7 @@ class TradingAgent:
             return {"error": "invalid_tool_args", "tool": tool_name}
 
         func = TOOL_REGISTRY[tool_name]
-        call_args: dict[str, Any] = dict(tool_args)
+        call_args = self._sanitize_tool_args(tool_name, tool_args)
         if tool_name in _TOOLS_REQUIRING_USER_ID:
             call_args["user_id"] = os.environ.get("KIS_HTS_ID", "")
 
@@ -299,6 +360,47 @@ class TradingAgent:
             return {"error": "tool_failure", "tool": tool_name, "message": str(e)}
         except Exception as e:
             return {"error": "tool_execution_error", "tool": tool_name, "message": str(e)}
+
+    def _sanitize_tool_args(self, tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
+        if tool_name in _NO_ARG_TOOLS:
+            return {}
+        if tool_name == "get_ohlcv":
+            normalized: dict[str, Any] = {}
+            ticker = tool_args.get("ticker")
+            if ticker not in (None, ""):
+                normalized["ticker"] = ticker
+            period = tool_args.get("period", tool_args.get("days"))
+            if period not in (None, ""):
+                normalized["period"] = period
+            return normalized
+        if tool_name == "get_realtime_price":
+            normalized: dict[str, Any] = {}
+            tickers = tool_args.get("tickers")
+            if isinstance(tickers, list):
+                filtered = [str(t).strip() for t in tickers if str(t).strip()]
+                if filtered:
+                    normalized["tickers"] = filtered
+                    return normalized
+            ticker = str(tool_args.get("ticker") or "").strip()
+            if ticker:
+                return {"tickers": [ticker]}
+            return {}
+        if tool_name == "get_watchlist_intraday_snapshot":
+            normalized: dict[str, Any] = {}
+            tickers = tool_args.get("tickers")
+            if isinstance(tickers, list):
+                filtered = [str(t).strip() for t in tickers if str(t).strip()]
+                if filtered:
+                    normalized["tickers"] = filtered
+                    return normalized
+            ticker = str(tool_args.get("ticker") or "").strip()
+            if ticker:
+                return {"tickers": [ticker]}
+            return {}
+        allowed = _ALLOWED_TOOL_ARGS.get(tool_name)
+        if allowed is None:
+            return dict(tool_args)
+        return {key: value for key, value in tool_args.items() if key in allowed}
 
 
 def _coerce_float(value: Any) -> float:
@@ -312,3 +414,19 @@ def _coerce_float(value: Any) -> float:
 
 def _is_six_digit_ticker(value: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", value))
+
+
+def _normalize_str_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if value in (None, ""):
+        return []
+    return [str(value).strip()]
+
+
+def _normalize_tickers(value: Any, default_watchlist: list[str]) -> list[str]:
+    tickers = _normalize_str_list(value)
+    filtered = [ticker for ticker in tickers if _is_six_digit_ticker(ticker)]
+    if filtered:
+        return filtered
+    return [ticker for ticker in default_watchlist if _is_six_digit_ticker(str(ticker))]

@@ -7,6 +7,7 @@ from market_intelligence.stock import (
     get_flow,
     get_news_stock,
     get_fundamentals,
+    get_watchlist_intraday_snapshot,
 )
 
 
@@ -18,6 +19,9 @@ class StubKisApi:
     def raw_get(self, tr_id, path, params, mode=None):
         self.raw_get_calls.append((tr_id, path, params, mode))
         return self._raw_responses[tr_id]
+
+    def get_snapshot(self, ticker):
+        return {"name": f"종목{ticker}", "trading_value": "1000000000", "market_cap": "5000000000000"}
 
 
 class StubMcpClient:
@@ -300,3 +304,54 @@ def test_get_news_stock_isolates_source_failures(monkeypatch):
     assert result["naver_headlines"] == []
     assert set(result["missing_fields"]) == {"telegram_headlines", "naver_headlines"}
 
+
+def test_get_watchlist_intraday_snapshot_bundles_price_news_and_status(monkeypatch):
+    import market_intelligence.stock as mil_stock
+    import market_intelligence.risk_filter as mil_risk_filter
+
+    monkeypatch.setattr(
+        mil_stock,
+        "get_recent_news",
+        lambda ticker="", hours=2: [{"title": f"{ticker} 속보", "source": "FastStockNews", "date": "2026-06-15T09:30:00"}],
+    )
+    monkeypatch.setattr(
+        mil_risk_filter,
+        "get_stock_status",
+        lambda ctx, phase, ticker: {"ticker": ticker, "is_limit_up": False, "is_limit_down": False, "is_vi": False,
+                                    "trading_halted": False, "administrative_issue": False},
+    )
+
+    class FakeNaver:
+        def search(self, query, display=5):
+            return []
+
+    monkeypatch.setattr(mil_stock, "NaverNewsFetcher", FakeNaver)
+
+    ctx = make_ctx(
+        raw_responses={
+            "FHKST11300006": {
+                "output": [
+                    {"inter_shrn_iscd": "005930", "inter2_prpr": "70000", "prdy_ctrt": "1.0", "acml_vol": "100"},
+                    {"inter_shrn_iscd": "000660", "inter2_prpr": "180000", "prdy_ctrt": "5.0", "acml_vol": "200"},
+                ],
+            },
+            "FHKST03010200": {
+                "output2": [
+                    {"stck_cntg_hour": "093000", "stck_oprc": "69800", "stck_hgpr": "70000",
+                     "stck_lwpr": "69700", "stck_prpr": "69900", "cntg_vol": "5000"},
+                    {"stck_cntg_hour": "094000", "stck_oprc": "69900", "stck_hgpr": "70600",
+                     "stck_lwpr": "69800", "stck_prpr": "70550", "cntg_vol": "4000"},
+                ],
+            },
+            "FHKST01011800": {"output": []},
+        },
+    )
+
+    result = get_watchlist_intraday_snapshot(ctx, "INTRADAY", ["005930", "000660", "00ABCD"])
+
+    assert [row["ticker"] for row in result["tickers"]] == ["005930", "000660"]
+    assert result["tickers"][0]["price"] == 70000.0
+    assert result["tickers"][0]["intraday_trend"] == "up"
+    assert result["tickers"][0]["headline_count"] == 0
+    assert result["tickers"][0]["telegram_headline_count"] == 1
+    assert "005930 속보" in result["tickers"][0]["latest_headlines"][0]

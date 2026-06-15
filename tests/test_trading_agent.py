@@ -41,7 +41,8 @@ def test_build_context_includes_allowed_tools_for_phase():
     assert ctx["current_phase"] == "INTRADAY"
     assert ctx["watchlist"] == ["005930", "000660"]
     assert ctx["allowed_tools"] == PHASE_TOOLS[TradingPhase.INTRADAY]
-    assert "psearch_title" not in ctx["allowed_tools"]
+    assert "psearch_title" in ctx["allowed_tools"]
+    assert ctx["exploration_policy"] == {}
 
 
 def test_phase_tools_only_reference_known_tools():
@@ -79,8 +80,8 @@ def test_run_executes_allowed_tool_then_returns_final(monkeypatch):
 
 def test_run_blocks_tool_not_allowed_in_phase():
     llm = FakeLLMClient([
-        {"next_action": "call_tool", "tool": "psearch_title", "tool_args": {}},
-        {"next_action": "final", "action": "NO_TRADE", "reason": "psearch 사용 불가, 관망"},
+        {"next_action": "call_tool", "tool": "get_open_positions", "tool_args": {}},
+        {"next_action": "final", "action": "NO_TRADE", "reason": "포지션 조회 도구는 intraday 직접 호출 불가, 관망"},
     ])
     agent = TradingAgent(mil=object(), llm=llm)
     context = build_context(
@@ -192,6 +193,197 @@ def test_run_returns_no_trade_after_max_steps():
     assert len(llm.calls) == 3
 
 
+def test_run_normalizes_tool_request():
+    llm = FakeLLMClient([
+        {
+            "next_action": "tool_request",
+            "missing_capability": "realtime_orderbook_imbalance",
+            "why_needed": "돌파 강도를 체결강도와 호가잔량으로 검증할 수 없음",
+            "priority": "high",
+            "affected_tickers": ["005930"],
+            "suggested_data_source": ["KIS websocket"],
+            "fallback_action": "NO_TRADE",
+        }
+    ])
+    agent = TradingAgent(mil=object(), llm=llm)
+    context = build_context(
+        phase=TradingPhase.INTRADAY, trading_date="2026-06-09",
+        regime={"status": "YELLOW"}, drift_status="STABLE",
+        risk_guidance={}, portfolio_snapshot={}, daily_pnl={}, risk_budget_remaining={},
+        watchlist=["005930"],
+    )
+
+    result = agent.run(TradingPhase.INTRADAY, context)
+
+    assert result["action"] == "TOOL_REQUEST"
+    assert result["tool_request"]["missing_capability"] == "realtime_orderbook_imbalance"
+    assert result["tool_request"]["priority"] == "high"
+    assert result["tool_request"]["phase"] == "INTRADAY"
+    assert result["tool_request"]["affected_tickers"] == ["005930"]
+
+
+def test_execute_tool_ignores_args_for_no_arg_tools(monkeypatch):
+    called = {}
+
+    def fake_get_market_context(ctx, phase):
+        called["phase"] = phase
+        return {"ok": True}
+
+    monkeypatch.setitem(TOOL_REGISTRY, "get_market_context", fake_get_market_context)
+    agent = TradingAgent(mil=object(), llm=FakeLLMClient([]))
+
+    result = agent._execute_tool(
+        TradingPhase.INTRADAY,
+        "get_market_context",
+        {"date": "2026-06-15", "scope": "intraday", "phase": "INTRADAY"},
+    )
+
+    assert result == {"ok": True}
+    assert called["phase"] == "INTRADAY"
+
+
+def test_execute_tool_filters_unrecognized_args(monkeypatch):
+    called = {}
+
+    def fake_get_realtime_price(ctx, phase, tickers):
+        called["tickers"] = tickers
+        return {"tickers": tickers}
+
+    monkeypatch.setitem(TOOL_REGISTRY, "get_realtime_price", fake_get_realtime_price)
+    agent = TradingAgent(mil=object(), llm=FakeLLMClient([]))
+
+    result = agent._execute_tool(
+        TradingPhase.INTRADAY,
+        "get_realtime_price",
+        {"ticker": "005930", "date": "2026-06-15", "scope": "intraday"},
+    )
+
+    assert result == {"tickers": ["005930"]}
+    assert called["tickers"] == ["005930"]
+
+
+def test_execute_tool_normalizes_ohlcv_days_to_period(monkeypatch):
+    called = {}
+
+    def fake_get_ohlcv(ctx, phase, ticker, period=60):
+        called["ticker"] = ticker
+        called["period"] = period
+        return {"ticker": ticker, "period": period}
+
+    monkeypatch.setitem(TOOL_REGISTRY, "get_ohlcv", fake_get_ohlcv)
+    agent = TradingAgent(mil=object(), llm=FakeLLMClient([]))
+
+    result = agent._execute_tool(
+        TradingPhase.INTRADAY,
+        "get_ohlcv",
+        {"ticker": "005930", "days": 20, "date": "2026-06-15"},
+    )
+
+    assert result == {"ticker": "005930", "period": 20}
+    assert called["ticker"] == "005930"
+    assert called["period"] == 20
+
+
+def test_execute_tool_normalizes_watchlist_snapshot_single_ticker(monkeypatch):
+    called = {}
+
+    def fake_watchlist_snapshot(ctx, phase, tickers):
+        called["tickers"] = tickers
+        return {"tickers": tickers}
+
+    monkeypatch.setitem(TOOL_REGISTRY, "get_watchlist_intraday_snapshot", fake_watchlist_snapshot)
+    agent = TradingAgent(mil=object(), llm=FakeLLMClient([]))
+
+    result = agent._execute_tool(
+        TradingPhase.INTRADAY,
+        "get_watchlist_intraday_snapshot",
+        {"ticker": "005930", "scope": "watchlist"},
+    )
+
+    assert result == {"tickers": ["005930"]}
+    assert called["tickers"] == ["005930"]
+
+
+def test_scan_max_steps_falls_back_to_deterministic_watchlist(monkeypatch):
+    def fake_get_top_movers(ctx, phase):
+        return {
+            "change_rate_top": [
+                {"ticker": "357780", "name": "솔브레인", "change_pct": 27.89, "trading_value_krw": 128_000_000_000},
+                {"ticker": "403870", "name": "HPSP", "change_pct": 30.0, "trading_value_krw": 1_102_000_000_000},
+            ],
+            "overheated_bias_warning": True,
+        }
+
+    def fake_get_stock_status(ctx, phase, ticker):
+        return {
+            "ticker": ticker,
+            "trading_halted": False,
+            "administrative_issue": False,
+            "is_limit_up": ticker == "403870",
+        }
+
+    monkeypatch.setitem(TOOL_REGISTRY, "get_top_movers", fake_get_top_movers)
+    monkeypatch.setitem(TOOL_REGISTRY, "get_stock_status", fake_get_stock_status)
+
+    llm = FakeLLMClient([
+        {"next_action": "call_tool", "tool": "get_top_movers", "tool_args": {}},
+        {"next_action": "call_tool", "tool": "get_stock_status", "tool_args": {"ticker": "357780"}},
+        {"next_action": "call_tool", "tool": "get_stock_status", "tool_args": {"ticker": "403870"}},
+    ])
+    agent = TradingAgent(mil=object(), llm=llm, max_steps=3)
+    context = build_context(
+        phase=TradingPhase.SCAN,
+        trading_date="2026-06-09",
+        regime={"status": "YELLOW"},
+        drift_status="STABLE",
+        risk_guidance={"min_trading_value_krw": 12_000_000_000},
+        portfolio_snapshot={},
+        daily_pnl={},
+        risk_budget_remaining={"positions_left": 2},
+    )
+
+    result = agent.run(TradingPhase.SCAN, context)
+
+    assert result["action"] == "WATCHLIST_UPDATE"
+    assert result["watchlist"] == ["357780"]
+    assert result["overheated_bias_warning"] is True
+    assert "deterministic_scan_fallback" in result["reason"]
+
+
+def test_scan_empty_watchlist_from_llm_is_backfilled(monkeypatch):
+    def fake_get_top_movers(ctx, phase):
+        return {
+            "change_rate_top": [
+                {"ticker": "357780", "name": "솔브레인", "change_pct": 27.89, "trading_value_krw": 128_000_000_000},
+            ],
+            "overheated_bias_warning": True,
+        }
+
+    monkeypatch.setitem(TOOL_REGISTRY, "get_top_movers", fake_get_top_movers)
+
+    llm = FakeLLMClient([
+        {"next_action": "call_tool", "tool": "get_top_movers", "tool_args": {}},
+        {"next_action": "final", "action": "WATCHLIST_UPDATE", "watchlist": [], "candidates": [], "reason": "llm empty"},
+    ])
+    agent = TradingAgent(mil=object(), llm=llm, max_steps=3)
+    context = build_context(
+        phase=TradingPhase.SCAN,
+        trading_date="2026-06-09",
+        regime={"status": "YELLOW"},
+        drift_status="STABLE",
+        risk_guidance={"min_trading_value_krw": 12_000_000_000},
+        portfolio_snapshot={},
+        daily_pnl={},
+        risk_budget_remaining={"positions_left": 2},
+    )
+
+    result = agent.run(TradingPhase.SCAN, context)
+
+    assert result["action"] == "WATCHLIST_UPDATE"
+    assert result["watchlist"] == ["357780"]
+    assert "llm empty" in result["reason"]
+
+
 def test_psearch_tools_inject_hts_user_id_from_env(monkeypatch):
     monkeypatch.setenv("KIS_HTS_ID", "test-hts-id")
     captured = {}
@@ -234,4 +426,3 @@ def test_run_degrades_to_no_trade_on_persistent_invalid_json():
     assert result["action"] == "NO_TRADE"
     assert "llm_invalid_json" in result["reason"]
     assert agent._llm.calls == 2  # 1회 재시도 후 강등
-

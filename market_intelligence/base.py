@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from broker.kis_api import KISApi
 from broker.kis_mcp_client import KISMCPClient
+from broker.kiwoom_api import KiwoomApi
 from market_intelligence.cache import MILCache
 from market_intelligence.circuit_breaker import CircuitBreaker
 
@@ -24,11 +25,13 @@ class MILContext:
         self,
         kis_api: KISApi,
         mcp_client: KISMCPClient | None = None,
+        kiwoom_api: KiwoomApi | None = None,
         cache: MILCache | None = None,
         circuit_breaker: CircuitBreaker | None = None,
     ) -> None:
         self.kis_api = kis_api
         self.mcp_client = mcp_client or KISMCPClient()
+        self.kiwoom_api = kiwoom_api
         self.cache = cache or MILCache()
         self.circuit_breaker = circuit_breaker or CircuitBreaker()
 

@@ -19,6 +19,13 @@
 **중요: 응답은 반드시 정확히 하나의 JSON 오브젝트여야 한다.** 여러 도구를 호출하고
 싶어도 한 번에 하나씩만 호출하라 — 두 개 이상의 JSON을 연달아 반환하면 첫 번째만
 처리되고 나머지는 버려진다.
+
+도구 호출 규격:
+- `get_open_positions`, `get_daily_pnl`은 **반드시** `tool_args: {}` 로 호출한다.
+- 종목 단위 도구만 `ticker`를 넣는다:
+  `get_ohlcv`, `get_news_stock`
+- `phase`, `date`, `portfolio_filter`, `market` 같은 인자를 임의로 만들지 말 것.
+
 ```json
 {"next_action": "call_tool", "tool": "<도구명>", "tool_args": {...}}
 ```

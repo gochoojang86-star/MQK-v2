@@ -7,7 +7,7 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "holiday_check" },
-      cron_restart: "30 15 * * *",  // UTC 15:30 = KST 00:30
+      cron_restart: "30 0 * * *",   // KST 00:30
       autorestart: false,
     },
     // ── v2 트레이딩 앱 4개 — 2026-06-12 v3 전환으로 비활성화 (사용자 결정) ──
@@ -142,8 +142,8 @@ module.exports = {
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
       args: "-m broker.telegram_news",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
-      cron_restart: "0 21 * * *",  // UTC 21:00 = KST 06:00 매일 재시작 (메모리 초기화)
-      autorestart: false,           // 21:00 KST 운영 종료 후 재시작 안 함
+      cron_restart: "0 6 * * *",   // KST 06:00 매일 시작
+      autorestart: false,          // 운영 시간(06:00~21:00 KST) 외에는 앱이 스스로 종료
     },
   ],
 };

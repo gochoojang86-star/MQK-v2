@@ -79,9 +79,9 @@ class LLMConfig:
     # ── OpenAI 모델 배치 (Hermes/Codex OAuth 인증) ───────────────────────────
     # REASONING: 핵심 투자 판단 (PortfolioManager, SelfImprovement)
     model_reasoning: str = "gpt-5.4"
-    # STANDARD: 복합 해석 (Regime, Theme, Review)
-    model_standard: str = "gpt-5.4"
-    # FAST: 단순 분류 패턴 (News, Disclosure)
+    # STANDARD: 반복 호출되는 주력 운영 경로 (TradingAgent SCAN/INTRADAY)
+    model_standard: str = "gpt-5.4-mini"
+    # FAST: 단순 분류/복기/보조 분석
     model_fast: str = "gpt-5.4-mini"
 
     max_tokens: int = 2048

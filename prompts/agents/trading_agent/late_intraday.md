@@ -26,14 +26,41 @@
 4. 후보별 `get_ohlcv`로 최근 20일 내 거래대금 2,000억+ 이력과 이격도 확인,
    `get_intraday_candles`로 장중 저점 대비 낙폭 둔화(매도 클라이맥스 후 진정) 확인
 5. `get_flow`로 외국인/기관이 투매 주체인지(개인 투매가 아닌지) 참고
-6. 최대 1~2종목만 BUY proposal — 종가 부근 분할 진입 전제
+6. 여러 후보를 비교할 때는 `get_watchlist_intraday_snapshot`으로 후보 묶음을 먼저 확인
+7. 최대 1~2종목만 BUY proposal — 종가 부근 분할 진입 전제
 
 ## 진행 방식 (ReAct)
 
 **중요: 응답은 반드시 정확히 하나의 JSON 오브젝트여야 한다.** 여러 도구를 호출하고
 싶어도 한 번에 하나씩만 호출하라.
+
+도구 호출 규격:
+- `get_market_context`, `get_top_movers`는 **반드시** `tool_args: {}` 로 호출한다.
+- `get_watchlist_intraday_snapshot`은 **반드시**
+  `tool_args: {"tickers": ["005930", "000660"]}` 형식으로 호출한다.
+- `psearch_title`는 **반드시** `tool_args: {}` 로 호출한다.
+- `psearch_result`는 **반드시** `tool_args: {"seq": "<조건식 번호>"}` 형식만 사용한다.
+- 종목 단위 도구만 `ticker`를 넣는다:
+  `get_ohlcv`, `get_intraday_candles`, `get_realtime_price`, `get_flow`, `get_news_stock`, `get_stock_status`
+- `phase`, `date`, `scope`, `include`, `market` 같은 인자를 임의로 만들지 말 것.
+
 ```json
 {"next_action": "call_tool", "tool": "<도구명>", "tool_args": {...}}
+```
+
+또는:
+
+```json
+{
+  "next_action": "tool_request",
+  "missing_capability": "capability_name",
+  "why_needed": "현재 허용 도구로 낙주 진입 품질을 검증할 수 없음",
+  "priority": "low|medium|high",
+  "phase": "LATE_INTRADAY",
+  "affected_tickers": ["005930"],
+  "suggested_data_source": ["KIS websocket", "broker API"],
+  "fallback_action": "NO_TRADE"
+}
 ```
 
 또는:
@@ -55,3 +82,4 @@
 - 폭락이 아닌 단순 약세장에서의 진입 (게이트가 막지만, 데이터가 애매하면 NO_TRADE).
 - 거래대금 이력 없는 종목, 하한가 잠긴 종목, VI 발동 직후 종목.
 - 2종목 초과 proposal. 스윙 보유 전제의 reason 작성 금지 — 이 phase는 1박 2일 매매다.
+- 현재 허용 도구로 핵심 근거를 확보할 수 없는데도 억지로 낙주 진입 proposal 생성 금지.

@@ -2,7 +2,9 @@ import json
 import time
 from dataclasses import dataclass
 
-from broker.kis_api import KISApi
+import requests
+
+from broker.kis_api import KISApi, KISConfig, KISMode
 
 
 @dataclass
@@ -672,3 +674,60 @@ def test_sell_after_hours_close_uses_ord_dvsn_06(monkeypatch, tmp_path):
     assert calls[0]["body"]["ORD_DVSN"] == "06"
     assert calls[0]["body"]["ORD_UNPR"] == "0"
 
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def test_get_balance_uses_cached_response_after_retry_failure(monkeypatch):
+    cfg = KISConfig(mode=KISMode.PAPER)
+    api = KISApi(config=cfg)
+
+    monkeypatch.setattr(api, "_headers", lambda tr_id, mode=None: {})
+    monkeypatch.setattr(api, "_base_url_for", lambda mode: "https://example.test")
+    monkeypatch.setattr(api, "_account_no_for", lambda mode: "12345678-01")
+
+    payload = {"output1": [{"pdno": "005930", "hldg_qty": "1"}], "output2": [{"tot_evlu_amt": "1000000"}]}
+    calls = {"count": 0}
+
+    def fake_get_with_retry(url, headers, params, timeout):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _FakeResponse(payload)
+        raise requests.Timeout("temporary balance failure")
+
+    monkeypatch.setattr(api, "_get_with_retry", fake_get_with_retry)
+
+    first = api.get_balance()
+    second = api.get_balance()
+
+    assert first == payload
+    assert second == payload
+    assert calls["count"] == 2
+
+
+def test_get_balance_raises_on_non_zero_rt_cd(monkeypatch):
+    cfg = KISConfig(mode=KISMode.PAPER)
+    api = KISApi(config=cfg)
+
+    monkeypatch.setattr(api, "_headers", lambda tr_id, mode=None: {})
+    monkeypatch.setattr(api, "_base_url_for", lambda mode: "https://example.test")
+    monkeypatch.setattr(api, "_account_no_for", lambda mode: "12345678-01")
+
+    error_payload = {"rt_cd": "1", "msg1": "token expired"}
+
+    def fake_get_with_retry(url, headers, params, timeout):
+        return _FakeResponse(error_payload)
+
+    monkeypatch.setattr(api, "_get_with_retry", fake_get_with_retry)
+
+    try:
+        api.get_balance()
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "rt_cd=1" in str(e)

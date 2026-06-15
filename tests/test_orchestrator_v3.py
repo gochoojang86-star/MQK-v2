@@ -6,6 +6,7 @@ import pytest
 
 from agents.trading_agent import TradingPhase
 from codes.risk_officer import RiskViolation
+from market_intelligence.circuit_breaker import CircuitBreaker
 from orchestrator_v3 import (
     MQKOrchestratorV3,
     load_drift_state,
@@ -53,6 +54,13 @@ def test_save_and_load_watchlist_roundtrip(tmp_path):
     save_watchlist(["005930", "000660"], path=path)
 
     assert load_watchlist(path=path) == ["005930", "000660"]
+
+
+def test_save_and_load_watchlist_filters_invalid_and_duplicate_tickers(tmp_path):
+    path = tmp_path / "watchlist.json"
+    save_watchlist(["005930", "0054V0", "000660", "005930", " 0041B0 ", "357780"], path=path)
+
+    assert load_watchlist(path=path) == ["005930", "000660", "357780"]
 
 
 def test_load_watchlist_returns_empty_when_missing(tmp_path):
@@ -104,7 +112,7 @@ def make_orchestrator(tmp_path: Path) -> MQKOrchestratorV3:
     orch = MQKOrchestratorV3.__new__(MQKOrchestratorV3)
     orch._today = "2026-06-09"
     orch._log_dir = tmp_path
-    orch._mil = object()
+    orch._mil = type("_MIL", (), {})()
     orch._atr_cache = {}
     orch._market_data = None
     return orch
@@ -130,7 +138,12 @@ def test_build_context_uses_mil_portfolio_tools(monkeypatch, tmp_path):
     assert ctx["risk_budget_remaining"]["positions_left"] == 3
     assert ctx["daily_pnl"]["realized_pnl_pct"] == -0.5
     assert ctx["watchlist"] == ["005930"]
-    assert ctx["allowed_tools"] == ["get_ohlcv", "get_intraday_candles", "get_flow", "get_news_stock", "get_stock_status"]
+    assert ctx["allowed_tools"] == [
+        "get_market_context", "get_sector_breadth", "get_theme_candidates",
+        "psearch_title", "psearch_result", "get_top_movers",
+        "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot", "get_intraday_candles",
+        "get_flow", "get_news_stock", "get_stock_status",
+    ]
 
 
 # ── Critical 3/4: graceful degradation on ToolFailure / bad kospi values ───
@@ -238,6 +251,71 @@ def test_build_context_degrades_conservatively_when_portfolio_unavailable(monkey
     assert ctx["risk_budget_remaining"]["positions_left"] == 0
     assert ctx["risk_budget_remaining"]["daily_loss_remaining_pct"] == 0.0
     assert ctx["portfolio"]["data_unavailable"] is True
+
+
+def test_build_context_retries_portfolio_fetch_before_degrading(monkeypatch, tmp_path):
+    """2026-06-15: 잔고 조회가 일시적으로 실패해도 3회 내 성공하면 정상 컨텍스트를 사용한다."""
+    import market_intelligence.portfolio as mil_portfolio
+    from market_intelligence.base import ToolFailure
+
+    calls = {"n": 0}
+
+    def flaky_positions(ctx, phase):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise ToolFailure("get_open_positions: 500 Server Error")
+        return {"positions": [{"ticker": "005930"}], "position_count": 1}
+
+    monkeypatch.setattr(mil_portfolio, "get_open_positions", flaky_positions)
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0,
+                                              "total_eval_amt": 10_000_000})
+    monkeypatch.setattr("orchestrator_v3.time.sleep", lambda _: None)
+
+    orch = make_orchestrator(tmp_path)
+    orch._mil.circuit_breaker = CircuitBreaker()
+    regime = {"status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50,
+              "risk_guidance": {"max_positions": 4}, "timestamp": "2026-06-12T08:45:00"}
+
+    ctx = orch._build_context(TradingPhase.INTRADAY, regime, "STABLE", watchlist=[])
+
+    assert calls["n"] == 2
+    assert ctx["portfolio"].get("data_unavailable") is None
+    assert ctx["risk_budget_remaining"]["positions_left"] == 3
+
+
+def test_build_context_falls_back_to_last_snapshot_after_retries_exhausted(monkeypatch, tmp_path):
+    """2026-06-15: 3회 재시도 후에도 실패하면 직전 성공 스냅샷을(stale) 재사용해
+    실제 보유 현황 기준으로 매수 예산을 계산한다 (예산 0으로 잘못 강등하지 않음)."""
+    import market_intelligence.portfolio as mil_portfolio
+    from market_intelligence.base import ToolFailure
+
+    monkeypatch.setattr("orchestrator_v3.time.sleep", lambda _: None)
+
+    orch = make_orchestrator(tmp_path)
+    orch._mil.circuit_breaker = CircuitBreaker()
+    orch._last_portfolio_snapshot = (
+        {"positions": [{"ticker": "005930"}, {"ticker": "095340"}], "position_count": 2},
+        {"realized_pnl_pct": -1.0, "realized_pnl_krw": -50000, "total_eval_amt": 48_000_000},
+    )
+
+    def always_fails(ctx, phase):
+        raise ToolFailure("get_open_positions: Read timed out")
+
+    monkeypatch.setattr(mil_portfolio, "get_open_positions", always_fails)
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl", always_fails)
+
+    regime = {"status": "GREEN", "regime": "UPTREND", "confidence": 91,
+              "risk_guidance": {"max_positions": 4}, "timestamp": "2026-06-15T08:45:00"}
+
+    ctx = orch._build_context(TradingPhase.INTRADAY, regime, "STABLE", watchlist=[])
+
+    assert ctx["portfolio"]["data_unavailable"] is True
+    assert ctx["portfolio"]["stale"] is True
+    assert ctx["portfolio"]["position_count"] == 2
+    # 4 - 2 = 2개 신규 진입 여력 — 0으로 잘못 강등되지 않는다.
+    assert ctx["risk_budget_remaining"]["positions_left"] == 2
+    assert ctx["risk_budget_remaining"]["daily_loss_remaining_pct"] > 0.0
 
 
 def test_collect_drift_snapshot_combines_market_tools(monkeypatch, tmp_path):
@@ -387,8 +465,56 @@ def test_run_intraday_v3_stable_executes_no_trade(monkeypatch, tmp_path):
     assert result["action"] == "NO_TRADE"
     assert orch._trading_agent.calls[0][0] == TradingPhase.INTRADAY
     assert orch._trading_agent.calls[0][1]["watchlist"] == ["005930"]
+    assert orch._trading_agent.calls[0][1]["exploration_policy"]["allow_intraday_discovery"] is True
     saved_drift = json.loads((tmp_path / "drift_state.json").read_text(encoding="utf-8"))
     assert saved_drift["today_caution_count"] == 0
+
+
+def test_run_intraday_v3_merges_watchlist_additions(monkeypatch, tmp_path):
+    import market_intelligence.portfolio as mil_portfolio
+    import market_intelligence.market as mil_market
+
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [], "position_count": 0})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0, "total_eval_amt": 10_000_000})
+    monkeypatch.setattr(mil_market, "get_market_context",
+                         lambda ctx, phase: {"kospi": 2520.0, "foreign_net_buy_krw": 0})
+    monkeypatch.setattr(mil_market, "get_intraday_index_candles",
+                         lambda ctx, phase: {"candles": [{"open": 2525.0, "high": 2526.0, "low": 2515.0, "close": 2520.0}]})
+    monkeypatch.setattr(mil_market, "get_sector_breadth",
+                         lambda ctx, phase: {"market_breadth": {"advancers": 400, "decliners": 300}})
+
+    orch = make_orchestrator(tmp_path)
+    orch._drift_detector = FakeDriftDetector({
+        "drift_judgment": "STABLE", "reason": "no_trigger_fired", "metrics": {}, "triggered": [],
+        "new_status": None, "risk_guidance_delta": {},
+        "drift_state": {"date": "2026-06-09", "last_trigger_time": {}, "today_caution_count": 0, "daily_lite_llm_calls": 0},
+    })
+    orch._trading_agent = FakeTradingAgent({
+        "action": "NO_TRADE",
+        "proposals": [],
+        "watchlist_additions": ["357780"],
+        "reason": "신규 리더 감시 등록",
+    })
+
+    regime = {
+        "status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50,
+        "risk_guidance": {"max_positions": 4, "buy_confidence_threshold": 75,
+                           "risk_per_trade_pct": 0.35, "min_trading_value_krw": 1_000_000_000},
+        "drift_triggers": [], "cooldown_minutes": 60, "max_daily_triggers": 3,
+        "timestamp": "2026-06-09T08:45:00",
+    }
+    (tmp_path / "last_regime.json").write_text(json.dumps(regime), encoding="utf-8")
+    (tmp_path / "watchlist.json").write_text(json.dumps({"watchlist": ["005930"]}), encoding="utf-8")
+
+    monkeypatch.setattr("orchestrator_v3._LAST_REGIME_PATH", tmp_path / "last_regime.json")
+    monkeypatch.setattr("orchestrator_v3._DRIFT_STATE_PATH", tmp_path / "drift_state.json")
+    monkeypatch.setattr("orchestrator_v3._WATCHLIST_PATH", tmp_path / "watchlist.json")
+
+    orch.run_intraday_v3()
+
+    assert load_watchlist(path=tmp_path / "watchlist.json") == ["005930", "357780"]
 
 
 def test_run_intraday_v3_skips_on_stale_regime(monkeypatch, tmp_path):
@@ -403,6 +529,100 @@ def test_run_intraday_v3_skips_on_stale_regime(monkeypatch, tmp_path):
     result = orch.run_intraday_v3()
 
     assert result == {"action": "NO_TRADE", "reason": "stale_regime"}
+
+
+def test_record_tool_request_appends_jsonl(monkeypatch, tmp_path):
+    orch = make_orchestrator(tmp_path)
+    tool_gap_path = tmp_path / "tool_gap_log.jsonl"
+
+    orch._record_tool_request(
+        {
+            "action": "TOOL_REQUEST",
+            "tool_request": {
+                "missing_capability": "realtime_orderbook_imbalance",
+                "priority": "high",
+                "why_needed": "돌파 강도 확인 부족",
+                "affected_tickers": ["000660"],
+                "suggested_data_source": ["KIS websocket"],
+                "fallback_action": "NO_TRADE",
+            },
+        },
+        TradingPhase.INTRADAY,
+        {"status": "YELLOW"},
+    )
+
+    rows = tool_gap_path.read_text(encoding="utf-8").strip().splitlines()
+    payload = json.loads(rows[0])
+    assert payload["missing_capability"] == "realtime_orderbook_imbalance"
+    assert payload["priority"] == "high"
+    assert payload["phase"] == "INTRADAY"
+
+
+def test_summarize_tool_gaps_groups_today_records(monkeypatch, tmp_path):
+    orch = make_orchestrator(tmp_path)
+    tool_gap_path = tmp_path / "tool_gap_log.jsonl"
+    tool_gap_path.write_text(
+        "\n".join([
+            json.dumps({
+                "timestamp": "2026-06-09T10:00:00",
+                "phase": "INTRADAY",
+                "missing_capability": "realtime_orderbook_imbalance",
+                "priority": "high",
+                "affected_tickers": ["000660"],
+            }, ensure_ascii=False),
+            json.dumps({
+                "timestamp": "2026-06-09T11:00:00",
+                "phase": "SCAN",
+                "missing_capability": "realtime_orderbook_imbalance",
+                "priority": "medium",
+                "affected_tickers": ["005930"],
+            }, ensure_ascii=False),
+            json.dumps({
+                "timestamp": "2026-06-08T11:00:00",
+                "phase": "SCAN",
+                "missing_capability": "old_capability",
+                "priority": "high",
+                "affected_tickers": ["005930"],
+            }, ensure_ascii=False),
+        ]),
+        encoding="utf-8",
+    )
+
+    summary = orch._summarize_tool_gaps(path=tool_gap_path)
+
+    assert summary["high_priority_count"] == 1
+    assert summary["top_missing_capabilities"][0]["name"] == "realtime_orderbook_imbalance"
+    assert summary["top_missing_capabilities"][0]["count"] == 2
+
+
+def test_summarize_tool_gaps_prunes_old_records(monkeypatch, tmp_path):
+    orch = make_orchestrator(tmp_path)  # _today = "2026-06-09"
+    tool_gap_path = tmp_path / "tool_gap_log.jsonl"
+    tool_gap_path.write_text(
+        "\n".join([
+            json.dumps({
+                "timestamp": "2026-06-09T10:00:00",
+                "phase": "INTRADAY",
+                "missing_capability": "realtime_orderbook_imbalance",
+                "priority": "high",
+                "affected_tickers": ["000660"],
+            }, ensure_ascii=False),
+            json.dumps({
+                "timestamp": "2026-04-01T11:00:00",
+                "phase": "SCAN",
+                "missing_capability": "ancient_capability",
+                "priority": "high",
+                "affected_tickers": ["005930"],
+            }, ensure_ascii=False),
+        ]),
+        encoding="utf-8",
+    )
+
+    orch._summarize_tool_gaps(path=tool_gap_path)
+
+    remaining = [json.loads(line) for line in tool_gap_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(remaining) == 1
+    assert remaining[0]["missing_capability"] == "realtime_orderbook_imbalance"
 
 
 def test_run_intraday_v3_idle_skip_gate(monkeypatch, tmp_path):

@@ -46,8 +46,33 @@
 **중요: 응답은 반드시 정확히 하나의 JSON 오브젝트여야 한다.** 여러 도구를 호출하고
 싶어도 한 번에 하나씩만 호출하라 — 두 개 이상의 JSON을 연달아 반환하면 첫 번째만
 처리되고 나머지는 버려진다.
+
+도구 호출 규격:
+- `get_market_context`, `get_sector_breadth`, `get_intraday_index_candles`, `get_news_market`,
+  `get_top_movers`는 **반드시** `tool_args: {}` 로 호출한다.
+- `get_theme_candidates`는 기본적으로 `tool_args: {}` 로 호출하고, 꼭 필요할 때만
+  `topn_themes` 정도만 추가한다.
+- `psearch_title`는 **반드시** `tool_args: {}` 로 호출한다. `user_id`는 시스템이 자동 주입한다.
+- `psearch_result`는 **반드시** `tool_args: {"seq": "<조건식 번호>"}` 형식만 사용한다.
+- `phase`, `date`, `scope`, `include`, `market` 같은 인자를 임의로 만들지 말 것.
+
 ```json
 {"next_action": "call_tool", "tool": "<도구명>", "tool_args": {...}}
+```
+
+또는:
+
+```json
+{
+  "next_action": "tool_request",
+  "missing_capability": "capability_name",
+  "why_needed": "현재 허용 도구로 핵심 근거를 확보할 수 없음",
+  "priority": "low|medium|high",
+  "phase": "SCAN",
+  "affected_tickers": ["005930"],
+  "suggested_data_source": ["KIS websocket", "Kiwoom REST"],
+  "fallback_action": "NO_TRADE"
+}
 ```
 
 또는:
@@ -68,3 +93,5 @@
 ## Forbidden
 - 직접 주문/매수 proposal 생성 금지 — INTRADAY의 역할입니다.
 - `min_trading_value_krw` 미만 종목을 watchlist에 포함 금지.
+- 현재 허용 도구로 핵심 근거를 확보할 수 없는데도 억지로 후보를 확정하지 말 것.
+- `tool_request`는 "있으면 좋음"이 아니라 "없어서 판단 품질이 의미 있게 떨어짐"일 때만 반환.

@@ -59,7 +59,7 @@ class ReviewAgent:
 
         markdown = self._llm.call(
             system=_SYSTEM_PROMPT, user=user_msg,
-            tier=ModelTier.STANDARD, expect_json=False
+            tier=ModelTier.FAST, expect_json=False
         )
 
         review = TradeReview(

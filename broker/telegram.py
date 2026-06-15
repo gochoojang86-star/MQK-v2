@@ -81,7 +81,11 @@ class TelegramApproval:
         self._flush_updates()
 
         msg_text = self._format_message(req, request_id)
-        self._send_message(msg_text, reply_markup=self._approval_keyboard(request_id))
+        self._send_message(
+            msg_text,
+            reply_markup=self._approval_keyboard(request_id),
+            parse_mode=None,
+        )
 
         # 승인 대기 (polling)
         start = time.time()
@@ -169,6 +173,7 @@ class TelegramApproval:
         text: str,
         reply_markup: dict | None = None,
         chat_id: str | None = None,
+        parse_mode: str | None = "Markdown",
     ) -> None:
         target_chat_id = chat_id or self._chat_id
         if not self._token or not target_chat_id:
@@ -177,8 +182,9 @@ class TelegramApproval:
         payload = {
             "chat_id": target_chat_id,
             "text": text,
-            "parse_mode": "Markdown",
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         if reply_markup:
             payload["reply_markup"] = reply_markup
         resp = requests.post(url, json=payload, timeout=10)
