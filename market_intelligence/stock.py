@@ -63,9 +63,10 @@ def get_ohlcv(ctx: MILContext, phase: str, ticker: str, period: int = 60) -> dic
 def get_realtime_price(ctx: MILContext, phase: str, tickers: list[str]) -> dict:
     """관심종목(멀티종목) 시세조회. 최대 30종목 배치. 모의투자 미지원 (mode=real 고정)."""
 
+    if len(tickers) > 30:
+        raise ToolFailure("get_realtime_price: 최대 30종목까지만 조회 가능")
+
     def fetch():
-        if len(tickers) > 30:
-            raise ValueError("최대 30종목까지만 조회 가능")
         params = {"FID_COND_MRKT_DIV_CODE_1": "J"}
         for i, ticker in enumerate(tickers, start=1):
             params[f"FID_INPUT_ISCD_{i}"] = ticker

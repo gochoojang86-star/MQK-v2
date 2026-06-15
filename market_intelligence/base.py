@@ -1,6 +1,7 @@
 """MIL 도구 공통 베이스 - 캐시, circuit breaker, KIS MCP/REST 폴백을 통합한다."""
 from __future__ import annotations
 
+import time
 from typing import Any, Callable
 
 from broker.kis_api import KISApi
@@ -49,12 +50,19 @@ class MILContext:
         if self.circuit_breaker.is_open(tool):
             raise ToolFailure(f"{tool}: circuit breaker open")
 
-        try:
-            result = fetch_fn()
-        except Exception as exc:
-            self.circuit_breaker.record_failure(tool)
-            raise ToolFailure(f"{tool}: {exc}") from exc
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                result = fetch_fn()
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 3:
+                    time.sleep(1.0)
+                continue
 
-        self.circuit_breaker.record_success(tool)
-        self.cache.set(tool, phase, cache_args, result)
-        return result
+            self.circuit_breaker.record_success(tool)
+            self.cache.set(tool, phase, cache_args, result)
+            return result
+
+        self.circuit_breaker.record_failure(tool)
+        raise ToolFailure(f"{tool}: {last_exc}") from last_exc

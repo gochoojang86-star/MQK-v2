@@ -31,7 +31,8 @@ def test_cached_call_returns_and_caches_fetch_result():
     assert len(calls) == 1
 
 
-def test_cached_call_raises_toolfailure_on_fetch_error():
+def test_cached_call_raises_toolfailure_on_fetch_error(monkeypatch):
+    monkeypatch.setattr("market_intelligence.base.time.sleep", lambda _: None)
     ctx = MILContext(kis_api=StubKisApi(), mcp_client=StubMcpClient())
 
     def fetch():
@@ -41,7 +42,25 @@ def test_cached_call_raises_toolfailure_on_fetch_error():
         ctx.cached_call("get_market_context", "SCAN", {}, fetch)
 
 
-def test_cached_call_opens_circuit_after_threshold_then_blocks_without_fetch():
+def test_cached_call_retries_before_succeeding(monkeypatch):
+    monkeypatch.setattr("market_intelligence.base.time.sleep", lambda _: None)
+    ctx = MILContext(kis_api=StubKisApi(), mcp_client=StubMcpClient())
+    fetch_calls = []
+
+    def fetch():
+        fetch_calls.append(1)
+        if len(fetch_calls) < 2:
+            raise RuntimeError("transient")
+        return {"x": 1}
+
+    result = ctx.cached_call("get_market_context", "SCAN", {}, fetch)
+
+    assert result == {"x": 1}
+    assert len(fetch_calls) == 2
+
+
+def test_cached_call_opens_circuit_after_threshold_then_blocks_without_fetch(monkeypatch):
+    monkeypatch.setattr("market_intelligence.base.time.sleep", lambda _: None)
     ctx = MILContext(
         kis_api=StubKisApi(),
         mcp_client=StubMcpClient(),
@@ -60,4 +79,4 @@ def test_cached_call_opens_circuit_after_threshold_then_blocks_without_fetch():
     with pytest.raises(ToolFailure, match="circuit breaker open"):
         ctx.cached_call("get_market_context", "SCAN", {"i": 99}, fetch)
 
-    assert len(fetch_calls) == 2  # 세 번째 호출은 circuit breaker가 fetch를 막음
+    assert len(fetch_calls) == 6  # 처음 두 호출은 각 3회 재시도, 세 번째 호출은 circuit breaker가 fetch를 막음
