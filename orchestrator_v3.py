@@ -17,13 +17,25 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from agents.drift_detector import RegimeDriftDetector
+from agents.regime_agent import RegimeAgent
+from agents.review_agent import ReviewAgent
+from agents.self_improvement_agent import SelfImprovementAgent
 from agents.regime_agent import load_last_regime, save_last_regime, _LAST_REGIME_PATH
 from agents.trading_agent import TradingAgent, TradingPhase, build_context
+from broker.kis_api import KISApi
 from broker.kis_mcp_client import KISMCPClient
-from broker.telegram import ApprovalRequest
+from broker.telegram import ApprovalRequest, TelegramApproval
+from codes.improvement_manager import ImprovementManager
+from codes.market_data import MarketData
+from codes.news_fetcher import NaverNewsFetcher
+from codes.order_manager import OrderManager
 from codes.order_manager import OrderRequest
-from codes.risk_officer import RiskViolation, TradeProposal
-from config.settings import RISK
+from codes.position_sizer import PositionSizer
+from codes.risk_officer import PortfolioState, RiskOfficer, RiskViolation, TradeProposal
+from codes.stop_take_profit import StopTakeProfitManager
+from codes.technical import TechnicalAnalysis
+from codes.trade_journal import TradeJournal
+from config.settings import EXECUTION, LOG_CONFIG, RISK
 from market_intelligence import market as mil_market
 from market_intelligence import portfolio as mil_portfolio
 from market_intelligence import risk_filter as mil_risk_filter
@@ -32,7 +44,6 @@ from market_intelligence import theme as mil_theme
 from market_intelligence.base import MILContext, ToolFailure
 from market_intelligence.cache import MILCache
 from market_intelligence.circuit_breaker import CircuitBreaker
-from orchestrator import MQKOrchestrator
 
 logger = logging.getLogger("mqk_v3")
 
@@ -113,13 +124,57 @@ def save_watchlist(watchlist: list[str], path: Path = _WATCHLIST_PATH) -> None:
     )
 
 
-class MQKOrchestratorV3(MQKOrchestrator):
-    """v2 Safety Layer를 재사용하는 v3 아젠틱 오케스트레이터."""
+class MQKOrchestratorV3:
+    """v3 독립 오케스트레이터."""
 
     def __init__(self, kis_api=None, mil: MILContext | None = None, dry_run_orders: bool | None = None):
-        super().__init__(kis_api=kis_api, dry_run_orders=dry_run_orders)
+        self._kis_api = kis_api or KISApi()
+        self._market_data = MarketData(data_source=self._kis_api)
+        self._risk_officer = RiskOfficer()
+        self._position_sizer = PositionSizer()
+        self._stp_manager = StopTakeProfitManager()
+        self._technical = TechnicalAnalysis()
+        self._regime_agent = RegimeAgent()
+        self._review_agent = ReviewAgent()
+        self._si_agent = SelfImprovementAgent()
+        self._telegram = TelegramApproval()
+        self._journal = TradeJournal()
+
+        order_api = self._kis_api
+        if os.environ.get("KIS_USE_MCP", "false").lower() in {"1", "true", "yes"}:
+            mcp = KISMCPClient()
+            if mcp.available:
+                logger.info("[V3 OrderManager] KIS MCP 서버 감지 → MCP 주문 경로 사용")
+                order_api = mcp
+            else:
+                logger.info("[V3 OrderManager] KIS MCP 서버 미실행 → KIS API 폴백")
+        self._order_manager = OrderManager(
+            kis_api=order_api,
+            telegram=self._telegram,
+            dry_run=EXECUTION.order_dry_run if dry_run_orders is None else dry_run_orders,
+            journal=self._journal,
+        )
+        self._naver_news = NaverNewsFetcher()
+        if not self._naver_news.available:
+            logger.warning("NAVER_CLIENT_ID/SECRET 미설정 — Naver 뉴스 비활성화")
+        self._improvement_mgr = ImprovementManager(telegram=self._telegram)
+        self._current_theme = ""
+        self._last_regime = None
+        self._last_theme = None
+        self._candidate_context: dict[str, dict] = {}
+        self._sector_performance: dict = {}
+        self._atr_cache: dict[str, float] = {}
+        self._today = datetime.now().strftime("%Y-%m-%d")
+        self._log_dir = LOG_CONFIG.base_dir / self._today
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            processed = self._improvement_mgr.process_telegram_actions()
+            if processed:
+                logger.info("[V3 ImprovementManager] 텔레그램 인라인 액션 %d건 반영", processed)
+        except Exception as exc:
+            logger.warning("[V3 ImprovementManager] 텔레그램 인라인 액션 처리 실패: %s", exc)
         self._mil = mil or MILContext(
-            kis_api=kis_api,
+            kis_api=self._kis_api,
             mcp_client=KISMCPClient(),
             cache=MILCache(),
             circuit_breaker=CircuitBreaker(),
@@ -738,6 +793,9 @@ class MQKOrchestratorV3(MQKOrchestrator):
             except (KeyError, TypeError, ValueError, AttributeError) as e:
                 logger.warning(f"[V3 PROPOSAL] 잘못된 proposal 무시: {e} | proposal={_safe_summary(p)}")
                 results.append({"action": "SKIP", "reason": "malformed_proposal", "proposal": _safe_summary(p)})
+            except Exception as e:
+                logger.error(f"[V3 PROPOSAL] 주문 실패: {e} | proposal={_safe_summary(p)}")
+                results.append({"action": "ORDER_FAILED", "reason": str(e), "proposal": _safe_summary(p)})
         return results
 
     def _handle_sell_proposals(self, proposals: list[dict], after_hours: bool = False) -> list[dict]:
@@ -750,6 +808,9 @@ class MQKOrchestratorV3(MQKOrchestrator):
             except (KeyError, TypeError, ValueError, AttributeError) as e:
                 logger.warning(f"[V3 SELL PROPOSAL] 잘못된 proposal 무시: {e} | proposal={_safe_summary(p)}")
                 results.append({"action": "SKIP", "reason": "malformed_proposal", "proposal": _safe_summary(p)})
+            except Exception as e:
+                logger.error(f"[V3 SELL PROPOSAL] 주문 실패: {e} | proposal={_safe_summary(p)}")
+                results.append({"action": "SELL_FAILED", "reason": str(e), "proposal": _safe_summary(p)})
         return results
 
     def _kis_buyable_cash_safe(self, ticker: str, price: float) -> dict | None:
@@ -856,6 +917,214 @@ class MQKOrchestratorV3(MQKOrchestrator):
         )
         result = self._order_manager.execute_sell(order)
         return {"action": "SELL_EXECUTED", "ticker": ticker, "success": result.success}
+
+    # ── v3 독립 기반 유틸/장전/복기 ──────────────────────────────────────────
+
+    def build_portfolio_state(
+        self,
+        theme_by_ticker: dict[str, str] | None = None,
+    ) -> PortfolioState:
+        if self._kis_api is None or not hasattr(self._kis_api, "get_balance"):
+            raise RuntimeError("PortfolioState 생성을 위해 get_balance() 가능한 KIS API가 필요합니다.")
+
+        balance = self._kis_api.get_balance()
+        holdings = balance.get("output1") or balance.get("holdings") or []
+        summary = balance.get("output2") or balance.get("summary") or {}
+        if isinstance(summary, list):
+            summary = summary[0] if summary else {}
+
+        theme_by_ticker = theme_by_ticker or {}
+        total_capital = self._first_number(
+            summary,
+            ["tot_evlu_amt", "nass_amt", "tot_asst_amt", "total_capital", "dnca_tot_amt"],
+        )
+
+        open_positions = []
+        theme_value: dict[str, float] = {}
+        position_value_total = 0.0
+        for row in holdings:
+            ticker = str(row.get("ticker") or row.get("pdno") or row.get("mksc_shrn_iscd") or "").strip()
+            quantity = self._first_number(row, ["quantity", "hldg_qty", "ord_psbl_qty"])
+            if not ticker or quantity <= 0:
+                continue
+
+            current_price = self._first_number(row, ["current_price", "prpr", "now_pric"])
+            avg_price = self._first_number(row, ["avg_price", "pchs_avg_pric", "pchs_avg_prc"])
+            market_value = self._first_number(row, ["market_value", "evlu_amt"])
+            if market_value <= 0 and current_price > 0:
+                market_value = current_price * quantity
+            position_value_total += market_value
+
+            theme = theme_by_ticker.get(ticker) or row.get("theme") or "UNKNOWN"
+            theme_value[theme] = theme_value.get(theme, 0.0) + market_value
+            open_positions.append({
+                "ticker": ticker,
+                "name": row.get("name") or row.get("prdt_name") or ticker,
+                "quantity": int(quantity),
+                "avg_price": avg_price,
+                "current_price": current_price,
+                "market_value": market_value,
+                "theme": theme,
+            })
+
+        if total_capital <= 0:
+            cash = self._first_number(summary, ["cash", "dnca_tot_amt", "ord_psbl_cash"])
+            total_capital = cash + position_value_total
+        if total_capital <= 0:
+            raise RuntimeError("KIS 잔고 응답에서 총자산을 계산할 수 없습니다.")
+
+        theme_exposure = {
+            theme: round(value / total_capital * 100, 4)
+            for theme, value in theme_value.items()
+        }
+        daily_pnl = self._first_number(summary, ["daily_pnl", "thdt_evlu_pfls_amt", "asst_icdc_amt"])
+
+        return PortfolioState(
+            total_capital=total_capital,
+            daily_pnl=daily_pnl,
+            open_positions=open_positions,
+            theme_exposure=theme_exposure,
+        )
+
+    def run_premarket(self) -> dict:
+        logger.info("[V3 08:00] 장전 시장 분석 시작")
+        index = self._market_data.get_index_status()
+        market_news_items = self._naver_news.search("코스피 코스닥 시장 주식", display=10)
+        market_news_summary = " | ".join(n.title for n in market_news_items[:5])
+
+        market_ctx = {
+            "kospi_change_pct": index.kospi_change_pct,
+            "kosdaq_change_pct": index.kosdaq_change_pct,
+            "kospi_trading_value": index.kospi_trading_value,
+            "kosdaq_trading_value": index.kosdaq_trading_value,
+            "kospi_advancers": index.kospi_advancers,
+            "kospi_decliners": index.kospi_decliners,
+            "kosdaq_advancers": index.kosdaq_advancers,
+            "kosdaq_decliners": index.kosdaq_decliners,
+            "prev_kospi_change_pct": index.prev_kospi_change_pct,
+            "prev_kosdaq_change_pct": index.prev_kosdaq_change_pct,
+            "prev_kospi_trading_value": index.prev_kospi_trading_value,
+            "prev_kosdaq_trading_value": index.prev_kosdaq_trading_value,
+            "market_news_summary": market_news_summary,
+            "sector_performance": self._sector_performance,
+        }
+        regime = self._regime_agent.judge(market_ctx)
+        self._last_regime = regime
+        logger.info(f"[V3] Regime: {regime.regime.value} (확신도 {regime.confidence}%)")
+
+        market_status = {
+            "date": self._today,
+            "kospi": index.kospi,
+            "kosdaq": index.kosdaq,
+            "kospi_trading_value": index.kospi_trading_value,
+            "kosdaq_trading_value": index.kosdaq_trading_value,
+            "kospi_advancers": index.kospi_advancers,
+            "kospi_decliners": index.kospi_decliners,
+            "kosdaq_advancers": index.kosdaq_advancers,
+            "kosdaq_decliners": index.kosdaq_decliners,
+            "prev_kospi_change_pct": index.prev_kospi_change_pct,
+            "prev_kosdaq_change_pct": index.prev_kosdaq_change_pct,
+            "prev_kospi_trading_value": index.prev_kospi_trading_value,
+            "prev_kosdaq_trading_value": index.prev_kosdaq_trading_value,
+            "status": regime.status.value,
+            "regime": regime.regime.value,
+            "confidence": regime.confidence,
+            "reason": regime.reason,
+            "risk_notes": regime.risk_notes,
+            "opportunity_mode": regime.opportunity_mode.value,
+            "scanner_mode": regime.scanner_mode.value,
+        }
+        self._save_json("market_status.json", market_status)
+        self._notify_market_regime(market_status)
+        self.warm_atr_cache()
+        return market_status
+
+    def _notify_market_regime(self, market_status: dict) -> None:
+        status = market_status.get("status", "UNKNOWN")
+        regime = market_status.get("regime", "UNKNOWN")
+        confidence = market_status.get("confidence", 0)
+        risk_notes = market_status.get("risk_notes") or []
+        risk_text = "\n".join(f"- {note}" for note in risk_notes) if risk_notes else "- 특이 리스크 없음"
+        reason = str(market_status.get("reason") or "근거 없음")
+        if len(reason) > 700:
+            reason = reason[:700].rstrip() + "..."
+
+        lines = [
+            f"📊 *MQK v3 시장레짐 평가 완료* ({market_status.get('date', self._today)})",
+            "",
+            f"상태: *{status}*",
+            f"레짐: *{regime}*",
+            f"확신도: *{confidence}%*",
+            f"기회 모드: {market_status.get('opportunity_mode', 'NORMAL')}",
+            f"스캐너 모드: {market_status.get('scanner_mode', 'TREND')}",
+            "",
+            "근거:",
+            reason,
+            "",
+            "리스크 노트:",
+            risk_text,
+            "",
+            f"전일 KOSPI/KOSDAQ: {market_status.get('prev_kospi_change_pct', 0):+.2f}% / {market_status.get('prev_kosdaq_change_pct', 0):+.2f}%",
+        ]
+        try:
+            self._telegram.notify("\n".join(lines))
+        except Exception as e:
+            logger.warning(f"[V3 시장레짐 알림] 텔레그램 발송 실패: {e}")
+
+    def run_close_review(self) -> None:
+        logger.info("[V3 장마감] 거래 복기 시작")
+        today_trades = self._journal.get_closed_trades(days=1)
+        if not today_trades:
+            logger.info("[V3 장마감] 오늘 청산 거래 없음")
+            return
+
+        reviews = []
+        for trade in today_trades:
+            review = self._review_agent.analyze(trade)
+            reviews.append(review)
+            logger.info(f"복기: {review.ticker} {review.result} {review.pnl_pct:+.2f}%")
+
+        journal_summary = "\n".join(f"- {r.ticker}: {r.result} {r.pnl_pct:+.2f}%" for r in reviews)
+        proposals = self._si_agent.suggest(today_trades, journal_summary)
+        for p in proposals:
+            pid = self._improvement_mgr.save(p)
+            logger.info(f"[V3 개선 제안] #{pid} {p.title} → 텔레그램 통보 완료")
+
+    def _save_json(self, filename: str, data: dict) -> None:
+        path = self._log_dir / filename
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _append_jsonl(self, filename: str, record: dict) -> None:
+        path = self._log_dir / filename
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def _estimate_atr(self, ticker: str) -> float:
+        if ticker in self._atr_cache:
+            return self._atr_cache[ticker]
+        bars = self._market_data.get_ohlcv(ticker)
+        atr = self._technical.calculate_atr(bars) if bars else 0.0
+        self._atr_cache[ticker] = atr
+        return atr
+
+    def warm_atr_cache(self) -> None:
+        open_pos = self._journal.get_open_positions()
+        if not open_pos:
+            return
+        logger.info(f"[V3 ATR 워밍] 보유 종목 {len(open_pos)}개 ATR 사전 계산")
+        for row in open_pos:
+            self._estimate_atr(row["ticker"])
+
+    def _first_number(self, row: dict, keys: list[str]) -> float:
+        for key in keys:
+            value = row.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return float(str(value).replace(",", "").strip())
+            except ValueError:
+                continue
+        return 0.0
 
 
 def _regime_to_dict(regime) -> dict:
