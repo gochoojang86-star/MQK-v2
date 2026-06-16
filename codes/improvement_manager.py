@@ -85,6 +85,10 @@ class ImprovementManager:
                     updated_at      TEXT
                 )
             """)
+            # migration: add settings_patch if created before this column existed
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(proposals)")}
+            if "settings_patch" not in existing:
+                conn.execute("ALTER TABLE proposals ADD COLUMN settings_patch TEXT DEFAULT '[]'")
 
     def save(self, proposal: ImprovementProposal) -> int:
         with self._conn() as conn:

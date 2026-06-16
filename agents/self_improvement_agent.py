@@ -106,7 +106,7 @@ auto_apply는 항상 false입니다.
 각 제안이 실제 설정 변경으로 연결될 수 있다면 settings_patch를 포함하세요.
 형식:
 "settings_patch": [
-  {"section": "RISK|SCANNER|LLM_CONFIG|EXECUTION", "key": "필드명", "value": 값}
+  {{"section": "RISK|SCANNER|LLM_CONFIG|EXECUTION", "key": "필드명", "value": 값}}
 ]
 
 허용되지 않은 키는 넣지 마세요."""
