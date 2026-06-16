@@ -39,12 +39,45 @@ class KISMCPClient:
         except (OSError, ConnectionRefusedError):
             return False
 
+    _MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
+
+    def _parse_mcp_response(self, resp: requests.Response) -> dict:
+        """streamable-http 응답을 파싱한다 (JSON 또는 SSE data: 라인)."""
+        import json as _json
+        if "text/event-stream" in resp.headers.get("Content-Type", ""):
+            for line in resp.text.splitlines():
+                if line.startswith("data:"):
+                    return _json.loads(line[5:].strip())
+            raise RuntimeError("MCP SSE 응답에서 data 라인을 찾을 수 없음")
+        return resp.json()
+
+    def _init_session(self) -> str:
+        """streamable-http 세션을 초기화하고 Mcp-Session-Id를 반환한다."""
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "mqk-v3", "version": "1.0"},
+            },
+            "id": 0,
+        }
+        resp = requests.post(
+            f"{self.base_url}/mcp", json=payload, headers=self._MCP_HEADERS, timeout=5
+        )
+        resp.raise_for_status()
+        session_id = resp.headers.get("Mcp-Session-Id", "")
+        if not session_id:
+            raise RuntimeError("MCP 서버가 세션 ID를 반환하지 않았습니다")
+        return session_id
+
     def call_tool(self, category: str, method: str, params: dict[str, Any]) -> dict:
-        """MCP JSON-RPC 도구 호출.
+        """MCP JSON-RPC 도구 호출 (streamable-http 세션 자동 관리).
 
         Args:
             category: 도구 카테고리 (e.g. "domestic_stock")
-            method:   API 메서드명 (e.g. "inquire_price")
+            method:   API 메서드명 (e.g. "order_cash")
             params:   KIS API 파라미터
 
         Returns:
@@ -53,6 +86,7 @@ class KISMCPClient:
         Raises:
             RuntimeError: MCP 서버 오류 응답 시
         """
+        session_id = self._init_session()
         payload = {
             "jsonrpc": "2.0",
             "method": "tools/call",
@@ -62,9 +96,12 @@ class KISMCPClient:
             },
             "id": 1,
         }
-        resp = requests.post(f"{self.base_url}/mcp", json=payload, timeout=10)
+        headers = {**self._MCP_HEADERS, "Mcp-Session-Id": session_id}
+        resp = requests.post(
+            f"{self.base_url}/mcp", json=payload, headers=headers, timeout=10
+        )
         resp.raise_for_status()
-        data = resp.json()
+        data = self._parse_mcp_response(resp)
         if "error" in data:
             raise RuntimeError(f"KIS MCP 오류: {data['error']}")
         return data.get("result", {})
