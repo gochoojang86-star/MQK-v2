@@ -13,14 +13,8 @@ class StubKisApi:
         return self._raw_responses[tr_id]
 
 
-class StubMcpClient:
-    @property
-    def available(self):
-        return False
-
-
 def make_ctx(**kwargs):
-    return MILContext(kis_api=StubKisApi(**kwargs), mcp_client=StubMcpClient())
+    return MILContext(kis_api=StubKisApi(**kwargs))
 
 
 def test_psearch_title_returns_conditions():

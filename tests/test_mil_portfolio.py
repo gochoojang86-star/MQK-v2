@@ -11,14 +11,8 @@ class StubKisApi:
         return self._balance
 
 
-class StubMcpClient:
-    @property
-    def available(self):
-        return False
-
-
 def make_ctx(**kwargs):
-    return MILContext(kis_api=StubKisApi(**kwargs), mcp_client=StubMcpClient())
+    return MILContext(kis_api=StubKisApi(**kwargs))
 
 
 def test_get_open_positions_filters_zero_quantity():

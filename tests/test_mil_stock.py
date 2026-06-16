@@ -24,14 +24,8 @@ class StubKisApi:
         return {"name": f"종목{ticker}", "trading_value": "1000000000", "market_cap": "5000000000000"}
 
 
-class StubMcpClient:
-    @property
-    def available(self):
-        return False
-
-
 def make_ctx(**kwargs):
-    return MILContext(kis_api=StubKisApi(**kwargs), mcp_client=StubMcpClient())
+    return MILContext(kis_api=StubKisApi(**kwargs))
 
 
 def test_get_ohlcv_returns_output1_valuation_and_output2_candles():
@@ -271,7 +265,7 @@ def test_get_news_stock_merges_telegram_and_naver(monkeypatch):
     from market_intelligence.circuit_breaker import CircuitBreaker
     ctx = MILContext(
         kis_api=SnapshotKis(raw_responses={"FHKST01011800": {"output": []}}),
-        mcp_client=StubMcpClient(), cache=MILCache(), circuit_breaker=CircuitBreaker(),
+        cache=MILCache(), circuit_breaker=CircuitBreaker(),
     )
     result = get_news_stock(ctx, "SCAN", ticker="005930")
 

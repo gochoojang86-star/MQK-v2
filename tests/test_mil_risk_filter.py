@@ -17,14 +17,8 @@ class StubKisApi:
         return self._stock_info
 
 
-class StubMcpClient:
-    @property
-    def available(self):
-        return False
-
-
 def make_ctx(**kwargs):
-    return MILContext(kis_api=StubKisApi(**kwargs), mcp_client=StubMcpClient())
+    return MILContext(kis_api=StubKisApi(**kwargs))
 
 
 def test_get_stock_status_detects_vi_triggered():

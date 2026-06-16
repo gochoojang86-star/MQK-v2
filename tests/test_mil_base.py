@@ -9,14 +9,8 @@ class StubKisApi:
     pass
 
 
-class StubMcpClient:
-    @property
-    def available(self) -> bool:
-        return False
-
-
 def test_cached_call_returns_and_caches_fetch_result():
-    ctx = MILContext(kis_api=StubKisApi(), mcp_client=StubMcpClient())
+    ctx = MILContext(kis_api=StubKisApi())
     calls = []
 
     def fetch():
@@ -33,7 +27,7 @@ def test_cached_call_returns_and_caches_fetch_result():
 
 def test_cached_call_raises_toolfailure_on_fetch_error(monkeypatch):
     monkeypatch.setattr("market_intelligence.base.time.sleep", lambda _: None)
-    ctx = MILContext(kis_api=StubKisApi(), mcp_client=StubMcpClient())
+    ctx = MILContext(kis_api=StubKisApi())
 
     def fetch():
         raise RuntimeError("boom")
@@ -44,7 +38,7 @@ def test_cached_call_raises_toolfailure_on_fetch_error(monkeypatch):
 
 def test_cached_call_retries_before_succeeding(monkeypatch):
     monkeypatch.setattr("market_intelligence.base.time.sleep", lambda _: None)
-    ctx = MILContext(kis_api=StubKisApi(), mcp_client=StubMcpClient())
+    ctx = MILContext(kis_api=StubKisApi())
     fetch_calls = []
 
     def fetch():
@@ -63,7 +57,7 @@ def test_cached_call_opens_circuit_after_threshold_then_blocks_without_fetch(mon
     monkeypatch.setattr("market_intelligence.base.time.sleep", lambda _: None)
     ctx = MILContext(
         kis_api=StubKisApi(),
-        mcp_client=StubMcpClient(),
+        
         circuit_breaker=CircuitBreaker(failure_threshold=2),
     )
     fetch_calls = []
