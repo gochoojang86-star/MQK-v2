@@ -41,13 +41,26 @@ class KISMCPClient:
 
     _MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
 
-    def _parse_mcp_response(self, resp: requests.Response) -> dict:
-        """streamable-http 응답을 파싱한다 (JSON 또는 SSE data: 라인)."""
+    def _parse_mcp_response(self, resp: requests.Response, target_id: int = 1) -> dict:
+        """streamable-http 응답을 파싱한다 (JSON 또는 SSE data: 라인).
+
+        SSE에는 여러 data: 라인이 있을 수 있으므로 id==target_id인 라인을 찾는다.
+        """
         import json as _json
         if "text/event-stream" in resp.headers.get("Content-Type", ""):
+            last: dict | None = None
             for line in resp.text.splitlines():
-                if line.startswith("data:"):
-                    return _json.loads(line[5:].strip())
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    obj = _json.loads(line[5:].strip())
+                except ValueError:
+                    continue
+                if obj.get("id") == target_id:
+                    return obj
+                last = obj
+            if last is not None:
+                return last
             raise RuntimeError("MCP SSE 응답에서 data 라인을 찾을 수 없음")
         return resp.json()
 
@@ -76,35 +89,54 @@ class KISMCPClient:
         """MCP JSON-RPC 도구 호출 (streamable-http 세션 자동 관리).
 
         Args:
-            category: 도구 카테고리 (e.g. "domestic_stock")
-            method:   API 메서드명 (e.g. "order_cash")
+            category: 도구 이름 (e.g. "domestic_stock")
+            method:   api_type 값 (e.g. "order_cash")
             params:   KIS API 파라미터
 
         Returns:
-            KIS API 응답 dict
+            파싱된 KIS API 응답 dict (rt_cd, msg1, output 등)
 
         Raises:
-            RuntimeError: MCP 서버 오류 응답 시
+            RuntimeError: MCP 서버 오류 또는 KIS API 실패 시
         """
+        import json as _json
+
         session_id = self._init_session()
         payload = {
             "jsonrpc": "2.0",
             "method": "tools/call",
             "params": {
-                "name": f"{category}__{method}",
-                "arguments": params,
+                "name": category,
+                "arguments": {"api_type": method, "params": params},
             },
             "id": 1,
         }
         headers = {**self._MCP_HEADERS, "Mcp-Session-Id": session_id}
         resp = requests.post(
-            f"{self.base_url}/mcp", json=payload, headers=headers, timeout=10
+            f"{self.base_url}/mcp", json=payload, headers=headers, timeout=30
         )
         resp.raise_for_status()
-        data = self._parse_mcp_response(resp)
-        if "error" in data:
-            raise RuntimeError(f"KIS MCP 오류: {data['error']}")
-        return data.get("result", {})
+        envelope = self._parse_mcp_response(resp, target_id=1)
+        if "error" in envelope:
+            raise RuntimeError(f"KIS MCP JSON-RPC 오류: {envelope['error']}")
+
+        # FastMCP wraps the tool return in result.content[0].text (JSON string)
+        content_text = envelope.get("result", {}).get("content", [{}])[0].get("text", "{}")
+        tool_result: dict = _json.loads(content_text) if isinstance(content_text, str) else content_text
+
+        if not tool_result.get("ok"):
+            raise RuntimeError(f"KIS MCP 도구 오류: {tool_result.get('error', tool_result)}")
+
+        # tool_result["data"] is the ApiExecutor result dict; its "data" key is the KIS JSON string
+        api_exec = tool_result.get("data", {})
+        if not api_exec.get("success"):
+            raise RuntimeError(f"KIS API 실행 실패: {api_exec.get('error', api_exec)}")
+
+        raw_output = api_exec.get("data", "{}")
+        try:
+            return _json.loads(raw_output) if isinstance(raw_output, str) else raw_output
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError(f"KIS API 응답 파싱 실패: {raw_output!r}") from exc
 
     def _to_order_result(self, raw: dict, ticker: str, quantity: int, price: float, side: str) -> OrderResult:
         """MCP 응답 dict → OrderResult (OrderManager 호환)"""
