@@ -72,16 +72,17 @@ class MQKOrchestrator:
         self._si_agent = SelfImprovementAgent()
         self._telegram = TelegramApproval()
         self._journal = TradeJournal()
-        # KIS_USE_MCP=true + MCP 서버 가동 시 OrderManager가 MCP 경로로 주문
+        # KIS MCP 주문 경로 — MCP 서버 인증 불안정으로 비활성화 (KISApi 직접 사용)
+        # 재활성화: KIS_USE_MCP=true + 아래 블록 주석 해제
+        # if os.environ.get("KIS_USE_MCP", "false").lower() in {"1", "true", "yes"}:
+        #     from broker.kis_mcp_client import KISMCPClient
+        #     mcp = KISMCPClient()
+        #     if mcp.available:
+        #         logger.info("[OrderManager] KIS MCP 서버 감지 → MCP 주문 경로 사용")
+        #         order_api = mcp
+        #     else:
+        #         logger.info("[OrderManager] KIS MCP 서버 미실행 → KIS API 폴백")
         order_api = kis_api
-        if os.environ.get("KIS_USE_MCP", "false").lower() in {"1", "true", "yes"}:
-            from broker.kis_mcp_client import KISMCPClient
-            mcp = KISMCPClient()
-            if mcp.available:
-                logger.info("[OrderManager] KIS MCP 서버 감지 → MCP 주문 경로 사용")
-                order_api = mcp
-            else:
-                logger.info("[OrderManager] KIS MCP 서버 미실행 → KIS API 폴백")
         self._order_manager = OrderManager(
             kis_api=order_api,
             telegram=self._telegram,

@@ -23,7 +23,7 @@ from agents.self_improvement_agent import SelfImprovementAgent
 from agents.regime_agent import load_last_regime, save_last_regime, _LAST_REGIME_PATH
 from agents.trading_agent import TradingAgent, TradingPhase, build_context
 from broker.kis_api import KISApi
-from broker.kis_mcp_client import KISMCPClient
+# from broker.kis_mcp_client import KISMCPClient  # MCP 비활성화
 from broker.telegram import ApprovalRequest, TelegramApproval
 from codes.improvement_manager import ImprovementManager
 from codes.market_data import MarketData
@@ -140,14 +140,15 @@ class MQKOrchestratorV3:
         self._telegram = TelegramApproval()
         self._journal = TradeJournal()
 
+        # KIS MCP 주문 경로 — MCP 서버 인증 불안정으로 비활성화 (KISApi 직접 사용)
+        # if os.environ.get("KIS_USE_MCP", "false").lower() in {"1", "true", "yes"}:
+        #     mcp = KISMCPClient()
+        #     if mcp.available:
+        #         logger.info("[V3 OrderManager] KIS MCP 서버 감지 → MCP 주문 경로 사용")
+        #         order_api = mcp
+        #     else:
+        #         logger.info("[V3 OrderManager] KIS MCP 서버 미실행 → KIS API 폴백")
         order_api = self._kis_api
-        if os.environ.get("KIS_USE_MCP", "false").lower() in {"1", "true", "yes"}:
-            mcp = KISMCPClient()
-            if mcp.available:
-                logger.info("[V3 OrderManager] KIS MCP 서버 감지 → MCP 주문 경로 사용")
-                order_api = mcp
-            else:
-                logger.info("[V3 OrderManager] KIS MCP 서버 미실행 → KIS API 폴백")
         self._order_manager = OrderManager(
             kis_api=order_api,
             telegram=self._telegram,
@@ -175,7 +176,7 @@ class MQKOrchestratorV3:
             logger.warning("[V3 ImprovementManager] 텔레그램 인라인 액션 처리 실패: %s", exc)
         self._mil = mil or MILContext(
             kis_api=self._kis_api,
-            mcp_client=KISMCPClient(),
+            # mcp_client=KISMCPClient(),  # MCP 비활성화
             cache=MILCache(),
             circuit_breaker=CircuitBreaker(),
         )

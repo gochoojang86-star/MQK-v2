@@ -5,7 +5,7 @@ import time
 from typing import Any, Callable
 
 from broker.kis_api import KISApi
-from broker.kis_mcp_client import KISMCPClient
+# from broker.kis_mcp_client import KISMCPClient  # MCP 비활성화
 from broker.kiwoom_api import KiwoomApi
 from market_intelligence.cache import MILCache
 from market_intelligence.circuit_breaker import CircuitBreaker
@@ -25,13 +25,13 @@ class MILContext:
     def __init__(
         self,
         kis_api: KISApi,
-        mcp_client: KISMCPClient | None = None,
+        # mcp_client: KISMCPClient | None = None,  # MCP 비활성화
         kiwoom_api: KiwoomApi | None = None,
         cache: MILCache | None = None,
         circuit_breaker: CircuitBreaker | None = None,
     ) -> None:
         self.kis_api = kis_api
-        self.mcp_client = mcp_client or KISMCPClient()
+        # self.mcp_client = mcp_client or KISMCPClient()  # MCP 비활성화
         self.kiwoom_api = kiwoom_api
         self.cache = cache or MILCache()
         self.circuit_breaker = circuit_breaker or CircuitBreaker()
