@@ -988,6 +988,8 @@ class MQKOrchestratorV3:
         avg_price = float(match.get("avg_price") or match.get("entry_price") or 0)
         pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
 
+        pnl_amount = (current_price - avg_price) * int(match["quantity"]) if avg_price > 0 else 0.0
+
         approval_request_id = None
         if require_approval and RISK.require_telegram_approval:
             approval_req = ApprovalRequest(
@@ -999,6 +1001,7 @@ class MQKOrchestratorV3:
                 confidence=proposal.get("confidence", 100),
                 reason=proposal.get("reason", ""),
                 counter_argument="",
+                pnl_amount=round(pnl_amount, 0),
             )
             approval = self._telegram.request_approval(approval_req)
             approval_request_id = approval.request_id

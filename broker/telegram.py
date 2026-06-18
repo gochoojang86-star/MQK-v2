@@ -30,10 +30,11 @@ class ApprovalRequest:
     entry_price: float
     stop_loss_price: float
     quantity: int
-    risk_pct: float
+    risk_pct: float         # BUY: 리스크%, SELL: 손익률(pnl_pct)
     confidence: int
     reason: str
     counter_argument: str
+    pnl_amount: float = 0.0  # SELL 전용: 손익금액(원)
 
 
 @dataclass
@@ -133,6 +134,38 @@ class TelegramApproval:
         for chat_id in self._notify_chat_ids:
             self._send_message(message, chat_id=chat_id)
 
+    def notify_improvement_proposal(self, proposal_id: int, message: str) -> None:
+        """MARKET_CLOSE 개선 제안 알림 전송.
+
+        인라인 버튼은 비동기 처리된다. 클릭 결과는 다음 스케줄 실행 시
+        `poll_improvement_actions()`가 수거해 반영한다.
+        """
+        keyboard = {
+            "inline_keyboard": [[
+                {"text": "승인", "callback_data": f"approve_proposal:{proposal_id}"},
+                {"text": "거부", "callback_data": f"reject_proposal:{proposal_id}"},
+            ]]
+        }
+        for chat_id in self._notify_chat_ids:
+            self._send_message(message, chat_id=chat_id, reply_markup=keyboard)
+
+    def poll_improvement_actions(self) -> list[tuple[str, int]]:
+        """개선 제안 인라인 버튼 callback을 수거한다."""
+        actions: list[tuple[str, int]] = []
+        for update in self._get_updates():
+            callback = update.get("callback_query", {})
+            if not callback:
+                continue
+            msg = callback.get("message", {})
+            if not self._is_expected_chat(msg):
+                continue
+            action, proposal_id = self._parse_improvement_callback_data(callback.get("data", ""))
+            if not action:
+                continue
+            self._answer_callback(callback.get("id", ""))
+            actions.append((action, proposal_id))
+        return actions
+
     @staticmethod
     def _parse_notify_chat_ids(chat_ids: str | list[str] | None, fallback_chat_id: str) -> list[str]:
         if isinstance(chat_ids, str):
@@ -146,6 +179,25 @@ class TelegramApproval:
         return list(dict.fromkeys(parsed))
 
     def _format_message(self, req: ApprovalRequest, request_id: str) -> str:
+        if req.decision == "SELL":
+            pnl_sign = "+" if req.risk_pct >= 0 else ""
+            pnl_color = "🟢" if req.risk_pct >= 0 else "🔴"
+            return f"""🚨 **장중 매도 승인 요청**
+
+📌 종목: {req.name} ({req.ticker})
+🎯 결정: {req.decision}
+💰 현재가: {req.entry_price:,.0f}원
+📦 수량: {req.quantity}주
+{pnl_color} 손익: {pnl_sign}{req.risk_pct:.2f}% ({pnl_sign}{req.pnl_amount:,.0f}원)
+📊 확신도: {req.confidence}%
+
+✅ 근거:
+{req.reason}
+
+---
+코드: {request_id[:8].upper()}
+아래 버튼으로 승인 또는 거부하세요.
+"""
         risk_amount = (req.entry_price - req.stop_loss_price) * req.quantity
         return f"""🚨 **매수 승인 요청**
 
@@ -206,6 +258,16 @@ class TelegramApproval:
         if sep != ":" or action not in {"approve", "reject"}:
             return "", ""
         return action, request_id
+
+    def _parse_improvement_callback_data(self, data: str) -> tuple[str, int]:
+        action, sep, raw_id = data.partition(":")
+        if sep != ":" or action not in {"approve_proposal", "reject_proposal"}:
+            return "", 0
+        try:
+            proposal_id = int(raw_id)
+        except (TypeError, ValueError):
+            return "", 0
+        return action, proposal_id
 
     def _answer_callback(self, callback_query_id: str) -> None:
         if not self._token or not callback_query_id:
