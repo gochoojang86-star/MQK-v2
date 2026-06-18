@@ -58,9 +58,9 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "premarket" },
-      // KST 09:03 — 장 시작 후 시가/초반 흐름을 보고 레짐 판단 (장전 실행 불필요).
-      // 09:05가 아닌 09:03인 이유: intraday */5 틱(09:05)과 flock 충돌을 피하기 위함.
-      cron_restart: "3 9 * * 1-5",
+      // KST 09:03 / 11:03 / 13:03 — 레짐 재평가 3회.
+      // :03인 이유: intraday */10 틱(:00)과 flock 충돌을 피하기 위함.
+      cron_restart: "3 9,11,13 * * 1-5",
       autorestart: false,
     },
     {
@@ -128,22 +128,23 @@ module.exports = {
       cron_restart: "0 17 * * 1-5",  // KST 17:00
       autorestart: false,
     },
-    {
-      name: "mqk-kis-mcp",
-      script: "server.py",
-      cwd: "/home/gochoojang/kis-mcp-source/MCP/Kis Trading MCP",
-      interpreter: "/home/gochoojang/kis-mcp-source/MCP/Kis Trading MCP/.venv/bin/python",
-      env: { ENV: "mqk" },
-      autorestart: true,
-      restart_delay: 3000,
-    },
+    // MCP 비활성화
+    // {
+    //   name: "mqk-kis-mcp",
+    //   script: "server.py",
+    //   cwd: "/home/gochoojang/kis-mcp-source/MCP/Kis Trading MCP",
+    //   interpreter: "/home/gochoojang/kis-mcp-source/MCP/Kis Trading MCP/.venv/bin/python",
+    //   env: { ENV: "mqk" },
+    //   autorestart: true,
+    //   restart_delay: 3000,
+    // },
     {
       name: "mqk-telegram-news",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
       args: "-m broker.telegram_news",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
-      cron_restart: "0 6 * * *",   // KST 06:00 매일 시작
-      autorestart: false,          // 운영 시간(06:00~21:00 KST) 외에는 앱이 스스로 종료
+      autorestart: true,
+      restart_delay: 3000,
     },
   ],
 };
