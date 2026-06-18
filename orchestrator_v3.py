@@ -51,6 +51,8 @@ _DATA_DIR = Path(__file__).parent / "data"
 _DRIFT_STATE_PATH = _DATA_DIR / "drift_state.json"
 _WATCHLIST_PATH = _DATA_DIR / "watchlist.json"
 _TOOL_GAP_LOG_RETENTION_DAYS = 30
+_MIN_MONITORING_WATCHLIST = 6
+_MAX_WATCHLIST_SIZE = 10
 
 
 def _default_drift_state(date: str) -> dict:
@@ -85,6 +87,35 @@ def _normalize_watchlist(watchlist: list[str]) -> list[str]:
         seen.add(ticker)
         normalized.append(ticker)
     return normalized
+
+
+def _scan_watchlist_limit(context: dict) -> int:
+    remaining = context.get("risk_budget_remaining", {}) or {}
+    monitoring_slots = remaining.get("monitoring_slots")
+    if monitoring_slots not in (None, ""):
+        try:
+            return min(_MAX_WATCHLIST_SIZE, max(int(monitoring_slots), 0))
+        except (TypeError, ValueError):
+            pass
+
+    positions_left = remaining.get("positions_left", 0)
+    try:
+        positions_left_int = int(positions_left)
+    except (TypeError, ValueError):
+        positions_left_int = 0
+    return min(_MAX_WATCHLIST_SIZE, max(positions_left_int, _MIN_MONITORING_WATCHLIST))
+
+
+def _first_number_from_row(row: dict, keys: list[str]) -> float:
+    for key in keys:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return float(str(value).replace(",", "").strip())
+        except ValueError:
+            continue
+    return 0.0
 
 
 def load_drift_state(path: Path = _DRIFT_STATE_PATH, today: str | None = None) -> dict:
@@ -578,6 +609,49 @@ class MQKOrchestratorV3:
         if portfolio_unavailable:
             positions_left = 0
             daily_loss_remaining = 0.0
+        monitoring_slots = min(_MAX_WATCHLIST_SIZE, max(positions_left, _MIN_MONITORING_WATCHLIST))
+
+        balance_summary: dict = {}
+        balance_cash_metrics: dict = {}
+        kis_api = getattr(self, "_kis_api", None)
+        if kis_api is not None and hasattr(kis_api, "get_balance"):
+            try:
+                balance = kis_api.get_balance()
+                summary_rows = balance.get("output2") or balance.get("summary") or []
+                if isinstance(summary_rows, list):
+                    balance_summary = summary_rows[0] if summary_rows else {}
+                elif isinstance(summary_rows, dict):
+                    balance_summary = summary_rows
+            except Exception as e:
+                logger.warning(f"[V3 CONTEXT] 잔고 요약 조회 실패 — 현금 비중 힌트 생략: {e}")
+
+        available_cash = _first_number_from_row(balance_summary, ["ord_psbl_cash", "dnca_tot_amt", "cash"])
+        estimated_position_value = sum(
+            _to_float(row.get("current_price")) * _to_float(row.get("quantity"))
+            for row in positions.get("positions", [])
+        )
+        estimated_total_capital = _first_number_from_row(
+            balance_summary,
+            ["tot_evlu_amt", "nass_amt", "tot_asst_amt", "total_capital"],
+        )
+        if estimated_total_capital <= 0:
+            estimated_total_capital = _to_float(daily_pnl.get("total_eval_amt"))
+        if estimated_total_capital <= 0:
+            estimated_total_capital = available_cash + estimated_position_value
+
+        cash_ratio_pct = round(available_cash / estimated_total_capital * 100, 2) if estimated_total_capital > 0 else 0.0
+        invested_ratio_pct = round(estimated_position_value / estimated_total_capital * 100, 2) if estimated_total_capital > 0 else 0.0
+        balance_cash_metrics = {
+            "available_cash_krw": available_cash,
+            "estimated_position_value_krw": estimated_position_value,
+            "estimated_total_capital_krw": estimated_total_capital,
+            "cash_ratio_pct": cash_ratio_pct,
+            "invested_ratio_pct": invested_ratio_pct,
+            "position_count_hint": positions.get("position_count", 0),
+            "max_positions_guidance": max_positions,
+            "positions_left_is_soft": True,
+        }
+        positions = {**positions, **balance_cash_metrics}
 
         return build_context(
             phase=phase,
@@ -593,6 +667,7 @@ class MQKOrchestratorV3:
             daily_pnl=daily_pnl,
             risk_budget_remaining={
                 "positions_left": positions_left,
+                "monitoring_slots": monitoring_slots,
                 "daily_loss_remaining_pct": daily_loss_remaining,
             },
             watchlist=watchlist,
@@ -625,8 +700,7 @@ class MQKOrchestratorV3:
     def _backfill_scan_result(self, result: dict, context: dict) -> dict:
         """SCAN 결과가 비면 거래대금/상태 기반 deterministic watchlist를 만든다."""
         min_trading_value = float(context.get("risk_guidance", {}).get("min_trading_value_krw", 0) or 0)
-        positions_left = int(context.get("risk_budget_remaining", {}).get("positions_left", 0) or 0)
-        limit = min(10, max(positions_left, 0))
+        limit = _scan_watchlist_limit(context)
         if limit <= 0:
             return result
 
@@ -788,7 +862,7 @@ class MQKOrchestratorV3:
                 if p.get("side") == "BUY":
                     results.append(self._process_v3_buy_proposal(p))
                 elif p.get("side") == "SELL":
-                    results.append(self._process_v3_sell_proposal(p))
+                    results.append(self._process_v3_sell_proposal(p, require_approval=True))
                 else:
                     results.append({"action": "SKIP", "reason": "unknown_side", "proposal": _safe_summary(p)})
             except (KeyError, TypeError, ValueError, AttributeError) as e:
@@ -899,7 +973,9 @@ class MQKOrchestratorV3:
         result = self._order_manager.execute_buy(order)
         return {"action": "BUY_EXECUTED", "ticker": ticker, "success": result.success}
 
-    def _process_v3_sell_proposal(self, proposal: dict, after_hours: bool = False) -> dict:
+    def _process_v3_sell_proposal(
+        self, proposal: dict, after_hours: bool = False, require_approval: bool = False
+    ) -> dict:
         ticker = proposal["ticker"]
         open_pos = self._journal.get_open_positions()
         match = next((p for p in open_pos if p["ticker"] == ticker), None)
@@ -907,14 +983,37 @@ class MQKOrchestratorV3:
             return {"action": "SKIP", "ticker": ticker, "reason": "보유하지 않은 종목"}
 
         snapshot = self._market_data.get_snapshot(ticker)
+        stock_name = match.get("name", ticker)
+        current_price = snapshot.current_price
+        avg_price = float(match.get("avg_price") or match.get("entry_price") or 0)
+        pnl_pct = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+
+        approval_request_id = None
+        if require_approval and RISK.require_telegram_approval:
+            approval_req = ApprovalRequest(
+                ticker=ticker, name=stock_name, decision="SELL",
+                entry_price=current_price,
+                stop_loss_price=float(match.get("stop_loss_price", 0)),
+                quantity=int(match["quantity"]),
+                risk_pct=round(pnl_pct, 2),
+                confidence=proposal.get("confidence", 100),
+                reason=proposal.get("reason", ""),
+                counter_argument="",
+            )
+            approval = self._telegram.request_approval(approval_req)
+            approval_request_id = approval.request_id
+            if not approval.approved:
+                return {"action": "REJECTED", "ticker": ticker, "reason": "텔레그램 거부"}
+
         order = OrderRequest(
-            ticker=ticker, name=match.get("name", ticker), side="SELL",
+            ticker=ticker, name=stock_name, side="SELL",
             quantity=int(match["quantity"]),
-            price=snapshot.current_price,
-            stop_loss_price=float(match["stop_loss_price"]),
+            price=current_price,
+            stop_loss_price=float(match.get("stop_loss_price", 0)),
             reason=proposal.get("reason", ""),
-            confidence=100,
-            after_hours=after_hours,  # close phase: 장후 시간외(당일 종가) 청산
+            confidence=proposal.get("confidence", 100),
+            approval_request_id=approval_request_id,
+            after_hours=after_hours,
         )
         result = self._order_manager.execute_sell(order)
         return {"action": "SELL_EXECUTED", "ticker": ticker, "success": result.success}
@@ -992,6 +1091,22 @@ class MQKOrchestratorV3:
         index = self._market_data.get_index_status()
         market_news_items = self._naver_news.search("코스피 코스닥 시장 주식", display=10)
         market_news_summary = " | ".join(n.title for n in market_news_items[:5])
+
+        try:
+            breadth_data = mil_market.get_sector_breadth(self._mil, TradingPhase.PREMARKET.value)
+            sectors = breadth_data.get("sectors", [])
+            top_rising = sorted(sectors, key=lambda x: x["change_pct"], reverse=True)[:5]
+            top_falling = sorted(sectors, key=lambda x: x["change_pct"])[:3]
+            top_volume = sorted(sectors, key=lambda x: x["trading_value_share_pct"], reverse=True)[:3]
+            self._sector_performance = {
+                "top_rising": [{"name": s["sector_name"], "change_pct": s["change_pct"]} for s in top_rising],
+                "top_falling": [{"name": s["sector_name"], "change_pct": s["change_pct"]} for s in top_falling],
+                "heaviest_volume": [{"name": s["sector_name"], "volume_share_pct": s["trading_value_share_pct"]} for s in top_volume],
+            }
+            logger.info(f"[V3 PREMARKET] 섹터 데이터 로드 완료: {len(sectors)}개 업종")
+        except Exception as e:
+            logger.warning(f"[V3 PREMARKET] 섹터 데이터 조회 실패 — 레짐 판단에서 제외: {e}")
+            self._sector_performance = {}
 
         market_ctx = {
             "kospi_change_pct": index.kospi_change_pct,
