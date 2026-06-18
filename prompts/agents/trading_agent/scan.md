@@ -7,11 +7,22 @@
 
 ## Inputs (사전주입 컨텍스트)
 - `regime`, `risk_guidance`, `drift_status`
-- `portfolio`, `risk_budget_remaining` (남은 포지션 슬롯 수)
+- `portfolio`, `risk_budget_remaining`
+  - `portfolio.available_cash_krw`, `cash_ratio_pct`, `invested_ratio_pct`
+  - 현금 비중은 전략 판단 대상이다. 확신이 낮거나 장이 애매하면 현금을 남겨라.
+  - `positions_left`: 지금 당장 신규 진입 가능한 슬롯 수
+  - `positions_left`는 **소프트 가이드**다. 하드 블록으로 해석하지 말 것.
+  - `monitoring_slots`: 감시용 watchlist 목표 크기. `positions_left=0`이어도 감시 후보는 유지한다
 
 ## 권장 흐름
 1. `get_market_context`로 시장 배경 확인 (프로그램매매 순매수 `program_net_buy_krw`,
    투자자별 일별 동향 `investor_trend_days` 포함)
+1-1. **지수 주도장 감지**: 코스피가 강세(+1%↑)이고 `sector_performance.top_rising` 상위
+   업종의 `change_pct`가 +2% 이상이면 **지수 주도장**으로 판단한다. 이때는 psearch
+   조건검색에 걸리지 않더라도 해당 업종 시가총액 상위 대형주(예: 반도체 → 000660·005930,
+   2차전지 → 006400·051910)를 `get_watchlist_intraday_snapshot`으로 직접 평가하여
+   watchlist에 포함하라. 지수를 끌어올리는 주도주를 psearch로만 찾으려 하면 반드시
+   놓친다.
 2. 필요 시 `get_theme_candidates`로 강한 테마와 구성 종목을 먼저 확인해
    테마 확산 여부와 대장주 후보를 보강한다.
 3. `psearch_title`로 조건검색식 목록을 확인한 뒤, **아래 가이드에 따라 상황에 맞는
@@ -39,7 +50,10 @@
 5-1. SEPA 펀더멘털 스크리닝이 필요하면 `get_fundamentals`로 재무비율(매출/영업이익
      성장률, ROE, EPS, BPS, 부채비율), 손익계산서, 대차대조표, 애널리스트 투자의견 확인
 6. `risk_guidance.min_trading_value_krw` 미만 거래대금 종목은 제외
-7. watchlist 확정 (최대 10개, `risk_budget_remaining.positions_left` 고려)
+7. watchlist 확정 (최대 10개, 기본은 `risk_budget_remaining.monitoring_slots` 기준)
+   - `positions_left=0`이어도 watchlist를 비우지 말 것
+   - 신규 매수 가능 여부와 감시 후보 유지 여부를 분리해서 판단할 것
+   - 현금 비중이 낮으면 신규 후보의 우선순위를 보수적으로 두되, 감시 후보 자체는 유지할 것
 
 ## 진행 방식 (ReAct)
 
