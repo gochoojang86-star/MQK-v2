@@ -170,6 +170,72 @@ class KiwoomApi:
         resp.raise_for_status()
         return resp.json()
 
+    def foreign_institution_top(
+        self,
+        mrkt_tp: str = "000",
+        amt_qty_tp: str = "1",
+        qry_dt_tp: str = "1",
+        stex_tp: str = "1",
+    ) -> dict[str, Any]:
+        """ka90009 외국인기관매매상위요청. 외인/기관 순매수·순매도 상위 종목."""
+        resp = requests.post(
+            f"{self._cfg.base_url}/api/dostk/rkinfo",
+            headers=self._api_headers("ka90009"),
+            json={
+                "mrkt_tp": mrkt_tp,
+                "amt_qty_tp": amt_qty_tp,
+                "qry_dt_tp": qry_dt_tp,
+                "stex_tp": stex_tp,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def foreign_continuous_rank(
+        self,
+        mrkt_tp: str = "000",
+        trde_tp: str = "2",
+        base_dt_tp: str = "1",
+        stex_tp: str = "1",
+    ) -> dict[str, Any]:
+        """ka10035 외인연속순매매상위요청. trde_tp=2(순매수)."""
+        resp = requests.post(
+            f"{self._cfg.base_url}/api/dostk/rkinfo",
+            headers=self._api_headers("ka10035"),
+            json={
+                "mrkt_tp": mrkt_tp,
+                "trde_tp": trde_tp,
+                "base_dt_tp": base_dt_tp,
+                "stex_tp": stex_tp,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def volume_surge(self, mrkt_tp: str = "000") -> dict[str, Any]:
+        """ka10023 거래량급증요청."""
+        resp = requests.post(
+            f"{self._cfg.base_url}/api/dostk/rkinfo",
+            headers=self._api_headers("ka10023"),
+            json={"mrkt_tp": mrkt_tp},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def intraday_investor_rank(self, trde_tp: str) -> dict[str, Any]:
+        """ka10065 장중투자자별매매상위요청. trde_tp: 1=기관, 2=외국인, 3=개인."""
+        resp = requests.post(
+            f"{self._cfg.base_url}/api/dostk/rkinfo",
+            headers=self._api_headers("ka10065"),
+            json={"trde_tp": trde_tp},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
 
 def _expires_dt_to_epoch(value: str) -> float:
     if not value or len(value) != 14 or not value.isdigit():

@@ -282,7 +282,7 @@ def get_watchlist_intraday_snapshot(ctx: MILContext, phase: str, tickers: list[s
                 snap = ctx.kis_api.get_snapshot(ticker) or {}
                 item["name"] = snap.get("name") or ticker
                 item["trading_value"] = _to_float(snap.get("trading_value") or snap.get("acml_tr_pbmn"))
-                item["market_cap"] = _to_float(snap.get("market_cap"))
+                item["market_cap"] = _coerce_market_cap(snap)
             except Exception:
                 item["name"] = ticker
                 item["trading_value"] = 0.0
@@ -460,6 +460,40 @@ def get_fundamentals(ctx: MILContext, phase: str, ticker: str) -> dict:
     return ctx.cached_call("get_fundamentals", phase, {"ticker": ticker}, fetch)
 
 
+def get_intraday_institutional_flow(ctx: MILContext, phase: str, ticker: str) -> dict:
+    """KIS HHPTJ04160200 종목별 외인·기관 장중 추정 가집계.
+
+    bsop_hour_gb: 1=09시, 2=10시, 3=11시, 4=12~13시, 5=오후(최신).
+    frgn_fake_ntby_qty = 외인 추정 순매수 수량 (양수=매수, 음수=매도).
+    orgn_fake_ntby_qty = 기관 추정 순매수 수량.
+    sum_fake_ntby_qty = 외인+기관 합계.
+    모의투자 미지원 — mode=real 고정.
+    """
+
+    def fetch():
+        raw = ctx.kis_api.raw_get(
+            "HHPTJ04160200",
+            "domestic-stock/v1/quotations/investor-trend-estimate",
+            {"MKSC_SHRN_ISCD": ticker},
+            mode="real",
+        )
+        rows = raw.get("output2", []) or []
+        periods = [
+            {
+                "period": row.get("bsop_hour_gb"),
+                "foreign_net_qty": _to_float(row.get("frgn_fake_ntby_qty")),
+                "institution_net_qty": _to_float(row.get("orgn_fake_ntby_qty")),
+                "total_net_qty": _to_float(row.get("sum_fake_ntby_qty")),
+            }
+            for row in rows
+        ]
+        # 최신 기간 (bsop_hour_gb=5)을 첫 번째로 노출
+        periods.sort(key=lambda p: -(int(p["period"]) if str(p["period"]).isdigit() else 0))
+        return {"ticker": ticker, "periods": periods}
+
+    return ctx.cached_call("get_intraday_institutional_flow", phase, {"ticker": ticker}, fetch)
+
+
 def get_orderbook(ctx: MILContext, phase: str, ticker: str) -> dict:
     """매수/매도 10호가 잔량 + 순매수잔량 비율.
 
@@ -548,3 +582,15 @@ def _infer_intraday_trend(candles: list[dict]) -> str:
     if diff_pct <= -0.7:
         return "down"
     return "flat"
+
+
+def _coerce_market_cap(row: dict) -> float:
+    market_cap = _to_float(row.get("market_cap"))
+    if market_cap > 0:
+        return market_cap
+
+    hts_avls = _to_float(row.get("hts_avls"))
+    if hts_avls > 0:
+        return hts_avls * 100_000_000
+
+    return 0.0

@@ -249,6 +249,294 @@ def get_attention_rank(ctx: MILContext, phase: str) -> dict:
     return ctx.cached_call("get_attention_rank", phase, {}, fetch)
 
 
+def get_premarket_movers(ctx: MILContext, phase: str) -> dict:
+    """KIS FHPST01820000 예상체결 등락률 상위.
+
+    장 시작 전(08:30~09:00) 또는 장 중 예상 갭업/갭다운 종목 스캔.
+    antc_tr_pbmn = 예상 거래대금(원). stck_prpr = 예상체결가.
+    """
+
+    def fetch():
+        raw = ctx.kis_api.raw_get(
+            "FHPST01820000",
+            "domestic-stock/v1/ranking/exp-trans-updown",
+            {
+                "fid_cond_mrkt_div_code": "J",
+                "fid_cond_scr_div_code": "20182",
+                "fid_input_iscd": "0000",
+                "fid_div_cls_code": "0",
+                "fid_aply_rang_prc_1": "",
+                "fid_vol_cnt": "",
+                "fid_pbmn": "",
+                "fid_blng_cls_code": "0",
+                "fid_mkop_cls_code": "0",
+                "fid_rank_sort_cls_code": "0",
+            },
+        )
+        rows = raw.get("output", []) or []
+        movers = [
+            {
+                "ticker": row.get("stck_shrn_iscd"),
+                "name": row.get("hts_kor_isnm"),
+                "exp_price": _to_float(row.get("stck_prpr")),
+                "base_price": _to_float(row.get("stck_sdpr")),
+                "change_pct": _to_float(row.get("prdy_ctrt")),
+                "exp_volume": _to_float(row.get("cntg_vol")),
+                "exp_trading_value_krw": _to_float(row.get("antc_tr_pbmn")),
+                "total_ask_qty": _to_float(row.get("total_askp_rsqn")),
+                "total_bid_qty": _to_float(row.get("total_bidp_rsqn")),
+            }
+            for row in rows[:30]
+            if row.get("stck_shrn_iscd")
+        ]
+        return {"movers": movers}
+
+    return ctx.cached_call("get_premarket_movers", phase, {}, fetch)
+
+
+def get_disparity_rank(ctx: MILContext, phase: str) -> dict:
+    """KIS FHPST01780000 이격도 순위.
+
+    d20_dsrt < 85 = 20일선 이격도 -15% 이상 → REVERSAL(낙주 스윙) 과매도 후보.
+    fid_rank_sort_cls_code=1(이격도 낮은순) 으로 과매도 종목 상위 반환.
+    """
+
+    def fetch():
+        raw = ctx.kis_api.raw_get(
+            "FHPST01780000",
+            "domestic-stock/v1/ranking/disparity",
+            {
+                "fid_cond_mrkt_div_code": "J",
+                "fid_cond_scr_div_code": "20178",
+                "fid_div_cls_code": "0",
+                "fid_rank_sort_cls_code": "1",  # 이격도 낮은 순 (과매도 상위)
+                "fid_hour_cls_code": "0000",
+                "fid_input_iscd": "0000",
+                "fid_trgt_cls_code": "0",
+                "fid_trgt_exls_cls_code": "0",
+                "fid_input_price_1": "",
+                "fid_input_price_2": "",
+                "fid_vol_cnt": "",
+            },
+        )
+        rows = raw.get("output", []) or []
+        stocks = [
+            {
+                "ticker": row.get("mksc_shrn_iscd"),
+                "name": row.get("hts_kor_isnm"),
+                "price": _to_float(row.get("stck_prpr")),
+                "change_pct": _to_float(row.get("prdy_ctrt")),
+                "volume": _to_float(row.get("acml_vol")),
+                "d5_dsrt": _to_float(row.get("d5_dsrt")),
+                "d10_dsrt": _to_float(row.get("d10_dsrt")),
+                "d20_dsrt": _to_float(row.get("d20_dsrt")),
+                "d60_dsrt": _to_float(row.get("d60_dsrt")),
+                "d120_dsrt": _to_float(row.get("d120_dsrt")),
+            }
+            for row in rows[:30]
+            if row.get("mksc_shrn_iscd")
+        ]
+        return {
+            "stocks": stocks,
+            "note": "d20_dsrt < 85이면 20일선 이격도 -15% 이상 — REVERSAL 낙주 스윙 과매도 후보",
+        }
+
+    return ctx.cached_call("get_disparity_rank", phase, {}, fetch)
+
+
+def get_foreign_institution_rank(ctx: MILContext, phase: str) -> dict:
+    """키움 ka90009 외국인기관매매상위.
+
+    외인 순매수 상위 + 기관 순매수 상위를 분리해서 반환한다.
+    두 리스트에 공통으로 등장하는 종목 = 외인·기관 동시 집중 매수 → 강한 수급 신호.
+    키움 API 미설정 시 missing_fields에 기록하고 빈 결과 반환.
+    """
+
+    def fetch():
+        result: dict = {}
+        missing_fields: list[str] = []
+
+        if not (ctx.kiwoom_api and ctx.kiwoom_api.available):
+            result["foreign_netbuy_top"] = None
+            result["institution_netbuy_top"] = None
+            missing_fields.append("foreign_institution_rank(credentials not configured)")
+            result["missing_fields"] = missing_fields
+            return result
+
+        try:
+            raw = ctx.kiwoom_api.foreign_institution_top()
+            rows = raw.get("frgnr_orgn_trde_upper") or []
+            result["foreign_netbuy_top"] = [
+                {
+                    "ticker": str(row.get("for_netprps_stk_cd") or "").strip(),
+                    "name": row.get("for_netprps_stk_nm", ""),
+                    "netbuy_amount": _to_float(row.get("for_netprps_amt")),
+                    "netbuy_qty": _to_float(row.get("for_netprps_qty")),
+                }
+                for row in rows
+                if row.get("for_netprps_stk_cd")
+            ]
+            result["institution_netbuy_top"] = [
+                {
+                    "ticker": str(row.get("orgn_netprps_stk_cd") or "").strip(),
+                    "name": row.get("orgn_netprps_stk_nm", ""),
+                    "netbuy_amount": _to_float(row.get("orgn_netprps_amt")),
+                    "netbuy_qty": _to_float(row.get("orgn_netprps_qty")),
+                }
+                for row in rows
+                if row.get("orgn_netprps_stk_cd")
+            ]
+        except Exception as e:
+            result["foreign_netbuy_top"] = None
+            result["institution_netbuy_top"] = None
+            missing_fields.append(f"foreign_institution_rank({e})")
+
+        if missing_fields:
+            result["missing_fields"] = missing_fields
+        return result
+
+    return ctx.cached_call("get_foreign_institution_rank", phase, {}, fetch)
+
+
+def get_foreign_continuous_rank(ctx: MILContext, phase: str) -> dict:
+    """키움 ka10035 외인연속순매매상위.
+
+    dm1/dm2/dm3 = D-1/D-2/D-3 외인 순매수량, tot = 3일 합계.
+    양수가 클수록 외국인이 강하게 연속 매수 중 — TREND/REGULATION_GAP 셋업의 수급 근거.
+    키움 API 미설정 시 missing_fields에 기록.
+    """
+
+    def fetch():
+        result: dict = {}
+        missing_fields: list[str] = []
+
+        if not (ctx.kiwoom_api and ctx.kiwoom_api.available):
+            result["stocks"] = None
+            missing_fields.append("foreign_continuous_rank(credentials not configured)")
+            result["missing_fields"] = missing_fields
+            return result
+
+        try:
+            raw = ctx.kiwoom_api.foreign_continuous_rank()
+            rows = raw.get("for_cont_nettrde_upper") or []
+            result["stocks"] = [
+                {
+                    "ticker": str(row.get("stk_cd") or "").strip(),
+                    "name": row.get("stk_nm", ""),
+                    "price": _to_float(row.get("cur_prc")),
+                    "change_pct": _to_float(row.get("pred_pre")),
+                    "d1_qty": _to_float(row.get("dm1")),
+                    "d2_qty": _to_float(row.get("dm2")),
+                    "d3_qty": _to_float(row.get("dm3")),
+                    "total_3d_qty": _to_float(row.get("tot")),
+                    "foreign_limit_pct": _to_float(row.get("limit_exh_rt")),
+                }
+                for row in rows
+                if row.get("stk_cd")
+            ]
+        except Exception as e:
+            result["stocks"] = None
+            missing_fields.append(f"foreign_continuous_rank({e})")
+
+        if missing_fields:
+            result["missing_fields"] = missing_fields
+        return result
+
+    return ctx.cached_call("get_foreign_continuous_rank", phase, {}, fetch)
+
+
+def get_volume_surge(ctx: MILContext, phase: str) -> dict:
+    """키움 ka10023 거래량급증.
+
+    prev_trde_qty = 전일 동시간대 거래량, now_trde_qty = 현재 거래량.
+    sdnin_rt(급증률 %) 높을수록 '역대급 거래대금이 들어오며 매물을 소화 중' 신호.
+    키움 API 미설정 시 missing_fields에 기록.
+    """
+
+    def fetch():
+        result: dict = {}
+        missing_fields: list[str] = []
+
+        if not (ctx.kiwoom_api and ctx.kiwoom_api.available):
+            result["stocks"] = None
+            missing_fields.append("volume_surge(credentials not configured)")
+            result["missing_fields"] = missing_fields
+            return result
+
+        try:
+            raw = ctx.kiwoom_api.volume_surge()
+            rows = raw.get("trde_qty_sdnin") or []
+            result["stocks"] = [
+                {
+                    "ticker": str(row.get("stk_cd") or "").strip(),
+                    "name": row.get("stk_nm", ""),
+                    "price": _to_float(row.get("cur_prc")),
+                    "change_pct": _to_float(row.get("flu_rt")),
+                    "prev_volume": _to_float(row.get("prev_trde_qty")),
+                    "now_volume": _to_float(row.get("now_trde_qty")),
+                    "surge_qty": _to_float(row.get("sdnin_qty")),
+                    "surge_rate_pct": _to_float(row.get("sdnin_rt")),
+                }
+                for row in rows
+                if row.get("stk_cd")
+            ]
+        except Exception as e:
+            result["stocks"] = None
+            missing_fields.append(f"volume_surge({e})")
+
+        if missing_fields:
+            result["missing_fields"] = missing_fields
+        return result
+
+    return ctx.cached_call("get_volume_surge", phase, {}, fetch)
+
+
+def get_intraday_investor_rank(ctx: MILContext, phase: str) -> dict:
+    """키움 ka10065 장중투자자별매매상위.
+
+    기관(trde_tp=1) + 외인(trde_tp=2) 순매수 상위를 동시에 반환한다.
+    netslmt 양수 = 순매수, 음수 = 순매도.
+    두 리스트에 공통으로 등장하는 종목 = 기관·외인 동시 매수 → 강력한 장중 수급 신호.
+    키움 API 미설정 시 missing_fields에 기록.
+    """
+
+    def fetch():
+        result: dict = {}
+        missing_fields: list[str] = []
+
+        if not (ctx.kiwoom_api and ctx.kiwoom_api.available):
+            result["institution_rank"] = None
+            result["foreign_rank"] = None
+            missing_fields.append("intraday_investor_rank(credentials not configured)")
+            result["missing_fields"] = missing_fields
+            return result
+
+        for key, trde_tp in [("institution_rank", "1"), ("foreign_rank", "2")]:
+            try:
+                raw = ctx.kiwoom_api.intraday_investor_rank(trde_tp=trde_tp)
+                rows = raw.get("opmr_invsr_trde_upper") or []
+                result[key] = [
+                    {
+                        "ticker": str(row.get("stk_cd") or "").strip(),
+                        "name": row.get("stk_nm", ""),
+                        "sell_amount": _to_float(row.get("sel_qty")),
+                        "buy_amount": _to_float(row.get("buy_qty")),
+                        "net_buy": _to_float(row.get("netslmt")),
+                    }
+                    for row in rows
+                    if row.get("stk_cd")
+                ]
+            except Exception as e:
+                result[key] = None
+                missing_fields.append(f"{key}({e})")
+
+        if missing_fields:
+            result["missing_fields"] = missing_fields
+        return result
+
+    return ctx.cached_call("get_intraday_investor_rank", phase, {}, fetch)
+
+
 def _to_float(value) -> float:
     if value in (None, ""):
         return 0.0

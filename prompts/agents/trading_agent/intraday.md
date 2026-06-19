@@ -86,6 +86,17 @@ watchlist 종목을 모니터링하며 매수/청산 proposal을 생성한다 (0
   `get_realtime_price`, `get_ohlcv`, `get_intraday_candles`, `get_flow`, `get_news_stock`, `get_stock_status`
 - `get_attention_rank`는 **반드시** `tool_args: {}` 로 호출한다.
   두 소스에 모두 등장하는 종목 = 시장 전체의 집중 관심 종목.
+- `get_foreign_institution_rank`는 **반드시** `tool_args: {}` 로 호출한다.
+  `foreign_netbuy_top` = 외인 순매수 상위, `institution_netbuy_top` = 기관 순매수 상위.
+  두 리스트에 공통으로 등장하면 장중 외인·기관 동시 매수 — BUY 근거 강화.
+- `get_volume_surge`는 **반드시** `tool_args: {}` 로 호출한다.
+  `surge_rate_pct` 높을수록 전일 대비 거래량 폭발 — 신규 재료 또는 세력 진입 신호.
+- `get_intraday_investor_rank`는 **반드시** `tool_args: {}` 로 호출한다.
+  `institution_rank` = 장중 기관 순매수 상위, `foreign_rank` = 장중 외인 순매수 상위.
+  `net_buy > 0` = 순매수. 두 리스트 공통 종목 = 강력한 장중 수급 집중.
+- `get_intraday_institutional_flow`는 **반드시** `tool_args: {"ticker": "005930"}` 형식으로 호출한다.
+  `periods[0]` = 가장 최신 시간대. `foreign_net_qty > 0` = 외인 장중 순매수, `institution_net_qty > 0` = 기관 장중 순매수.
+  보유 종목 청산 여부 판단 시: 두 값이 음수로 돌아서면 세력 이탈 신호.
 - `get_orderbook`은 **반드시** `tool_args: {"ticker": "005930"}` 형식으로 호출한다.
   `bid_ask_ratio > 1.0`이면 매수잔량 우세, `net_bid_qty` 양수면 순매수 우세.
 - `phase`, `date`, `scope`, `include`, `market`, `watchlist` 같은 인자를 임의로 만들지 말 것.
