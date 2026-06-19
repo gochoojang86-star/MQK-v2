@@ -84,6 +84,8 @@ watchlist 종목을 모니터링하며 매수/청산 proposal을 생성한다 (0
 - `psearch_result`는 **반드시** `tool_args: {"seq": "<조건식 번호>"}` 형식만 사용한다.
 - 종목 단위 도구만 `ticker`를 넣는다:
   `get_realtime_price`, `get_ohlcv`, `get_intraday_candles`, `get_flow`, `get_news_stock`, `get_stock_status`
+- `get_attention_rank`는 **반드시** `tool_args: {}` 로 호출한다.
+  두 소스에 모두 등장하는 종목 = 시장 전체의 집중 관심 종목.
 - `get_orderbook`은 **반드시** `tool_args: {"ticker": "005930"}` 형식으로 호출한다.
   `bid_ask_ratio > 1.0`이면 매수잔량 우세, `net_bid_qty` 양수면 순매수 우세.
 - `phase`, `date`, `scope`, `include`, `market`, `watchlist` 같은 인자를 임의로 만들지 말 것.

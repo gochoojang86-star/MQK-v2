@@ -1,4 +1,4 @@
-"""조건검색 도구 3개: psearch_title, psearch_result, get_top_movers"""
+"""조건검색 도구 4개: psearch_title, psearch_result, get_top_movers, get_attention_rank"""
 from __future__ import annotations
 
 from market_intelligence.base import MILContext
@@ -186,6 +186,69 @@ def get_top_movers(ctx: MILContext, phase: str) -> dict:
     return ctx.cached_call("get_top_movers", phase, {}, fetch)
 
 
+def get_attention_rank(ctx: MILContext, phase: str) -> dict:
+    """실시간 시장 관심 종목 순위 — 두 소스 통합.
+
+    ① 키움 빅데이터 실시간종목조회순위(ka00198, 1분 기준):
+       지금 이 순간 키움 HTS 사용자들이 가장 많이 들여다보는 종목.
+       bigd_rank=1이 가장 많이 조회된 종목. rank_chg_sign=+이면 순위 상승 중.
+
+    ② KIS HTS 조회상위20종목(HHMCM000100C0):
+       KIS eFriend Plus 사용자 기준 조회 상위 20종목. 종목코드만 반환.
+
+    키움 API 미설정 시 ①은 missing_fields에 기록하고 ②만 반환한다.
+    """
+
+    def fetch():
+        result: dict = {}
+        missing_fields: list[str] = []
+
+        # ① 키움 빅데이터 실시간 조회 순위
+        if ctx.kiwoom_api and ctx.kiwoom_api.available:
+            try:
+                raw = ctx.kiwoom_api.realtime_viewing_rank(qry_tp="1")
+                rows = raw.get("item_inq_rank") or []
+                result["kiwoom_viewing_rank"] = [
+                    {
+                        "rank": _to_int(row.get("bigd_rank")),
+                        "rank_change": row.get("rank_chg_sign", ""),
+                        "ticker": str(row.get("stk_cd") or "").strip(),
+                        "name": row.get("stk_nm", ""),
+                        "change_pct": _to_float(row.get("base_comp_chgr")),
+                    }
+                    for row in rows
+                    if row.get("stk_cd")
+                ]
+            except Exception as e:
+                result["kiwoom_viewing_rank"] = None
+                missing_fields.append(f"kiwoom_viewing_rank({e})")
+        else:
+            result["kiwoom_viewing_rank"] = None
+            missing_fields.append("kiwoom_viewing_rank(credentials not configured)")
+
+        # ② KIS HTS 조회 상위 20종목
+        try:
+            raw_kis = ctx.kis_api.raw_get(
+                "HHMCM000100C0",
+                "domestic-stock/v1/ranking/hts-top-view",
+                {},
+            )
+            result["kis_hts_top"] = [
+                str(row.get("mksc_shrn_iscd") or "").strip()
+                for row in raw_kis.get("output1") or []
+                if row.get("mksc_shrn_iscd")
+            ]
+        except Exception as e:
+            result["kis_hts_top"] = None
+            missing_fields.append(f"kis_hts_top({e})")
+
+        if missing_fields:
+            result["missing_fields"] = missing_fields
+        return result
+
+    return ctx.cached_call("get_attention_rank", phase, {}, fetch)
+
+
 def _to_float(value) -> float:
     if value in (None, ""):
         return 0.0
@@ -193,3 +256,7 @@ def _to_float(value) -> float:
         return float(str(value).replace(",", ""))
     except (ValueError, TypeError):
         return 0.0
+
+
+def _to_int(value) -> int:
+    return int(_to_float(value))

@@ -46,6 +46,7 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "psearch_title": screening.psearch_title,
     "psearch_result": screening.psearch_result,
     "get_top_movers": screening.get_top_movers,
+    "get_attention_rank": screening.get_attention_rank,
     "get_ohlcv": stock.get_ohlcv,
     "get_realtime_price": stock.get_realtime_price,
     "get_watchlist_intraday_snapshot": stock.get_watchlist_intraday_snapshot,
@@ -68,14 +69,14 @@ PHASE_TOOLS: dict[TradingPhase, list[str]] = {
     TradingPhase.SCAN: [
         "get_market_context", "get_sector_breadth", "get_intraday_index_candles", "get_news_market",
         "get_theme_candidates",
-        "psearch_title", "psearch_result", "get_top_movers",
+        "psearch_title", "psearch_result", "get_top_movers", "get_attention_rank",
         "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot",
         "get_flow", "get_stock_status", "get_news_stock", "get_fundamentals",
         "get_orderbook",
     ],
     TradingPhase.INTRADAY: [
         "get_market_context", "get_sector_breadth", "get_theme_candidates",
-        "psearch_title", "psearch_result", "get_top_movers",
+        "psearch_title", "psearch_result", "get_top_movers", "get_attention_rank",
         "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot", "get_intraday_candles",
         "get_flow", "get_news_stock", "get_stock_status",
         "get_orderbook",
@@ -102,6 +103,7 @@ _NO_ARG_TOOLS = {
     "get_intraday_index_candles",
     "get_news_market",
     "get_top_movers",
+    "get_attention_rank",
     "get_open_positions",
     "get_daily_pnl",
 }

@@ -135,6 +135,21 @@ class KiwoomApi:
         resp.raise_for_status()
         return resp.json()
 
+    def realtime_viewing_rank(self, qry_tp: str = "1") -> dict[str, Any]:
+        """ka00198 실시간종목조회순위 (빅데이터 기반).
+
+        qry_tp: "1"=1분, "2"=10분, "3"=1시간, "4"=당일누적, "5"=30초
+        반환: item_inq_rank 리스트 (stk_cd, stk_nm, bigd_rank, rank_chg_sign, base_comp_chgr)
+        """
+        resp = requests.post(
+            f"{self._cfg.base_url}/api/dostk/stkinfo",
+            headers=self._api_headers("ka00198"),
+            json={"qry_tp": qry_tp},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def theme_components(
         self,
         thema_grp_cd: str,
