@@ -86,9 +86,18 @@ watchlist 종목을 모니터링하며 매수/청산 proposal을 생성한다 (0
   `get_realtime_price`, `get_ohlcv`, `get_intraday_candles`, `get_flow`, `get_news_stock`, `get_stock_status`
 - `get_attention_rank`는 **반드시** `tool_args: {}` 로 호출한다.
   두 소스에 모두 등장하는 종목 = 시장 전체의 집중 관심 종목.
+- `kw_psearch_title`는 **반드시** `tool_args: {}` 로 호출한다.
+  KIS psearch 실패 시 대체 경로. `conditions` 목록에서 `seq`를 확인 후 `kw_psearch_result`로 실행.
+- `kw_psearch_result`는 **반드시** `tool_args: {"seq": "1"}` 형식으로 호출한다.
+  KIS psearch_result와 동일하게 활용. ticker는 6자리 숫자.
+- `get_sector_investor_flow`는 **반드시** `tool_args: {}` 로 호출한다.
+  `institution_net + foreign_net` 모두 양수인 섹터 = 지금 돈이 몰리는 섹터.
+  보유 종목의 섹터가 자금 유출 중이면 청산 근거가 강화된다.
 - `get_foreign_institution_rank`는 **반드시** `tool_args: {}` 로 호출한다.
   `foreign_netbuy_top` = 외인 순매수 상위, `institution_netbuy_top` = 기관 순매수 상위.
   두 리스트에 공통으로 등장하면 장중 외인·기관 동시 매수 — BUY 근거 강화.
+- `get_bid_queue_surge`는 **반드시** `tool_args: {}` 로 호출한다.
+  `surge_rate_pct` 높은 종목 = 매수잔량 급증 = 세력 진입 직전. 신규 후보 탐색에 활용.
 - `get_volume_surge`는 **반드시** `tool_args: {}` 로 호출한다.
   `surge_rate_pct` 높을수록 전일 대비 거래량 폭발 — 신규 재료 또는 세력 진입 신호.
 - `get_intraday_investor_rank`는 **반드시** `tool_args: {}` 로 호출한다.

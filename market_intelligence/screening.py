@@ -249,6 +249,208 @@ def get_attention_rank(ctx: MILContext, phase: str) -> dict:
     return ctx.cached_call("get_attention_rank", phase, {}, fetch)
 
 
+def kw_psearch_title(ctx: MILContext, phase: str) -> dict:
+    """키움 ka10171 조건검색 목록조회. 영웅문4에 저장된 조건식 목록 반환.
+
+    KIS psearch_title과 동일한 역할 — KIS 불안정 시 대체 경로.
+    조건식이 없으면 data=[] 반환 (오류 아님, note에 기록).
+    키움 API 미설정 또는 WebSocket 실패 시 missing_fields에 기록.
+    """
+
+    def fetch():
+        result: dict = {}
+        missing_fields: list[str] = []
+
+        if not (ctx.kiwoom_api and ctx.kiwoom_api.available):
+            result["conditions"] = None
+            missing_fields.append("kw_psearch_title(credentials not configured)")
+            result["missing_fields"] = missing_fields
+            return result
+
+        try:
+            raw = ctx.kiwoom_api.search_list()
+            conditions = raw.get("data") or []
+            result["conditions"] = [
+                {"seq": str(c.get("seq") or "").strip(), "name": c.get("name", "")}
+                for c in conditions
+            ]
+            if not result["conditions"]:
+                result["note"] = "영웅문4에 저장된 조건검색식이 없습니다. 영웅문4 > 조건검색 > 조건식 저장 후 사용하세요."
+        except Exception as e:
+            result["conditions"] = None
+            missing_fields.append(f"kw_psearch_title({e})")
+
+        if missing_fields:
+            result["missing_fields"] = missing_fields
+        return result
+
+    return ctx.cached_call("kw_psearch_title", phase, {}, fetch)
+
+
+def kw_psearch_result(ctx: MILContext, phase: str, seq: str) -> dict:
+    """키움 ka10172 조건검색 요청 일반. seq = 조건식 일련번호.
+
+    KIS psearch_result와 동일한 역할 — KIS 불안정 시 대체 경로.
+    응답 ticker는 'A' 접두사 제거 처리됨.
+    키움 API 미설정 또는 WebSocket 실패 시 missing_fields에 기록.
+    """
+
+    def fetch():
+        result: dict = {"seq": seq}
+        missing_fields: list[str] = []
+
+        if not (ctx.kiwoom_api and ctx.kiwoom_api.available):
+            result["candidates"] = None
+            missing_fields.append("kw_psearch_result(credentials not configured)")
+            result["missing_fields"] = missing_fields
+            return result
+
+        try:
+            raw = ctx.kiwoom_api.search_result(seq=seq)
+            if raw.get("return_code", 0) != 0:
+                result["candidates"] = []
+                result["note"] = f"키움 응답: {raw.get('return_msg', '')} (결과 0건이거나 조건식 오류)"
+                return result
+            data = raw.get("data") or []
+            result["candidates"] = [
+                {
+                    "ticker": str(row.get("9001") or "").lstrip("A").strip(),
+                    "name": str(row.get("302") or "").strip(),
+                    "price": _to_float(row.get("10")),
+                    "change_pct": _to_float(row.get("12")),
+                    "volume": _to_float(row.get("13")),
+                    "open": _to_float(row.get("16")),
+                    "high": _to_float(row.get("17")),
+                    "low": _to_float(row.get("18")),
+                }
+                for row in data
+                if row.get("9001")
+            ]
+        except Exception as e:
+            result["candidates"] = None
+            missing_fields.append(f"kw_psearch_result({e})")
+
+        if missing_fields:
+            result["missing_fields"] = missing_fields
+        return result
+
+    return ctx.cached_call("kw_psearch_result", phase, {"seq": seq}, fetch)
+
+
+def get_sector_investor_flow(ctx: MILContext, phase: str) -> dict:
+    """키움 ka10051 업종별투자자순매수.
+
+    업종별로 외국인·기관이 오늘 얼마나 순매수했는지 (금액 기준).
+    orgn_netprps = 기관계 순매수, frgnr_netprps = 외국인 순매수 (양수=매수, 음수=매도).
+    두 값 모두 양수인 업종 = 외인·기관 동시 유입 중인 핵심 섹터.
+    키움 API 미설정 시 missing_fields에 기록.
+    """
+
+    def fetch():
+        result: dict = {}
+        missing_fields: list[str] = []
+
+        if not (ctx.kiwoom_api and ctx.kiwoom_api.available):
+            result["sectors"] = None
+            missing_fields.append("sector_investor_flow(credentials not configured)")
+            result["missing_fields"] = missing_fields
+            return result
+
+        try:
+            raw = ctx.kiwoom_api.sector_investor_flow()
+            rows = raw.get("inds_netprps") or []
+            sectors = [
+                {
+                    "sector_code": row.get("inds_cd", ""),
+                    "sector_name": row.get("inds_nm", ""),
+                    # flu_rt는 정수 인코딩 (예: "-13" = -0.13%)
+                    "change_pct": round(_to_float(row.get("flu_rt")) / 100, 2),
+                    "volume": _to_float(row.get("trde_qty")),
+                    "institution_net": _to_float(row.get("orgn_netprps")),
+                    "foreign_net": _to_float(row.get("frgnr_netprps")),
+                    "individual_net": _to_float(row.get("ind_netprps")),
+                    "fund_net": _to_float(row.get("endw_netprps")),
+                    "securities_net": _to_float(row.get("sc_netprps")),
+                }
+                for row in rows
+                if row.get("inds_nm")
+            ]
+            # 정렬: 외인+기관 모두 양수인 섹터 최우선, 그 안에서 합계 내림차순
+            sectors.sort(
+                key=lambda s: (
+                    1 if s["institution_net"] > 0 and s["foreign_net"] > 0 else 0,
+                    s["institution_net"] + s["foreign_net"],
+                ),
+                reverse=True,
+            )
+            result["sectors"] = sectors
+            result["note"] = "institution_net + foreign_net 합계 내림차순. 두 값 모두 양수 = 외인·기관 동시 유입 섹터."
+        except Exception as e:
+            result["sectors"] = None
+            missing_fields.append(f"sector_investor_flow({e})")
+
+        if missing_fields:
+            result["missing_fields"] = missing_fields
+        return result
+
+    return ctx.cached_call("get_sector_investor_flow", phase, {}, fetch)
+
+
+def get_bid_queue_surge(ctx: MILContext, phase: str) -> dict:
+    """키움 ka10021 호가잔량급증. 코스피+코스닥 전체 매수잔량 급증 종목.
+
+    sdnin_rt(급증률%) 높을수록 갑자기 매수 호가잔량이 폭발 — 세력 진입 직전 신호.
+    tot_buy_qty = 총 매수 잔량. 상위 10개만 반환.
+    키움 API 미설정 시 missing_fields에 기록.
+    """
+
+    def fetch():
+        result: dict = {}
+        missing_fields: list[str] = []
+
+        if not (ctx.kiwoom_api and ctx.kiwoom_api.available):
+            result["stocks"] = None
+            missing_fields.append("bid_queue_surge(credentials not configured)")
+            result["missing_fields"] = missing_fields
+            return result
+
+        merged: dict[str, dict] = {}  # ticker → row (중복 제거)
+        # 코스피("001") + 코스닥("002") 각각 조회 후 합산
+        for mrkt_tp in ("001", "002"):
+            try:
+                raw = ctx.kiwoom_api.bid_queue_surge(mrkt_tp=mrkt_tp)
+                rows = raw.get("bid_req_sdnin") or []
+                for row in rows:
+                    ticker = str(row.get("stk_cd") or "").strip()
+                    if not ticker:
+                        continue
+                    entry = {
+                        "ticker": ticker,
+                        "name": row.get("stk_nm", ""),
+                        "price": _to_float(row.get("cur_prc")),
+                        "base_qty": _to_float(row.get("int")),
+                        "current_qty": _to_float(row.get("now")),
+                        "surge_qty": _to_float(row.get("sdnin_qty")),
+                        "surge_rate_pct": _to_float(row.get("sdnin_rt")),
+                        "total_bid_qty": _to_float(row.get("tot_buy_qty")),
+                    }
+                    # 중복 시 급증률 높은 쪽 유지
+                    if ticker not in merged or entry["surge_rate_pct"] > merged[ticker]["surge_rate_pct"]:
+                        merged[ticker] = entry
+            except Exception as e:
+                missing_fields.append(f"bid_queue_surge(mrkt_tp={mrkt_tp}: {e})")
+
+        # 급증률 내림차순 정렬, 상위 20개
+        stocks = sorted(merged.values(), key=lambda x: x["surge_rate_pct"], reverse=True)
+        result["stocks"] = stocks[:20]
+
+        if missing_fields:
+            result["missing_fields"] = missing_fields
+        return result
+
+    return ctx.cached_call("get_bid_queue_surge", phase, {}, fetch)
+
+
 def get_premarket_movers(ctx: MILContext, phase: str) -> dict:
     """KIS FHPST01820000 예상체결 등락률 상위.
 

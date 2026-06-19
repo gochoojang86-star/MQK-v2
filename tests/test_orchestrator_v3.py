@@ -163,8 +163,11 @@ def test_build_context_uses_mil_portfolio_tools(monkeypatch, tmp_path):
     assert ctx["watchlist"] == ["005930"]
     assert ctx["allowed_tools"] == [
         "get_market_context", "get_sector_breadth", "get_theme_candidates",
-        "psearch_title", "psearch_result", "get_top_movers", "get_attention_rank",
-        "get_foreign_institution_rank", "get_volume_surge", "get_intraday_investor_rank",
+        "psearch_title", "psearch_result",
+        "kw_psearch_title", "kw_psearch_result",
+        "get_top_movers", "get_attention_rank",
+        "get_foreign_institution_rank", "get_sector_investor_flow",
+        "get_volume_surge", "get_bid_queue_surge", "get_intraday_investor_rank",
         "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot", "get_intraday_candles",
         "get_flow", "get_intraday_institutional_flow", "get_news_stock", "get_stock_status",
         "get_orderbook",

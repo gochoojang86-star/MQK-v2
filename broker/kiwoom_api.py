@@ -1,10 +1,11 @@
-"""Kiwoom REST API client - theme/group lookup focused.
+"""Kiwoom REST + WebSocket API client.
 
-MQK v3에서는 SCAN 단계의 테마 확산/대장주 선별 보강용으로 사용한다.
+MQK v3에서는 테마/대장주 선별, 조건검색, 수급 랭킹, 호가 분석 보강용으로 사용한다.
 주문/계좌 기능은 아직 포함하지 않는다.
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import time
@@ -20,6 +21,7 @@ class KiwoomConfig:
     appkey: str = os.environ.get("KIWOOM_APP_KEY", "")
     secretkey: str = os.environ.get("KIWOOM_SECRET_KEY", "")
     base_url: str = os.environ.get("KIWOOM_BASE_URL", "https://api.kiwoom.com")
+    ws_base_url: str = os.environ.get("KIWOOM_WS_URL", "wss://api.kiwoom.com:10000")
 
 
 class KiwoomApi:
@@ -108,6 +110,124 @@ class KiwoomApi:
             raise RuntimeError(f"Kiwoom token missing in response: {data}")
         self._save_cached_token(token, str(data.get("expires_dt") or ""))
         return token
+
+    def _ws_request(self, api_id: str, payload: dict) -> dict[str, Any]:
+        """키움 WebSocket 단발 요청-응답.
+
+        프로토콜: 연결 → LOGIN(token만, Bearer 접두사 없이) → 실제 요청 → 응답 → 종료.
+        서버 응답이 Python literal 포맷(단따옴표)일 수 있어 ast.literal_eval 폴백 처리.
+        """
+        import websocket as _ws  # websocket-client
+
+        token = self._get_token()
+        headers = [
+            f"api-id: {api_id}",
+            f"authorization: Bearer {token}",
+        ]
+        conn = _ws.create_connection(
+            f"{self._cfg.ws_base_url}/api/dostk/websocket",
+            header=headers,
+            timeout=15,
+        )
+        try:
+            # WebSocket 인증: Bearer 없이 raw token만 전송
+            conn.send(json.dumps({"trnm": "LOGIN", "token": token}, ensure_ascii=False))
+            login_raw = conn.recv()
+            login = self._parse_ws_response(login_raw)
+            if login.get("return_code", -1) != 0:
+                raise RuntimeError(f"키움 WS 로그인 실패: {login.get('return_msg')} (code={login.get('return_code')})")
+
+            conn.send(json.dumps(payload, ensure_ascii=False))
+            raw = conn.recv()
+        finally:
+            conn.close()
+
+        return self._parse_ws_response(raw)
+
+    def _parse_ws_response(self, raw: str) -> dict[str, Any]:
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return ast.literal_eval(raw)
+
+    def search_list(self) -> dict[str, Any]:
+        """ka10171 조건검색 목록조회. 영웅문4에 저장된 조건식 목록 반환."""
+        return self._ws_request("ka10171", {"trnm": "CNSRLST"})
+
+    def search_result(self, seq: str, stex_tp: str = "K") -> dict[str, Any]:
+        """ka10172 조건검색 요청 일반. seq = 조건식 일련번호 (search_list로 확인).
+
+        stex_tp: "K"=코스피, "Q"=코스닥 (KRX는 "K"로 통일).
+        응답 data[*]["9001"] = 종목코드(A접두사 포함), "302" = 종목명, "12" = 등락율.
+        """
+        return self._ws_request("ka10172", {
+            "trnm": "CNSRREQ",
+            "seq": str(seq),
+            "search_type": "0",
+            "stex_tp": stex_tp,
+            "cont_yn": "N",
+            "next_key": "",
+        })
+
+    def sector_investor_flow(
+        self,
+        mrkt_tp: str = "0",
+        amt_qty_tp: str = "0",
+        stex_tp: str = "1",
+    ) -> dict[str, Any]:
+        """ka10051 업종별투자자순매수요청.
+
+        mrkt_tp: "0"=전체, "1"=코스피, "2"=코스닥.
+        amt_qty_tp: "0"=금액(억원), "1"=수량.
+        orgn_netprps = 기관계 순매수, frgnr_netprps = 외국인 순매수.
+        """
+        resp = requests.post(
+            f"{self._cfg.base_url}/api/dostk/sect",
+            headers=self._api_headers("ka10051"),
+            json={
+                "mrkt_tp": mrkt_tp,
+                "amt_qty_tp": amt_qty_tp,
+                "base_dt": "",
+                "stex_tp": stex_tp,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def bid_queue_surge(
+        self,
+        mrkt_tp: str = "001",
+        trde_tp: str = "1",
+        sort_tp: str = "1",
+        tm_tp: str = "30",
+        trde_qty_tp: str = "0",
+        stk_cnd: str = "0",
+        stex_tp: str = "1",
+    ) -> dict[str, Any]:
+        """ka10021 호가잔량급증요청.
+
+        trde_tp: "1"=매수잔량급증, "2"=매도잔량급증.
+        sort_tp: "1"=급증률순, "2"=급증수량순.
+        tm_tp: 기준 시간(분) "30"|"60"|"120".
+        sdnin_rt = 급증률(%), tot_buy_qty = 총매수잔량.
+        """
+        resp = requests.post(
+            f"{self._cfg.base_url}/api/dostk/rkinfo",
+            headers=self._api_headers("ka10021"),
+            json={
+                "mrkt_tp": mrkt_tp,
+                "trde_tp": trde_tp,
+                "sort_tp": sort_tp,
+                "tm_tp": tm_tp,
+                "trde_qty_tp": trde_qty_tp,
+                "stk_cnd": stk_cnd,
+                "stex_tp": stex_tp,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     def theme_groups(
         self,
