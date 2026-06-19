@@ -60,6 +60,15 @@ def _default_drift_state(date: str) -> dict:
     return {"date": date, "last_trigger_time": {}, "today_caution_count": 0, "daily_lite_llm_calls": 0}
 
 
+def _resolve_regime_evaluation_mode(now: datetime | None = None) -> str:
+    now = now or datetime.now()
+    if now.hour < 10:
+        return "OPENING"
+    if now.hour < 12:
+        return "MIDDAY"
+    return "AFTERNOON"
+
+
 def _to_float(value) -> float:
     if value in (None, ""):
         return 0.0
@@ -888,7 +897,7 @@ class MQKOrchestratorV3:
                         continue
                     results.append(self._process_v3_buy_proposal(p))
                 elif p.get("side") == "SELL":
-                    results.append(self._process_v3_sell_proposal(p, require_approval=True))
+                    results.append(self._process_v3_sell_proposal(p, require_approval=False))
                 else:
                     results.append({"action": "SKIP", "reason": "unknown_side", "proposal": _safe_summary(p)})
             except (KeyError, TypeError, ValueError, AttributeError) as e:
@@ -1116,7 +1125,9 @@ class MQKOrchestratorV3:
         )
 
     def run_premarket(self) -> dict:
-        logger.info("[V3 08:00] 장전 시장 분석 시작")
+        now = datetime.now()
+        evaluation_mode = _resolve_regime_evaluation_mode(now)
+        logger.info("[V3 %s] 레짐 평가 시작 (%s)", now.strftime("%H:%M"), evaluation_mode)
         index = self._market_data.get_index_status()
         market_news_items = self._naver_news.search("코스피 코스닥 시장 주식", display=10)
         market_news_summary = " | ".join(n.title for n in market_news_items[:5])
@@ -1153,12 +1164,18 @@ class MQKOrchestratorV3:
             "market_news_summary": market_news_summary,
             "sector_performance": self._sector_performance,
         }
-        regime = self._regime_agent.judge(market_ctx)
+        regime = self._regime_agent.judge(
+            market_ctx,
+            evaluation_mode=evaluation_mode,
+            evaluation_time=now.strftime("%H:%M"),
+        )
         self._last_regime = regime
         logger.info(f"[V3] Regime: {regime.regime.value} (확신도 {regime.confidence}%)")
 
         market_status = {
             "date": self._today,
+            "evaluation_mode": evaluation_mode,
+            "evaluation_time": now.strftime("%H:%M"),
             "kospi": index.kospi,
             "kosdaq": index.kosdaq,
             "kospi_trading_value": index.kospi_trading_value,
