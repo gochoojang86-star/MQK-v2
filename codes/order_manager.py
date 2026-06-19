@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -163,13 +164,23 @@ class OrderManager:
         if self._kis is None:
             raise RuntimeError("KIS API is required for live sell execution. Pass dry_run=True for order dry-run.")
 
-        if order.after_hours and hasattr(self._kis, "sell_after_hours_close"):
-            # 정규장 마감 후(15:40~16:00) 당일 종가 청산
-            result = self._kis.sell_after_hours_close(order.ticker, order.quantity)
-        elif order.price == 0:
-            result = self._kis.sell_market(order.ticker, order.quantity)
+        last_exc: Exception | None = None
+        for attempt in range(1, 3):  # 최대 2회 시도 (timeout 재시도)
+            try:
+                if order.after_hours and hasattr(self._kis, "sell_after_hours_close"):
+                    result = self._kis.sell_after_hours_close(order.ticker, order.quantity)
+                elif order.price == 0:
+                    result = self._kis.sell_market(order.ticker, order.quantity)
+                else:
+                    result = self._kis.sell_limit(order.ticker, order.quantity, order.price)
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 2:
+                    logger.warning(f"[OrderManager] SELL {order.ticker} 시도 {attempt} 실패({exc}) — 3초 후 재시도")
+                    time.sleep(3)
         else:
-            result = self._kis.sell_limit(order.ticker, order.quantity, order.price)
+            raise last_exc  # type: ignore[misc]
 
         execution = ExecutionResult(
             success=result.success,

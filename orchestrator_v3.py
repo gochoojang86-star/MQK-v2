@@ -50,6 +50,7 @@ logger = logging.getLogger("mqk_v3")
 _DATA_DIR = Path(__file__).parent / "data"
 _DRIFT_STATE_PATH = _DATA_DIR / "drift_state.json"
 _WATCHLIST_PATH = _DATA_DIR / "watchlist.json"
+_NEXT_DAY_PREMARKET_CONTEXT_PATH = _DATA_DIR / "next_day_premarket_context.json"
 _TOOL_GAP_LOG_RETENTION_DAYS = 30
 _MIN_MONITORING_WATCHLIST = 6
 _MAX_WATCHLIST_SIZE = 10
@@ -155,6 +156,22 @@ def save_watchlist(watchlist: list[str], path: Path = _WATCHLIST_PATH) -> None:
     )
 
 
+def load_next_day_premarket_context(path: Path = _NEXT_DAY_PREMARKET_CONTEXT_PATH) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"[orchestrator_v3] next_day_premarket_context.json 손상 — 빈 컨텍스트 반환: {e}")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_next_day_premarket_context(payload: dict, path: Path = _NEXT_DAY_PREMARKET_CONTEXT_PATH) -> None:
+    safe_payload = payload if isinstance(payload, dict) else {}
+    _atomic_write_text(path, json.dumps(safe_payload, ensure_ascii=False, indent=2))
+
+
 class MQKOrchestratorV3:
     """v3 독립 오케스트레이터."""
 
@@ -225,6 +242,7 @@ class MQKOrchestratorV3:
 
         regime_dict = _regime_to_dict(regime)
         context = self._build_context(TradingPhase.PREMARKET, regime_dict, "STABLE", watchlist=[])
+        context["next_day_prior"] = load_next_day_premarket_context(path=_NEXT_DAY_PREMARKET_CONTEXT_PATH)
         review = self._trading_agent.run(TradingPhase.PREMARKET, context)
         self._record_tool_request(review, TradingPhase.PREMARKET, regime_dict)
         self._alert_on_tool_failures(review, TradingPhase.PREMARKET)
@@ -236,6 +254,7 @@ class MQKOrchestratorV3:
         regime = load_last_regime(path=_LAST_REGIME_PATH) or {}
         drift_state = load_drift_state(path=_DRIFT_STATE_PATH, today=self._today)
         context = self._build_context(TradingPhase.SCAN, regime, _drift_status(drift_state), watchlist=[])
+        context["next_day_prior"] = load_next_day_premarket_context(path=_NEXT_DAY_PREMARKET_CONTEXT_PATH)
         result = self._trading_agent.run(TradingPhase.SCAN, context)
         self._record_tool_request(result, TradingPhase.SCAN, regime)
         self._alert_on_tool_failures(result, TradingPhase.SCAN)
@@ -405,7 +424,9 @@ class MQKOrchestratorV3:
         self._alert_on_tool_failures(result, TradingPhase.MARKET_CLOSE)
         self.run_close_review()  # v2 거래 복기 — 마감 확정 데이터 기준
         self._save_json("close_market_read.json", result.get("close_market_read", {}))
-        self._save_json("next_day_premarket_context.json", result.get("next_day_premarket_context", {}))
+        next_day_context = result.get("next_day_premarket_context", {})
+        self._save_json("next_day_premarket_context.json", next_day_context)
+        save_next_day_premarket_context(next_day_context, path=_NEXT_DAY_PREMARKET_CONTEXT_PATH)
         self._save_json("tool_gap_summary.json", self._summarize_tool_gaps())
         return result
 
@@ -860,6 +881,11 @@ class MQKOrchestratorV3:
                 if not isinstance(p, dict):
                     raise TypeError(f"proposal이 dict가 아님: {type(p).__name__}")
                 if p.get("side") == "BUY":
+                    # confidence=0 또는 WATCH_ONLY는 LLM이 "관망"을 표현한 것 — 실행 금지
+                    if int(p.get("confidence") or 0) == 0 or p.get("setup") == "WATCH_ONLY":
+                        logger.info(f"[V3 PROPOSAL] WATCH_ONLY/confidence=0 무시: {p.get('ticker')}")
+                        results.append({"action": "SKIP", "reason": "watch_only", "proposal": _safe_summary(p)})
+                        continue
                     results.append(self._process_v3_buy_proposal(p))
                 elif p.get("side") == "SELL":
                     results.append(self._process_v3_sell_proposal(p, require_approval=True))
