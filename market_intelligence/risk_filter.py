@@ -35,7 +35,8 @@ def _fetch_capture_uplow(ctx: MILContext, phase: str, side: str) -> list[str]:
 
 
 def get_stock_status(ctx: MILContext, phase: str, ticker: str) -> dict:
-    """VI 발동 여부, 관리종목/거래정지 여부, 공매도 비중, 상하한가 여부."""
+    """VI 발동 여부, 관리종목/거래정지 여부, 공매도 비중, 상하한가 여부,
+    투자경고/단기과열 여부 (REGULATION_GAP 셋업 판별용)."""
 
     def fetch():
         vi = ctx.kis_api.raw_get(
@@ -78,6 +79,31 @@ def get_stock_status(ctx: MILContext, phase: str, ticker: str) -> dict:
         }
 
         missing_fields: list[str] = []
+
+        # 투자경고/단기과열 여부 — FHKST01010100 (주식현재가 시세)
+        # iscd_stat_cls_code: 52=투자위험, 53=투자경고, 54=투자주의, 59=단기과열
+        # short_over_yn: Y=단기과열
+        try:
+            price_info = ctx.kis_api.raw_get(
+                "FHKST01010100",
+                "domestic-stock/v1/quotations/inquire-price",
+                {
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": ticker,
+                },
+            )
+            out = price_info.get("output", {}) or {}
+            stat_code = str(out.get("iscd_stat_cls_code") or "")
+            warn_code = str(out.get("mrkt_warn_cls_code") or "00")
+            short_over = str(out.get("short_over_yn") or "N").upper()
+            result["is_caution"] = stat_code in ("52", "53", "54") or (warn_code not in ("00", ""))
+            result["is_overheated"] = stat_code == "59" or short_over == "Y"
+            result["warn_code"] = warn_code
+        except Exception:
+            result["is_caution"] = None
+            result["is_overheated"] = None
+            missing_fields.append("is_caution")
+
         try:
             limit_up_tickers = _fetch_capture_uplow(ctx, phase, "0")
             limit_down_tickers = _fetch_capture_uplow(ctx, phase, "1")

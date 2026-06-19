@@ -460,6 +460,58 @@ def get_fundamentals(ctx: MILContext, phase: str, ticker: str) -> dict:
     return ctx.cached_call("get_fundamentals", phase, {"ticker": ticker}, fetch)
 
 
+def get_orderbook(ctx: MILContext, phase: str, ticker: str) -> dict:
+    """매수/매도 10호가 잔량 + 순매수잔량 비율.
+
+    SOUL 핵심 판단 근거: "호가창의 체결 속도와 거래대금의 폭발력".
+    bid_ask_ratio > 1.0 이면 매수잔량이 매도잔량보다 많음(매수 우세).
+    net_bid_qty 양수이면 순매수 호가 잔량 우세.
+    """
+
+    def fetch():
+        raw = ctx.kis_api.raw_get(
+            "FHKST01010200",
+            "domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+            {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": ticker,
+            },
+        )
+        out1 = raw.get("output1", {}) or {}
+
+        ask = [
+            {
+                "price": _to_float(out1.get(f"askp{i}")),
+                "qty": _to_float(out1.get(f"askp_rsqn{i}")),
+                "qty_change": _to_float(out1.get(f"askp_rsqn_icdc{i}")),
+            }
+            for i in range(1, 11)
+        ]
+        bid = [
+            {
+                "price": _to_float(out1.get(f"bidp{i}")),
+                "qty": _to_float(out1.get(f"bidp_rsqn{i}")),
+                "qty_change": _to_float(out1.get(f"bidp_rsqn_icdc{i}")),
+            }
+            for i in range(1, 11)
+        ]
+        total_ask = _to_float(out1.get("total_askp_rsqn"))
+        total_bid = _to_float(out1.get("total_bidp_rsqn"))
+        net_bid = _to_float(out1.get("ntby_aspr_rsqn"))
+
+        return {
+            "ticker": ticker,
+            "ask": ask,
+            "bid": bid,
+            "total_ask_qty": total_ask,
+            "total_bid_qty": total_bid,
+            "bid_ask_ratio": round(total_bid / total_ask, 3) if total_ask > 0 else None,
+            "net_bid_qty": net_bid,
+        }
+
+    return ctx.cached_call("get_orderbook", phase, {"ticker": ticker}, fetch)
+
+
 def _to_float(value) -> float:
     if value in (None, ""):
         return 0.0

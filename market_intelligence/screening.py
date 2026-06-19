@@ -79,6 +79,7 @@ def get_top_movers(ctx: MILContext, phase: str) -> dict:
                 "FID_INPUT_DATE_1": "",
             },
         )
+        volume_rows = raw.get("output", [])
         movers = [
             {
                 "ticker": row.get("mksc_shrn_iscd"),
@@ -86,11 +87,19 @@ def get_top_movers(ctx: MILContext, phase: str) -> dict:
                 "price": _to_float(row.get("stck_prpr")),
                 "change_pct": _to_float(row.get("prdy_ctrt")),
                 "volume": _to_float(row.get("acml_vol")),
+                "trading_value_krw": _to_float(row.get("acml_tr_pbmn")),
             }
-            for row in raw.get("output", [])
+            for row in volume_rows
         ]
+        # 거래대금 순위 — 거래량순위 응답에 acml_tr_pbmn이 포함되어 있어 별도 API 불필요
+        trading_value_top = sorted(
+            [m for m in movers if m["trading_value_krw"] > 0],
+            key=lambda x: x["trading_value_krw"],
+            reverse=True,
+        )[:20]
         result = {
             "movers": movers,
+            "trading_value_top": trading_value_top,
             "overheated_bias_warning": True,
             "warning_reason": "psearch 실패로 거래량순위 백업 사용 — 단기 과열주 비중이 높을 수 있음",
         }

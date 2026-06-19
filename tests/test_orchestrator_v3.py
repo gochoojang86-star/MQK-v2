@@ -9,7 +9,9 @@ from codes.risk_officer import RiskViolation
 from market_intelligence.circuit_breaker import CircuitBreaker
 from orchestrator_v3 import (
     MQKOrchestratorV3,
+    _resolve_regime_evaluation_mode,
     load_drift_state,
+    load_next_day_premarket_context,
     save_drift_state,
     load_watchlist,
     save_watchlist,
@@ -61,6 +63,14 @@ def test_save_and_load_watchlist_filters_invalid_and_duplicate_tickers(tmp_path)
     save_watchlist(["005930", "0054V0", "000660", "005930", " 0041B0 ", "357780"], path=path)
 
     assert load_watchlist(path=path) == ["005930", "000660", "357780"]
+
+
+def test_resolve_regime_evaluation_mode_by_time():
+    from datetime import datetime
+
+    assert _resolve_regime_evaluation_mode(datetime(2026, 6, 19, 9, 3)) == "OPENING"
+    assert _resolve_regime_evaluation_mode(datetime(2026, 6, 19, 11, 3)) == "MIDDAY"
+    assert _resolve_regime_evaluation_mode(datetime(2026, 6, 19, 13, 3)) == "AFTERNOON"
 
 
 def test_load_watchlist_returns_empty_when_missing(tmp_path):
@@ -127,6 +137,16 @@ def test_build_context_uses_mil_portfolio_tools(monkeypatch, tmp_path):
                          lambda ctx, phase: {"realized_pnl_pct": -0.5, "realized_pnl_krw": -50000, "total_eval_amt": 10_000_000})
 
     orch = make_orchestrator(tmp_path)
+    orch._kis_api = type(
+        "_KIS",
+        (),
+        {
+            "get_balance": lambda self: {
+                "output1": [{"pdno": "005930", "hldg_qty": "1", "prpr": "71000"}],
+                "output2": [{"tot_evlu_amt": "10000000", "ord_psbl_cash": "3000000"}],
+            }
+        },
+    )()
     regime = {"status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50,
               "risk_guidance": {"max_positions": 4, "buy_confidence_threshold": 75,
                                  "risk_per_trade_pct": 0.35, "min_trading_value_krw": 1_000_000_000},
@@ -135,6 +155,9 @@ def test_build_context_uses_mil_portfolio_tools(monkeypatch, tmp_path):
     ctx = orch._build_context(TradingPhase.INTRADAY, regime, "STABLE", watchlist=["005930"])
 
     assert ctx["portfolio"]["position_count"] == 1
+    assert ctx["portfolio"]["available_cash_krw"] == 3_000_000
+    assert ctx["portfolio"]["cash_ratio_pct"] == 30.0
+    assert ctx["portfolio"]["positions_left_is_soft"] is True
     assert ctx["risk_budget_remaining"]["positions_left"] == 3
     assert ctx["daily_pnl"]["realized_pnl_pct"] == -0.5
     assert ctx["watchlist"] == ["005930"]
@@ -143,6 +166,7 @@ def test_build_context_uses_mil_portfolio_tools(monkeypatch, tmp_path):
         "psearch_title", "psearch_result", "get_top_movers",
         "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot", "get_intraday_candles",
         "get_flow", "get_news_stock", "get_stock_status",
+        "get_orderbook",
     ]
 
 
@@ -421,6 +445,133 @@ def test_run_scan_v3_backfills_watchlist_when_agent_returns_empty(monkeypatch, t
     assert result["overheated_bias_warning"] is True
     assert "orchestrator_scan_backfill" in result["reason"]
     assert load_watchlist(path=tmp_path / "watchlist.json") == ["357780"]
+
+
+def test_run_scan_v3_keeps_monitoring_watchlist_when_positions_full(monkeypatch, tmp_path):
+    import market_intelligence.portfolio as mil_portfolio
+    import market_intelligence.screening as mil_screening
+    import market_intelligence.risk_filter as mil_risk_filter
+    import market_intelligence.theme as mil_theme
+
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [{"ticker": "005930"}, {"ticker": "000660"}], "position_count": 2})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0, "total_eval_amt": 10_000_000})
+    monkeypatch.setattr(mil_theme, "get_theme_candidates",
+                         lambda ctx, phase: {
+                             "candidates": [
+                                 {"ticker": "357780", "name": "솔브레인", "change_pct": 27.89, "trading_value": 128_000_000_000, "theme_name": "반도체"},
+                             ]
+                         })
+    monkeypatch.setattr(mil_screening, "get_top_movers",
+                         lambda ctx, phase: {
+                             "change_rate_top": [
+                                 {"ticker": "357780", "name": "솔브레인", "change_pct": 27.89, "trading_value_krw": 128_000_000_000},
+                             ],
+                             "overheated_bias_warning": False,
+                         })
+    monkeypatch.setattr(mil_risk_filter, "get_stock_status",
+                         lambda ctx, phase, ticker: {
+                             "ticker": ticker,
+                             "trading_halted": False,
+                             "administrative_issue": False,
+                             "is_limit_up": False,
+                         })
+
+    orch = make_orchestrator(tmp_path)
+    orch._trading_agent = FakeTradingAgent({
+        "next_action": "final",
+        "action": "WATCHLIST_UPDATE",
+        "watchlist": [],
+        "candidates": [],
+        "reason": "llm empty",
+    })
+
+    regime = {
+        "status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50,
+        "risk_guidance": {"max_positions": 2, "buy_confidence_threshold": 75,
+                           "risk_per_trade_pct": 0.35, "min_trading_value_krw": 12_000_000_000},
+        "timestamp": "2026-06-09T08:45:00",
+    }
+    (tmp_path / "last_regime.json").write_text(json.dumps(regime), encoding="utf-8")
+
+    monkeypatch.setattr("orchestrator_v3._LAST_REGIME_PATH", tmp_path / "last_regime.json")
+    monkeypatch.setattr("orchestrator_v3._DRIFT_STATE_PATH", tmp_path / "drift_state.json")
+    monkeypatch.setattr("orchestrator_v3._WATCHLIST_PATH", tmp_path / "watchlist.json")
+
+    result = orch.run_scan_v3()
+
+    assert result["watchlist"] == ["357780"]
+    saved = load_watchlist(path=tmp_path / "watchlist.json")
+    assert saved == ["357780"]
+
+
+def test_run_scan_v3_injects_next_day_prior_into_context(monkeypatch, tmp_path):
+    import market_intelligence.portfolio as mil_portfolio
+
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [], "position_count": 0})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0, "total_eval_amt": 10_000_000})
+
+    orch = make_orchestrator(tmp_path)
+    orch._trading_agent = FakeTradingAgent({
+        "next_action": "final",
+        "action": "WATCHLIST_UPDATE",
+        "watchlist": ["005930"],
+        "candidates": [],
+        "reason": "ok",
+    })
+
+    regime = {
+        "status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50,
+        "risk_guidance": {"max_positions": 2, "buy_confidence_threshold": 75,
+                           "risk_per_trade_pct": 0.35, "min_trading_value_krw": 12_000_000_000},
+        "timestamp": "2026-06-09T08:45:00",
+    }
+    (tmp_path / "last_regime.json").write_text(json.dumps(regime), encoding="utf-8")
+    (tmp_path / "next_day_premarket_context.json").write_text(
+        json.dumps({"focus_themes": ["반도체"], "intraday_focus": ["대형 반도체 우선 확인"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("orchestrator_v3._LAST_REGIME_PATH", tmp_path / "last_regime.json")
+    monkeypatch.setattr("orchestrator_v3._DRIFT_STATE_PATH", tmp_path / "drift_state.json")
+    monkeypatch.setattr("orchestrator_v3._WATCHLIST_PATH", tmp_path / "watchlist.json")
+    monkeypatch.setattr("orchestrator_v3._NEXT_DAY_PREMARKET_CONTEXT_PATH", tmp_path / "next_day_premarket_context.json")
+
+    orch.run_scan_v3()
+
+    injected = orch._trading_agent.calls[0][1]["next_day_prior"]
+    assert injected["focus_themes"] == ["반도체"]
+
+
+def test_run_market_close_v3_persists_next_day_prior_to_data_path(monkeypatch, tmp_path):
+    import json as _json
+    import market_intelligence.portfolio as mil_portfolio
+
+    orch = make_orchestrator(tmp_path)
+    orch._collect_market_close_snapshot = lambda: {"kospi": 2800.0}
+    orch._trading_agent = FakeTradingAgent({
+        "close_market_read": {"focus_themes": ["반도체"]},
+        "next_day_premarket_context": {"focus_themes": ["반도체"], "intraday_focus": ["대형주 먼저"]},
+    })
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [], "position_count": 0})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0.0, "total_eval_amt": 0.0})
+    orch.run_close_review = lambda: None
+    orch._save_json = lambda filename, payload: (tmp_path / filename).write_text(
+        _json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+    orch._summarize_tool_gaps = lambda: {}
+
+    monkeypatch.setattr("orchestrator_v3._NEXT_DAY_PREMARKET_CONTEXT_PATH", tmp_path / "next_day_premarket_context_data.json")
+
+    orch.run_market_close_v3()
+
+    saved = load_next_day_premarket_context(path=tmp_path / "next_day_premarket_context_data.json")
+    assert saved["focus_themes"] == ["반도체"]
 
 
 def test_run_intraday_v3_stable_executes_no_trade(monkeypatch, tmp_path):

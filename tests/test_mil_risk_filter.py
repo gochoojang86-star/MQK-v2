@@ -118,13 +118,14 @@ def test_get_stock_status_caches_per_ticker():
             "FHPST01390000": {"output": []},
             "FHPST04830000": {"output": []},
             "FHKST130000C0": {"output": []},
+            "FHKST01010100": {"output": {}},
         },
         stock_info={},
     )
     get_stock_status(ctx, "SCAN", ticker="005930")
     get_stock_status(ctx, "SCAN", ticker="005930")
-    # VI + 공매도 + 상한가캡처 + 하한가캡처 = 4, 캐시되어 두 번째 호출은 추가 없음
-    assert len(ctx.kis_api.raw_get_calls) == 4
+    # VI + 공매도 + 투자경고(FHKST01010100) + 상한가캡처 + 하한가캡처 = 5, 캐시되어 두 번째 호출은 추가 없음
+    assert len(ctx.kis_api.raw_get_calls) == 5
 
 
 def test_get_stock_status_capture_uplow_cached_across_tickers():

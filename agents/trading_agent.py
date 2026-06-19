@@ -53,6 +53,7 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "get_flow": stock.get_flow,
     "get_news_stock": stock.get_news_stock,
     "get_fundamentals": stock.get_fundamentals,
+    "get_orderbook": stock.get_orderbook,
     "get_stock_status": risk_filter.get_stock_status,
     "get_event_schedule": risk_filter.get_event_schedule,
     "get_open_positions": portfolio.get_open_positions,
@@ -68,18 +69,22 @@ PHASE_TOOLS: dict[TradingPhase, list[str]] = {
         "get_market_context", "get_sector_breadth", "get_intraday_index_candles", "get_news_market",
         "get_theme_candidates",
         "psearch_title", "psearch_result", "get_top_movers",
-        "get_ohlcv", "get_flow", "get_stock_status", "get_news_stock", "get_fundamentals",
+        "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot",
+        "get_flow", "get_stock_status", "get_news_stock", "get_fundamentals",
+        "get_orderbook",
     ],
     TradingPhase.INTRADAY: [
         "get_market_context", "get_sector_breadth", "get_theme_candidates",
         "psearch_title", "psearch_result", "get_top_movers",
         "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot", "get_intraday_candles",
         "get_flow", "get_news_stock", "get_stock_status",
+        "get_orderbook",
     ],
     TradingPhase.LATE_INTRADAY: [
         "get_market_context", "psearch_title", "psearch_result", "get_top_movers",
         "get_ohlcv", "get_intraday_candles", "get_realtime_price", "get_watchlist_intraday_snapshot",
         "get_flow", "get_news_stock", "get_stock_status",
+        "get_orderbook",
     ],
     TradingPhase.CLOSE: [
         "get_market_context", "get_sector_breadth", "get_news_market",
@@ -112,7 +117,10 @@ _ALLOWED_TOOL_ARGS: dict[str, set[str]] = {
     "get_fundamentals": {"ticker"},
     "get_stock_status": {"ticker"},
     "get_event_schedule": {"ticker"},
+    "get_orderbook": {"ticker"},
 }
+_MIN_MONITORING_WATCHLIST = 6
+_MAX_WATCHLIST_SIZE = 10
 
 
 def build_context(
@@ -255,8 +263,7 @@ class TradingAgent:
     def _fallback_scan_result(self, context: dict, tool_history: list[dict[str, Any]], reason: str) -> dict:
         """LLM scan 루프가 끝까지 수렴하지 못하면 수집한 도구 결과로 보수적 watchlist를 만든다."""
         min_trading_value = float(context.get("risk_guidance", {}).get("min_trading_value_krw", 0) or 0)
-        positions_left = int(context.get("risk_budget_remaining", {}).get("positions_left", 0) or 0)
-        max_watchlist = min(10, max(positions_left, 0))
+        max_watchlist = _scan_watchlist_limit(context)
 
         candidates: dict[str, dict[str, Any]] = {}
         overheated_bias_warning = False
@@ -428,6 +435,23 @@ def _coerce_float(value: Any) -> float:
 
 def _is_six_digit_ticker(value: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", value))
+
+
+def _scan_watchlist_limit(context: dict[str, Any]) -> int:
+    remaining = context.get("risk_budget_remaining", {}) or {}
+    monitoring_slots = remaining.get("monitoring_slots")
+    if monitoring_slots not in (None, ""):
+        try:
+            return min(_MAX_WATCHLIST_SIZE, max(int(monitoring_slots), 0))
+        except (TypeError, ValueError):
+            pass
+
+    positions_left = remaining.get("positions_left", 0)
+    try:
+        positions_left_int = int(positions_left)
+    except (TypeError, ValueError):
+        positions_left_int = 0
+    return min(_MAX_WATCHLIST_SIZE, max(positions_left_int, _MIN_MONITORING_WATCHLIST))
 
 
 def _normalize_str_list(value: Any) -> list[str]:
