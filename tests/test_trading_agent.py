@@ -51,6 +51,15 @@ def test_phase_tools_only_reference_known_tools():
             assert tool in TOOL_REGISTRY, f"{phase}: unknown tool {tool}"
 
 
+def test_tier_for_phase_uses_reasoning_only_for_scan():
+    agent = TradingAgent(mil=object(), llm=FakeLLMClient([]))
+
+    assert agent._tier_for_phase(TradingPhase.SCAN).value == "reasoning"
+    assert agent._tier_for_phase(TradingPhase.INTRADAY).value == "standard"
+    assert agent._tier_for_phase(TradingPhase.LATE_INTRADAY).value == "standard"
+    assert agent._tier_for_phase(TradingPhase.PREMARKET).value == "fast"
+
+
 def test_run_executes_allowed_tool_then_returns_final(monkeypatch):
     def fake_get_market_context(ctx, phase):
         return {"status": "YELLOW", "confidence": 44, "kospi_change_pct": -0.5}
@@ -413,6 +422,43 @@ def test_scan_empty_watchlist_from_llm_is_backfilled(monkeypatch):
     assert result["action"] == "WATCHLIST_UPDATE"
     assert result["watchlist"] == ["357780"]
     assert "llm empty" in result["reason"]
+
+
+def test_scan_fallback_keeps_monitoring_watchlist_when_positions_left_zero(monkeypatch):
+    def fake_get_top_movers(ctx, phase):
+        return {
+            "change_rate_top": [
+                {"ticker": "357780", "name": "솔브레인", "change_pct": 27.89, "trading_value_krw": 128_000_000_000},
+            ],
+            "overheated_bias_warning": False,
+        }
+
+    monkeypatch.setitem(TOOL_REGISTRY, "get_top_movers", fake_get_top_movers)
+
+    llm = FakeLLMClient([
+        {"next_action": "call_tool", "tool": "get_top_movers", "tool_args": {}},
+        {"next_action": "final", "action": "WATCHLIST_UPDATE", "watchlist": [], "candidates": [], "reason": "llm empty"},
+    ])
+    agent = TradingAgent(mil=object(), llm=llm, max_steps=3)
+    context = build_context(
+        phase=TradingPhase.SCAN,
+        trading_date="2026-06-09",
+        regime={"status": "YELLOW"},
+        drift_status="STABLE",
+        risk_guidance={"min_trading_value_krw": 12_000_000_000},
+        portfolio_snapshot={},
+        daily_pnl={},
+        risk_budget_remaining={"positions_left": 0, "monitoring_slots": 6},
+    )
+
+    result = agent.run(TradingPhase.SCAN, context)
+
+    assert result["action"] == "WATCHLIST_UPDATE"
+    assert result["watchlist"] == ["357780"]
+
+
+def test_scan_phase_allows_watchlist_intraday_snapshot():
+    assert "get_watchlist_intraday_snapshot" in PHASE_TOOLS[TradingPhase.SCAN]
 
 
 def test_psearch_tools_inject_hts_user_id_from_env(monkeypatch):

@@ -53,6 +53,38 @@ TTL_TABLE: dict[tuple[str, str], int] = {
     ("get_sector_breadth", "SCAN"): 180,
     ("get_sector_breadth", "INTRADAY"): 180,
     ("get_sector_breadth", "CLOSE"): 300,
+
+    ("get_sector_investor_flow", "PREMARKET"): 300,
+    ("get_sector_investor_flow", "SCAN"): 180,
+    ("get_sector_investor_flow", "INTRADAY"): 180,
+    ("get_sector_investor_flow", "LATE_INTRADAY"): 180,
+
+    ("get_foreign_institution_rank", "SCAN"): 180,
+    ("get_foreign_institution_rank", "INTRADAY"): 180,
+    ("get_foreign_institution_rank", "LATE_INTRADAY"): 180,
+
+    ("get_foreign_continuous_rank", "SCAN"): 180,
+    ("get_foreign_continuous_rank", "INTRADAY"): 180,
+    ("get_foreign_continuous_rank", "LATE_INTRADAY"): 180,
+
+    ("get_intraday_investor_rank", "SCAN"): 180,
+    ("get_intraday_investor_rank", "INTRADAY"): 180,
+    ("get_intraday_investor_rank", "LATE_INTRADAY"): 180,
+
+    ("get_bid_queue_surge", "SCAN"): 180,
+    ("get_bid_queue_surge", "INTRADAY"): 180,
+    ("get_bid_queue_surge", "LATE_INTRADAY"): 180,
+
+    ("get_volume_surge", "SCAN"): 180,
+    ("get_volume_surge", "INTRADAY"): 180,
+    ("get_volume_surge", "LATE_INTRADAY"): 180,
+
+    ("get_attention_rank", "SCAN"): 180,
+    ("get_attention_rank", "INTRADAY"): 180,
+    ("get_attention_rank", "LATE_INTRADAY"): 180,
+
+    ("kw_psearch_title", "SCAN"): 300,
+    ("kw_psearch_result", "SCAN"): 180,
 }
 
 DEFAULT_TTL_SECONDS = 60

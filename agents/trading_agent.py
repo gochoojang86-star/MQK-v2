@@ -168,11 +168,13 @@ def build_context(
     portfolio_snapshot: dict,
     daily_pnl: dict,
     risk_budget_remaining: dict,
-    watchlist: list[str] | None = None,
+    watchlist: list[Any] | None = None,
     context_timestamps: dict | None = None,
     exploration_policy: dict | None = None,
 ) -> dict:
     """TradingAgent에 사전 주입할 컨텍스트를 구성한다 (스펙 섹션 2.4)."""
+    watchlist = watchlist or []
+    watchlist_tickers = _normalize_tickers([], watchlist)
     return {
         "current_phase": phase.value,
         "trading_date": trading_date,
@@ -182,7 +184,8 @@ def build_context(
         "portfolio": portfolio_snapshot,
         "daily_pnl": daily_pnl,
         "risk_budget_remaining": risk_budget_remaining,
-        "watchlist": watchlist or [],
+        "watchlist": watchlist,
+        "watchlist_tickers": watchlist_tickers,
         "exploration_policy": exploration_policy or {},
         "allowed_tools": list(PHASE_TOOLS[phase]),
         "context_timestamps": context_timestamps or {},
@@ -270,6 +273,8 @@ class TradingAgent:
         return {"next_action": "final", "action": "NO_TRADE", "reason": "max_steps_exceeded"}
 
     def _tier_for_phase(self, phase: TradingPhase) -> ModelTier:
+        if phase == TradingPhase.SCAN:
+            return ModelTier.REASONING
         if phase in {TradingPhase.PREMARKET, TradingPhase.CLOSE, TradingPhase.MARKET_CLOSE}:
             return ModelTier.FAST
         return ModelTier.STANDARD
@@ -498,9 +503,17 @@ def _normalize_str_list(value: Any) -> list[str]:
     return [str(value).strip()]
 
 
-def _normalize_tickers(value: Any, default_watchlist: list[str]) -> list[str]:
+def _normalize_tickers(value: Any, default_watchlist: list[Any]) -> list[str]:
     tickers = _normalize_str_list(value)
     filtered = [ticker for ticker in tickers if _is_six_digit_ticker(ticker)]
     if filtered:
         return filtered
-    return [ticker for ticker in default_watchlist if _is_six_digit_ticker(str(ticker))]
+    extracted: list[str] = []
+    for item in default_watchlist:
+        if isinstance(item, dict):
+            ticker = str(item.get("ticker") or "").strip()
+        else:
+            ticker = str(item).strip()
+        if _is_six_digit_ticker(ticker):
+            extracted.append(ticker)
+    return extracted

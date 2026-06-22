@@ -43,8 +43,8 @@
 ## Scoring Guide
 - 70-100: POSITIVE — 구체적 수주/계약/실적 호재
 - 40-69: NEUTRAL — 중립적 공시, 추가 확인 필요
-- 0-39: NEGATIVE — 희석성 공시, 리스크 공시
-- RISK: 투자경고/거래정지/단기과열 등 즉각 주의 필요
+- 0-39: NEGATIVE 또는 RISK — 희석성 공시, 리스크 공시, 투자경고/거래정지/단기과열 등 즉각 주의 필요
+- *주의*: `disclosure_score`는 반드시 0~100 사이의 정수형 숫자여야 합니다. `impact`가 `RISK`일 때도 `disclosure_score`는 `"RISK"` 문자열이 아닌 0~39 사이의 정수형 숫자(예: 0)를 입력하세요.
 
 ## Forbidden
 - 악성 공시를 호재로 포장 금지

@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 from broker.kis_api import KISApi
-from broker.kis_mcp_client import KISMCPClient
+# from broker.kis_mcp_client import KISMCPClient  # MCP 비활성화
 from market_intelligence import market, portfolio, risk_filter, screening, stock
 from market_intelligence.base import MILContext, ToolFailure
 from market_intelligence.cache import MILCache
@@ -173,8 +173,9 @@ def main():
 
     import os
     hts_id = os.environ.get("KIS_HTS_ID", "")
-    ctx = MILContext(kis_api=KISApi(), mcp_client=KISMCPClient(),
-                     cache=MILCache(), circuit_breaker=CircuitBreaker())
+    # ctx = MILContext(kis_api=KISApi(), mcp_client=KISMCPClient(),
+    #                  cache=MILCache(), circuit_breaker=CircuitBreaker())  # MCP 비활성화
+    ctx = MILContext(kis_api=KISApi(), cache=MILCache(), circuit_breaker=CircuitBreaker())
 
     print(f"# MIL 라이브 스모크 — {datetime.now().isoformat(timespec='seconds')} ticker={args.ticker}\n")
     results = run_checks(ctx, args.ticker, hts_id)

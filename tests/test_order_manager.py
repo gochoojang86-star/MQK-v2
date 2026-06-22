@@ -22,11 +22,26 @@ def make_order(**kwargs):
     return OrderRequest(**defaults)
 
 
-def test_buy_without_telegram_approval_raises(tmp_path):
+def test_buy_without_telegram_approval_raises_in_live_mode(tmp_path, monkeypatch):
+    """실전 모드(require_telegram_approval=True)에서는 승인 ID 없이 매수 불가."""
+    import codes.order_manager as om_module
+    import config.settings as settings_module
+    from dataclasses import replace
+    live_risk = replace(settings_module.RISK, require_telegram_approval=True)
+    monkeypatch.setattr(settings_module, "RISK", live_risk)
+    monkeypatch.setattr(om_module, "RISK", live_risk)
     manager = OrderManager(kis_api=None, dry_run=True, log_dir=tmp_path)
     order = make_order(approval_request_id=None)
     with pytest.raises(PermissionError):
         manager.execute_buy(order)
+
+
+def test_buy_without_approval_id_succeeds_in_mock_mode(tmp_path):
+    """모의 모드(require_telegram_approval=False 기본값)에서는 승인 ID 없이 매수 가능."""
+    manager = OrderManager(kis_api=None, dry_run=True, log_dir=tmp_path)
+    order = make_order(approval_request_id=None)
+    result = manager.execute_buy(order)
+    assert result.success is True
 
 
 def test_buy_without_kis_requires_explicit_dry_run(tmp_path):

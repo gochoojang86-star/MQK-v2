@@ -184,6 +184,11 @@ def _is_dup(conn: sqlite3.Connection, title: str) -> bool:
     ).fetchone() is not None
 
 
+def _is_operating_hour(now: datetime | None = None) -> bool:
+    current = now or datetime.now(_KST)
+    return _OPERATE_START <= current.hour < _OPERATE_END
+
+
 # ── 공개 읽기 인터페이스 (orchestrator에서 호출) ───────────────────────────────
 
 def get_recent_news(ticker: str = "", hours: int = 2) -> list[dict]:
@@ -213,9 +218,47 @@ def get_recent_news(ticker: str = "", hours: int = 2) -> list[dict]:
     ]
 
 
-def _source_from_event(event) -> str:
-    """Telethon event에서 채널 username을 안전하게 추출한다."""
-    return getattr(getattr(event, "chat", None), "username", "") or ""
+def _normalize_channel_id(value) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        raw = abs(int(value))
+    except (TypeError, ValueError):
+        return None
+
+    # Telethon chat_id는 -1001234567890 형태, entity.id는 1234567890 형태다.
+    raw_str = str(raw)
+    if raw_str.startswith("100") and len(raw_str) > 10:
+        return int(raw_str[3:])
+    return raw
+
+
+def _source_from_event(event, alias_map: dict[int, str] | None = None) -> str:
+    """Telethon event에서 채널 식별자를 안전하게 추출한다."""
+    alias_map = alias_map or {}
+    chat = getattr(event, "chat", None)
+
+    for candidate in (
+        getattr(chat, "id", None) if chat is not None else None,
+        getattr(event, "chat_id", None),
+    ):
+        normalized = _normalize_channel_id(candidate)
+        if normalized is not None and normalized in alias_map:
+            return alias_map[normalized]
+
+    username = getattr(chat, "username", "") if chat is not None else ""
+    if username:
+        return username
+
+    title = getattr(chat, "title", "") if chat is not None else ""
+    if title:
+        return title
+
+    chat_id = getattr(event, "chat_id", None)
+    if chat_id is not None:
+        return str(chat_id)
+
+    return "telegram"
 
 
 # ── 비동기 수집기 ─────────────────────────────────────────────────────────────
@@ -239,62 +282,58 @@ async def _run() -> None:
     _init_db()
     session_path = str(Path(__file__).parent.parent / "data" / "mqk_news_session")
     client = TelegramClient(session_path, int(api_id), api_hash)
+    alias_map: dict[int, str] = {}
 
     @client.on(events.NewMessage(chats=CHANNELS))
     async def handler(event) -> None:
-        msg = event.message
-        text = msg.text or ""
-        content = ""
-        url = ""
-
-        if msg.web_preview:
-            wp = msg.web_preview
-            text += " " + (wp.title or "")
-            content = (wp.description or "")[:500]   # 기사 요약 최대 500자
-            url = wp.url or ""
-
-        if any(k in text for k in _SKIP) or len(text) < 10:
-            return
-
-        ticker = _extract_ticker(text)
-        sentiment, score = _classify(text)
-        title = text[:200]
-
-        with sqlite3.connect(DB_PATH) as conn:
-            if not _is_dup(conn, title):
-                conn.execute(
-                    "INSERT INTO news_queue"
-                    "(ticker,title,content,sentiment,score,source,url,created_at)"
-                    " VALUES(?,?,?,?,?,?,?,?)",
-                    (ticker, title, content, sentiment, score,
-                     _source_from_event(event), url,
-                     datetime.now().isoformat()),
-                )
-
-    # 시작 시점 운영 시간 확인 (06:00~21:00 KST)
-    kst_now = datetime.now(_KST)
-    if not (_OPERATE_START <= kst_now.hour < _OPERATE_END):
-        print(f"[TelegramNews] 운영 시간 외({kst_now.strftime('%H:%M')} KST) — 시작 안 함")
-        return
-
-    print(f"[TelegramNews] 수집 시작. 채널: {CHANNELS} ({kst_now.strftime('%H:%M')} KST)")
-    await client.start()
-
-    # 운영 시간 감시 태스크 (1분마다 체크, 21:00 이후 자동 종료)
-    async def _watch_hours() -> None:
-        while True:
-            await asyncio.sleep(60)
-            h = datetime.now(_KST).hour
-            if h >= _OPERATE_END or h < _OPERATE_START:
-                print(f"[TelegramNews] 운영 시간 종료({h}:xx KST) — 연결 해제")
-                await client.disconnect()
+        try:
+            if not _is_operating_hour():
                 return
 
-    await asyncio.gather(
-        client.run_until_disconnected(),
-        _watch_hours(),
-        return_exceptions=True,
-    )
+            msg = event.message
+            text = msg.text or ""
+            content = ""
+            url = ""
+
+            if msg.web_preview:
+                wp = msg.web_preview
+                text += " " + (wp.title or "")
+                content = (wp.description or "")[:500]   # 기사 요약 최대 500자
+                url = wp.url or ""
+
+            if any(k in text for k in _SKIP) or len(text) < 10:
+                return
+
+            ticker = _extract_ticker(text)
+            sentiment, score = _classify(text)
+            title = text[:200]
+            source = _source_from_event(event, alias_map)
+
+            with sqlite3.connect(DB_PATH) as conn:
+                if not _is_dup(conn, title):
+                    conn.execute(
+                        "INSERT INTO news_queue"
+                        "(ticker,title,content,sentiment,score,source,url,created_at)"
+                        " VALUES(?,?,?,?,?,?,?,?)",
+                        (ticker, title, content, sentiment, score,
+                         source, url, datetime.now().isoformat()),
+                    )
+        except Exception as exc:
+            print(f"[TelegramNews] handler error: {exc}")
+
+    kst_now = datetime.now(_KST)
+    state = "수집 시작" if _is_operating_hour(kst_now) else "대기 시작"
+    print(f"[TelegramNews] {state}. 채널: {CHANNELS} ({kst_now.strftime('%H:%M')} KST)")
+    await client.start()
+    for channel in CHANNELS:
+        try:
+            entity = await client.get_entity(channel)
+            normalized = _normalize_channel_id(getattr(entity, "id", None))
+            if normalized is not None:
+                alias_map[normalized] = channel
+        except Exception as exc:
+            print(f"[TelegramNews] channel resolve failed: {channel} -> {exc}")
+    await client.run_until_disconnected()
 
 
 def run() -> None:

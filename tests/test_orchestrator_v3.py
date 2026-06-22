@@ -1,5 +1,6 @@
 """OrchestratorV3 테스트 - drift_state/watchlist 영속화 + Phase 오케스트레이션"""
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from orchestrator_v3 import (
     _resolve_regime_evaluation_mode,
     load_drift_state,
     load_next_day_premarket_context,
+    load_watchlist_entries,
     save_drift_state,
     load_watchlist,
     save_watchlist,
@@ -63,6 +65,23 @@ def test_save_and_load_watchlist_filters_invalid_and_duplicate_tickers(tmp_path)
     save_watchlist(["005930", "0054V0", "000660", "005930", " 0041B0 ", "357780"], path=path)
 
     assert load_watchlist(path=path) == ["005930", "000660", "357780"]
+
+
+def test_save_and_load_watchlist_preserves_metadata_entries(tmp_path):
+    path = tmp_path / "watchlist.json"
+    save_watchlist(
+        [
+            {"ticker": "005930", "setup": "TREND", "confidence": 81, "reason": "leader"},
+            {"ticker": "000660", "setup": "D_DAY", "confidence": 77, "reason": "event", "d_day": "2026-07-10"},
+        ],
+        path=path,
+    )
+
+    assert load_watchlist(path=path) == ["005930", "000660"]
+    assert load_watchlist_entries(path=path) == [
+        {"ticker": "005930", "setup": "TREND", "confidence": 81, "reason": "leader"},
+        {"ticker": "000660", "setup": "D_DAY", "confidence": 77, "reason": "event", "d_day": "2026-07-10"},
+    ]
 
 
 def test_resolve_regime_evaluation_mode_by_time():
@@ -161,6 +180,7 @@ def test_build_context_uses_mil_portfolio_tools(monkeypatch, tmp_path):
     assert ctx["risk_budget_remaining"]["positions_left"] == 3
     assert ctx["daily_pnl"]["realized_pnl_pct"] == -0.5
     assert ctx["watchlist"] == ["005930"]
+    assert ctx["watchlist_tickers"] == ["005930"]
     assert ctx["allowed_tools"] == [
         "get_market_context", "get_sector_breadth", "get_theme_candidates",
         "psearch_title", "psearch_result",
@@ -619,7 +639,10 @@ def test_run_intraday_v3_stable_executes_no_trade(monkeypatch, tmp_path):
 
     assert result["action"] == "NO_TRADE"
     assert orch._trading_agent.calls[0][0] == TradingPhase.INTRADAY
-    assert orch._trading_agent.calls[0][1]["watchlist"] == ["005930"]
+    assert orch._trading_agent.calls[0][1]["watchlist"] == [
+        {"ticker": "005930", "setup": "TREND", "confidence": 0, "reason": ""}
+    ]
+    assert orch._trading_agent.calls[0][1]["watchlist_tickers"] == ["005930"]
     assert orch._trading_agent.calls[0][1]["exploration_policy"]["allow_intraday_discovery"] is True
     saved_drift = json.loads((tmp_path / "drift_state.json").read_text(encoding="utf-8"))
     assert saved_drift["today_caution_count"] == 0
@@ -670,6 +693,36 @@ def test_run_intraday_v3_merges_watchlist_additions(monkeypatch, tmp_path):
     orch.run_intraday_v3()
 
     assert load_watchlist(path=tmp_path / "watchlist.json") == ["005930", "357780"]
+
+
+def test_sanitize_intraday_result_clears_proposals_for_hold_and_no_trade(tmp_path):
+    orch = make_orchestrator(tmp_path)
+
+    hold_result = orch._sanitize_intraday_result(
+        {
+            "action": "HOLD",
+            "reason": "keep winner",
+            "proposals": [
+                {"ticker": "005930", "side": "SELL", "reason": "trim"},
+                {"ticker": "000660", "side": "BUY", "reason": "add"},
+                {"ticker": "067310", "side": "HOLD", "reason": "invalid"},
+            ],
+        }
+    )
+    no_trade_result = orch._sanitize_intraday_result(
+        {
+            "action": "NO_TRADE",
+            "reason": "ambiguous",
+            "proposals": [
+                {"ticker": "005930", "side": "SELL", "reason": "invalid when no-trade"},
+            ],
+        }
+    )
+
+    assert hold_result["action"] == "HOLD"
+    assert hold_result["proposals"] == []
+    assert no_trade_result["action"] == "NO_TRADE"
+    assert no_trade_result["proposals"] == []
 
 
 def test_run_intraday_v3_skips_on_stale_regime(monkeypatch, tmp_path):
@@ -1103,6 +1156,7 @@ def test_process_v3_buy_proposal_executes_order_when_approved(tmp_path, monkeypa
     orch._position_sizer = FakePositionSizer()
     orch._telegram = FakeTelegramApproval(approved=True)
     orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "_review_v3_buy_proposal", lambda **kwargs: {"approve": True, "reason": "ok"})
     monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
     monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
 
@@ -1118,6 +1172,78 @@ def test_process_v3_buy_proposal_executes_order_when_approved(tmp_path, monkeypa
     assert orch._order_manager.buy_calls[0].ticker == "005930"
 
 
+def test_orchestrator_init_builds_milcontext_with_kiwoom_api(monkeypatch, tmp_path):
+    import orchestrator_v3 as mod
+
+    class StubMarketData:
+        def __init__(self, data_source=None):
+            self.data_source = data_source
+
+    class StubApproval:
+        pass
+
+    class StubJournal:
+        pass
+
+    class StubOrderManager:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class StubNewsFetcher:
+        def __init__(self):
+            self.available = True
+
+    class StubImprovementManager:
+        def __init__(self, telegram=None):
+            self.telegram = telegram
+
+        def process_telegram_actions(self):
+            return 0
+
+    class StubTradingAgent:
+        def __init__(self, mil=None):
+            self.mil = mil
+
+    captured: dict[str, object] = {}
+
+    class StubMILContext:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.kis_api = kwargs.get("kis_api")
+            self.kiwoom_api = kwargs.get("kiwoom_api")
+            self.cache = kwargs.get("cache")
+            self.circuit_breaker = kwargs.get("circuit_breaker")
+
+    monkeypatch.setattr(mod, "KISApi", lambda: object())
+    monkeypatch.setattr(mod, "KiwoomApi", lambda: object())
+    monkeypatch.setattr(mod, "MarketData", StubMarketData)
+    monkeypatch.setattr(mod, "RiskOfficer", lambda: object())
+    monkeypatch.setattr(mod, "PositionSizer", lambda: object())
+    monkeypatch.setattr(mod, "StopTakeProfitManager", lambda: object())
+    monkeypatch.setattr(mod, "TechnicalAnalysis", lambda: object())
+    monkeypatch.setattr(mod, "RegimeAgent", lambda: object())
+    monkeypatch.setattr(mod, "ReviewAgent", lambda: object())
+    monkeypatch.setattr(mod, "SelfImprovementAgent", lambda: object())
+    monkeypatch.setattr(mod, "LLMClient", lambda: object())
+    monkeypatch.setattr(mod, "TelegramApproval", StubApproval)
+    monkeypatch.setattr(mod, "TradeJournal", StubJournal)
+    monkeypatch.setattr(mod, "OrderManager", StubOrderManager)
+    monkeypatch.setattr(mod, "NaverNewsFetcher", StubNewsFetcher)
+    monkeypatch.setattr(mod, "ImprovementManager", StubImprovementManager)
+    monkeypatch.setattr(mod, "MILContext", StubMILContext)
+    monkeypatch.setattr(mod, "MILCache", lambda: object())
+    monkeypatch.setattr(mod, "CircuitBreaker", lambda: object())
+    monkeypatch.setattr(mod, "RegimeDriftDetector", lambda: object())
+    monkeypatch.setattr(mod, "TradingAgent", StubTradingAgent)
+    monkeypatch.setattr(mod, "LOG_CONFIG", replace(mod.LOG_CONFIG, base_dir=tmp_path))
+
+    orch = mod.MQKOrchestratorV3()
+
+    assert orch._mil.kiwoom_api is captured["kiwoom_api"]
+    assert captured["kiwoom_api"] is not None
+    assert orch._trading_agent.mil is orch._mil
+
+
 # ── Critical 1/2: malformed proposals must not crash _handle_proposals ─────
 
 def test_handle_proposals_skips_malformed_and_executes_valid(tmp_path, monkeypatch):
@@ -1126,6 +1252,7 @@ def test_handle_proposals_skips_malformed_and_executes_valid(tmp_path, monkeypat
     orch._position_sizer = FakePositionSizer()
     orch._telegram = FakeTelegramApproval(approved=True)
     orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "_review_v3_buy_proposal", lambda **kwargs: {"approve": True, "reason": "ok"})
     monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
     monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
 
@@ -1168,6 +1295,7 @@ def test_process_v3_buy_proposal_coerces_string_stop_loss_price(tmp_path, monkey
     orch._position_sizer = FakePositionSizer()
     orch._telegram = FakeTelegramApproval(approved=True)
     orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "_review_v3_buy_proposal", lambda **kwargs: {"approve": True, "reason": "ok"})
     monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
     monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
 
@@ -1188,6 +1316,7 @@ def test_handle_proposals_skips_non_numeric_stop_loss_price(tmp_path, monkeypatc
     orch._position_sizer = FakePositionSizer()
     orch._telegram = FakeTelegramApproval(approved=True)
     orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "_review_v3_buy_proposal", lambda **kwargs: {"approve": True, "reason": "ok"})
     monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
     monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
 
@@ -1205,11 +1334,14 @@ def test_handle_proposals_skips_non_numeric_stop_loss_price(tmp_path, monkeypatc
 
 def test_process_v3_buy_proposal_resolves_stock_name_for_approval(tmp_path, monkeypatch):
     """텔레그램 승인 요청과 주문에 종목명이 포함되어야 한다 (코드만 ❌)."""
+    import orchestrator_v3
+    monkeypatch.setattr(orchestrator_v3, "RISK", replace(orchestrator_v3.RISK, require_telegram_approval=True))
     orch = make_orchestrator(tmp_path)
     orch._risk_officer = FakeRiskOfficer()
     orch._position_sizer = FakePositionSizer()
     orch._telegram = FakeTelegramApproval(approved=True)
     orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "_review_v3_buy_proposal", lambda **kwargs: {"approve": True, "reason": "ok"})
     monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
     monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
 
@@ -1234,6 +1366,7 @@ def test_process_v3_buy_proposal_blocked_by_risk_officer(tmp_path, monkeypatch):
     orch._position_sizer = FakePositionSizer()
     orch._telegram = FakeTelegramApproval(approved=True)
     orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "_review_v3_buy_proposal", lambda **kwargs: {"approve": True, "reason": "ok"})
     monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
     monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
 
@@ -1272,6 +1405,7 @@ def _setup_buy_proposal_orch(tmp_path, monkeypatch):
     orch._position_sizer = FakePositionSizer()
     orch._telegram = FakeTelegramApproval(approved=True)
     orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "_review_v3_buy_proposal", lambda **kwargs: {"approve": True, "reason": "ok"})
     monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
     monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
 
@@ -1324,3 +1458,26 @@ def test_process_v3_buy_proposal_proceeds_when_kis_api_attribute_absent(tmp_path
     result = orch._process_v3_buy_proposal(proposal)
 
     assert result["action"] == "BUY_EXECUTED"
+
+
+def test_process_v3_buy_proposal_rejected_by_buy_review(tmp_path, monkeypatch):
+    orch = make_orchestrator(tmp_path)
+    orch._risk_officer = FakeRiskOfficer()
+    orch._position_sizer = FakePositionSizer()
+    orch._telegram = FakeTelegramApproval(approved=True)
+    orch._order_manager = FakeOrderManager()
+    monkeypatch.setattr(orch, "_review_v3_buy_proposal", lambda **kwargs: {"approve": False, "reason": "weak follower"})
+    monkeypatch.setattr(orch, "build_portfolio_state", lambda: object())
+    monkeypatch.setattr(orch, "_estimate_atr", lambda ticker: 1500.0)
+
+    class FakeSnapshot:
+        current_price = 70000.0
+
+    monkeypatch.setattr(orch, "_market_data", type("MD", (), {"get_snapshot": staticmethod(lambda t: FakeSnapshot())})())
+
+    proposal = {"ticker": "005930", "side": "BUY", "confidence": 82, "stop_loss_price": 68000, "reason": "강한 회복"}
+    result = orch._process_v3_buy_proposal(proposal)
+
+    assert result["action"] == "REJECTED"
+    assert result["reason"] == "weak follower"
+    assert orch._order_manager.buy_calls == []

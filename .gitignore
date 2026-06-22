@@ -34,7 +34,9 @@ data/mqk_v3.lock
 data/last_regime.json
 data/drift_state.json
 data/watchlist.json
+data/next_day_premarket_context.json
 data/*.tmp
+data/live_test_logs/
 
 # IDE
 .idea/

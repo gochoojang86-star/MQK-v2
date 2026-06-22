@@ -110,9 +110,12 @@ class ImprovementManager:
                 f"기대 효과: {proposal.expected_effect}\n"
                 f"리스크: {proposal.risk}\n"
                 f"백테스트 필요: {'예' if proposal.requires_backtest else '아니오'}\n"
-                f"승인: /approve {pid} | 거부: /reject {pid}"
+                f"수동 명령 fallback: /approve {pid} | /reject {pid}"
             )
-            self._telegram.notify(msg)
+            if hasattr(self._telegram, "notify_improvement_proposal"):
+                self._telegram.notify_improvement_proposal(pid, msg)
+            else:
+                self._telegram.notify(msg)
         return pid
 
     def approve(self, proposal_id: int) -> None:
@@ -130,6 +133,23 @@ class ImprovementManager:
                 (reason, datetime.now().isoformat(), proposal_id),
             )
         self.apply_approved_settings()
+
+    def process_telegram_actions(self) -> int:
+        """텔레그램 인라인 버튼으로 들어온 개선 제안 승인/거부를 반영한다."""
+        if not self._telegram or not hasattr(self._telegram, "poll_improvement_actions"):
+            return 0
+        processed = 0
+        for action, proposal_id in self._telegram.poll_improvement_actions():
+            pending_ids = {row["id"] for row in self.get_pending()}
+            if proposal_id not in pending_ids:
+                continue
+            if action == "approve_proposal":
+                self.approve(proposal_id)
+                processed += 1
+            elif action == "reject_proposal":
+                self.reject(proposal_id, reason="텔레그램 인라인 거부")
+                processed += 1
+        return processed
 
     def get_pending(self) -> list[dict]:
         with self._conn() as conn:

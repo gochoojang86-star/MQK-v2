@@ -238,15 +238,13 @@ class KISApi:
     def get_stock_info(self, ticker: str) -> dict:
         """국내주식 기본정보 조회.
 
-        KIS 문서 기준 `search-stock-info`는 실전만 지원된다. 데이터 모드는
-        기본 real이므로 종목명/업종/상장주식수 보강에 사용한다.
+        search-stock-info는 정적 마스터 데이터(종목명·업종)이므로 모의투자 모드에서도
+        실전 엔드포인트로 호출한다 (모의투자 TR 미지원).
         """
         if ticker in self._stock_info_cache:
             return dict(self._stock_info_cache[ticker])
-        if self._data_mode != KISMode.REAL:
-            return {}
 
-        url = f"{self._base_url_for(self._data_mode)}/uapi/domestic-stock/v1/quotations/search-stock-info"
+        url = f"{self._base_url_for(KISMode.REAL)}/uapi/domestic-stock/v1/quotations/search-stock-info"
         params = {
             "PRDT_TYPE_CD": "300",
             "PDNO": ticker,
@@ -254,7 +252,7 @@ class KISApi:
         try:
             resp = self._get_with_retry(
                 url,
-                headers=self._headers("CTPF1002R", mode=self._data_mode),
+                headers=self._headers("CTPF1002R", mode=KISMode.REAL),
                 params=params,
                 timeout=10,
             )

@@ -81,7 +81,12 @@ class RegimeAgent:
     def __init__(self, llm: LLMClient | None = None):
         self._llm = llm or LLMClient()
 
-    def judge(self, market_context: dict[str, Any]) -> RegimeJudgment:
+    def judge(
+        self,
+        market_context: dict[str, Any],
+        evaluation_mode: str = "OPENING",
+        evaluation_time: str | None = None,
+    ) -> RegimeJudgment:
         prev_kospi_tv = market_context.get('prev_kospi_trading_value', 0)
         prev_kosdaq_tv = market_context.get('prev_kosdaq_trading_value', 0)
         prev_tv_note = (
@@ -89,14 +94,36 @@ class RegimeAgent:
             if prev_kospi_tv or prev_kosdaq_tv else "데이터 없음"
         )
 
-        user_msg = f"""장전 시장 데이터 (08:00 기준):
+        mode = str(evaluation_mode or "OPENING").upper()
+        clock = evaluation_time or datetime.now().strftime("%H:%M")
+
+        if mode == "MIDDAY":
+            header = f"장중 레짐 재평가 데이터 ({clock} 기준):"
+            weighting = (
+                "당일 장중 데이터를 주요 근거로 사용하고, 전일 확정 데이터는 배경 참고로만 사용하여 "
+                "현재 시장 체제와 매매 가능 여부를 판단하고 JSON으로 출력하세요."
+            )
+        elif mode == "AFTERNOON":
+            header = f"오후 레짐 재평가 데이터 ({clock} 기준):"
+            weighting = (
+                "당일 장중 누적 데이터와 현재 섹터/수급 구조를 주요 근거로 사용하고, "
+                "전일 확정 데이터는 배경 참고로만 사용하여 현재 시장 체제와 매매 가능 여부를 판단하고 JSON으로 출력하세요."
+            )
+        else:
+            header = f"장초반 레짐 평가 데이터 ({clock} 기준):"
+            weighting = (
+                "전일 확정 데이터를 주요 근거로, 당일 장초반 실시간 데이터를 보조 참고로 사용하여 "
+                "시장 체제와 매매 가능 여부를 판단하고 JSON으로 출력하세요."
+            )
+
+        user_msg = f"""{header}
 
 [전일 확정 데이터]
 - 전일 코스피 등락률: {market_context.get('prev_kospi_change_pct', 0):.2f}%
 - 전일 코스닥 등락률: {market_context.get('prev_kosdaq_change_pct', 0):.2f}%
 - 전일 코스피/코스닥 거래대금: {prev_tv_note}
 
-[당일 실시간 데이터 — 장전이면 0이 정상]
+[당일 실시간 데이터]
 - 코스피 등락률: {market_context.get('kospi_change_pct', 0):.2f}%
 - 코스닥 등락률: {market_context.get('kosdaq_change_pct', 0):.2f}%
 - 코스피 거래대금: {market_context.get('kospi_trading_value', 0) / 1e8:.1f}억원
@@ -108,8 +135,7 @@ class RegimeAgent:
 - 시장 뉴스 요약: {market_context.get('market_news_summary', '없음')}
 - 섹터 성과: {market_context.get('sector_performance', {})}
 
-전일 확정 데이터를 주요 근거로, 당일 실시간 데이터를 보조 참고로 사용하여
-시장 체제와 매매 가능 여부를 판단하고 JSON으로 출력하세요."""
+{weighting}"""
 
         raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.FAST)
         return RegimeJudgment(

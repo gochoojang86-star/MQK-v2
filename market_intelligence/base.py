@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from broker.kis_api import KISApi
 # from broker.kis_mcp_client import KISMCPClient  # MCP 비활성화
-from broker.kiwoom_api import KiwoomApi
+from broker.kiwoom_api import KiwoomApi, KiwoomRateLimitError
 from market_intelligence.cache import MILCache
 from market_intelligence.circuit_breaker import CircuitBreaker
 
@@ -54,6 +54,9 @@ class MILContext:
         for attempt in range(1, 4):
             try:
                 result = fetch_fn()
+            except KiwoomRateLimitError as exc:
+                last_exc = exc
+                break
             except Exception as exc:
                 last_exc = exc
                 if attempt < 3:

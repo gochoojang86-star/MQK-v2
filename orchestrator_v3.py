@@ -23,6 +23,7 @@ from agents.self_improvement_agent import SelfImprovementAgent
 from agents.regime_agent import load_last_regime, save_last_regime, _LAST_REGIME_PATH
 from agents.trading_agent import TradingAgent, TradingPhase, build_context
 from broker.kis_api import KISApi
+from broker.kiwoom_api import KiwoomApi
 # from broker.kis_mcp_client import KISMCPClient  # MCP 비활성화
 from broker.telegram import ApprovalRequest, TelegramApproval
 from codes.improvement_manager import ImprovementManager
@@ -35,7 +36,8 @@ from codes.risk_officer import PortfolioState, RiskOfficer, RiskViolation, Trade
 from codes.stop_take_profit import StopTakeProfitManager
 from codes.technical import TechnicalAnalysis
 from codes.trade_journal import TradeJournal
-from config.settings import EXECUTION, LOG_CONFIG, RISK
+from config.settings import EXECUTION, LOG_CONFIG, RISK, ModelTier
+from llm.client import LLMClient
 from market_intelligence import market as mil_market
 from market_intelligence import portfolio as mil_portfolio
 from market_intelligence import risk_filter as mil_risk_filter
@@ -99,6 +101,43 @@ def _normalize_watchlist(watchlist: list[str]) -> list[str]:
     return normalized
 
 
+def _watchlist_ticker(entry: object) -> str:
+    if isinstance(entry, dict):
+        return str(entry.get("ticker") or "").strip()
+    return str(entry).strip()
+
+
+def _normalize_watchlist_entries(watchlist: list[object]) -> list[dict]:
+    normalized: list[dict] = []
+    seen: set[str] = set()
+    for raw in watchlist:
+        ticker = _watchlist_ticker(raw)
+        if not re.fullmatch(r"\d{6}", ticker):
+            continue
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        if isinstance(raw, dict):
+            entry = {
+                "ticker": ticker,
+                "setup": str(raw.get("setup") or "TREND"),
+                "confidence": int(raw.get("confidence") or 0),
+                "reason": str(raw.get("reason") or ""),
+            }
+            d_day = raw.get("d_day")
+            if d_day not in (None, ""):
+                entry["d_day"] = str(d_day)
+        else:
+            entry = {
+                "ticker": ticker,
+                "setup": "TREND",
+                "confidence": 0,
+                "reason": "",
+            }
+        normalized.append(entry)
+    return normalized
+
+
 def _scan_watchlist_limit(context: dict) -> int:
     remaining = context.get("risk_budget_remaining", {}) or {}
     monitoring_slots = remaining.get("monitoring_slots")
@@ -154,14 +193,33 @@ def load_watchlist(path: Path = _WATCHLIST_PATH) -> list[str]:
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"[orchestrator_v3] watchlist.json 손상 — 빈 목록 반환: {e}")
         return []
-    return _normalize_watchlist(data.get("watchlist", []))
+    return [entry["ticker"] for entry in _normalize_watchlist_entries(data.get("watchlist", []))]
 
 
-def save_watchlist(watchlist: list[str], path: Path = _WATCHLIST_PATH) -> None:
-    normalized = _normalize_watchlist(watchlist)
+def load_watchlist_entries(path: Path = _WATCHLIST_PATH) -> list[dict]:
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"[orchestrator_v3] watchlist.json 손상 — 빈 목록 반환: {e}")
+        return []
+    return _normalize_watchlist_entries(data.get("watchlist", []))
+
+
+def save_watchlist(watchlist: list[object], path: Path = _WATCHLIST_PATH) -> None:
+    normalized = _normalize_watchlist_entries(watchlist)
     _atomic_write_text(
         path,
-        json.dumps({"watchlist": normalized, "updated_at": datetime.now().isoformat()}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {
+                "watchlist": normalized,
+                "tickers": [entry["ticker"] for entry in normalized],
+                "updated_at": datetime.now().isoformat(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
     )
 
 
@@ -194,6 +252,7 @@ class MQKOrchestratorV3:
         self._regime_agent = RegimeAgent()
         self._review_agent = ReviewAgent()
         self._si_agent = SelfImprovementAgent()
+        self._buy_review_llm = LLMClient()
         self._telegram = TelegramApproval()
         self._journal = TradeJournal()
 
@@ -233,6 +292,7 @@ class MQKOrchestratorV3:
             logger.warning("[V3 ImprovementManager] 텔레그램 인라인 액션 처리 실패: %s", exc)
         self._mil = mil or MILContext(
             kis_api=self._kis_api,
+            kiwoom_api=KiwoomApi(),
             # mcp_client=KISMCPClient(),  # MCP 비활성화
             cache=MILCache(),
             circuit_breaker=CircuitBreaker(),
@@ -241,8 +301,17 @@ class MQKOrchestratorV3:
         self._trading_agent = TradingAgent(mil=self._mil)
         self._last_portfolio_snapshot: tuple[dict, dict] | None = None
 
-    # ── 08:45 PREMARKET ──────────────────────────────────────────────────────
-    def run_premarket_v3(self) -> dict:
+    # ── 08:50 PREMARKET_EARLY (장전거래 전일 비교) ───────────────────────────
+    def run_premarket_early_v3(self) -> dict:
+        """08:50 장전거래 루틴. 전일 종가 기준 포지션 리스크 점검.
+
+        레짐 판단(RegimeAgent)도 실행하되, 아직 장이 열리지 않았으므로 전일 데이터
+        기반임을 컨텍스트에 명시한다. 오늘의 확정 레짐은 09:03 run_premarket_v3()가 담당.
+        """
+        return self.run_premarket_v3(session_type="PREMARKET_EARLY")
+
+    # ── 09:03 PREMARKET (장중 첫번째 레짐 평가) ──────────────────────────────
+    def run_premarket_v3(self, session_type: str = "PREMARKET_REGIME") -> dict:
         market_status = self.run_premarket()  # v2 RegimeAgent.judge() 재사용
         regime = self._last_regime
         save_last_regime(regime, path=_LAST_REGIME_PATH)
@@ -252,10 +321,12 @@ class MQKOrchestratorV3:
         regime_dict = _regime_to_dict(regime)
         context = self._build_context(TradingPhase.PREMARKET, regime_dict, "STABLE", watchlist=[])
         context["next_day_prior"] = load_next_day_premarket_context(path=_NEXT_DAY_PREMARKET_CONTEXT_PATH)
+        context["session_type"] = session_type
         review = self._trading_agent.run(TradingPhase.PREMARKET, context)
         self._record_tool_request(review, TradingPhase.PREMARKET, regime_dict)
         self._alert_on_tool_failures(review, TradingPhase.PREMARKET)
-        self._save_json("premarket_review.json", review)
+        filename = "premarket_early_review.json" if session_type == "PREMARKET_EARLY" else "premarket_review.json"
+        self._save_json(filename, review)
         return market_status
 
     # ── 09:10 / 11:00 / 14:00 SCAN ────────────────────────────────────────────
@@ -269,7 +340,7 @@ class MQKOrchestratorV3:
         self._alert_on_tool_failures(result, TradingPhase.SCAN)
         if not result.get("watchlist"):
             result = self._backfill_scan_result(result, context)
-        save_watchlist(result.get("watchlist", []), path=_WATCHLIST_PATH)
+        save_watchlist(self._watchlist_entries_from_scan_result(result), path=_WATCHLIST_PATH)
         self._save_json("scan_v3.json", result)
         return result
 
@@ -319,7 +390,7 @@ class MQKOrchestratorV3:
                 save_last_regime_dict(regime, path=_LAST_REGIME_PATH)
                 self.run_scan_v3()
 
-        watchlist = load_watchlist(path=_WATCHLIST_PATH)
+        watchlist = load_watchlist_entries(path=_WATCHLIST_PATH)
 
         # 비용 절감 게이트: 평가할 후보도, 청산할 보유 포지션도 없고 시장도 STABLE이면
         # LLM을 호출하지 않는다. 보유 여부는 v3 포지션의 진실의 원천인 TradeJournal 기준
@@ -340,6 +411,7 @@ class MQKOrchestratorV3:
             watchlist=watchlist, risk_guidance_override=risk_guidance,
         )
         result = self._trading_agent.run(TradingPhase.INTRADAY, context)
+        result = self._sanitize_intraday_result(result)
         self._record_tool_request(result, TradingPhase.INTRADAY, regime)
         self._alert_on_tool_failures(result, TradingPhase.INTRADAY)
         self._merge_watchlist_additions(result)
@@ -721,11 +793,74 @@ class MQKOrchestratorV3:
         ]
         if not additions:
             return
-        current = load_watchlist(path=_WATCHLIST_PATH)
-        merged = current + [ticker for ticker in additions if ticker not in current]
+        current = load_watchlist_entries(path=_WATCHLIST_PATH)
+        current_tickers = [entry["ticker"] for entry in current]
+        merged = current + [
+            {"ticker": ticker, "setup": "WATCH_ONLY", "confidence": 0, "reason": "intraday_watchlist_addition"}
+            for ticker in additions
+            if ticker not in current_tickers
+        ]
         if merged != current:
             save_watchlist(merged, path=_WATCHLIST_PATH)
-            logger.info(f"[WATCHLIST MERGE] intraday additions={additions} → {merged}")
+            logger.info(f"[WATCHLIST MERGE] intraday additions={additions} → {[entry['ticker'] for entry in merged]}")
+
+    def _sanitize_intraday_result(self, result: dict) -> dict:
+        if not isinstance(result, dict):
+            return {"action": "NO_TRADE", "reason": "invalid_intraday_result", "proposals": []}
+
+        action = str(result.get("action") or "NO_TRADE").upper()
+        raw_proposals = result.get("proposals") or []
+        if not isinstance(raw_proposals, list):
+            raw_proposals = []
+
+        valid_proposals: list[dict] = []
+        for proposal in raw_proposals:
+            if not isinstance(proposal, dict):
+                continue
+            side = str(proposal.get("side") or "").upper()
+            if side not in {"BUY", "SELL"}:
+                continue
+            valid_proposals.append(proposal)
+
+        if action in {"HOLD", "NO_TRADE"} and valid_proposals:
+            logger.warning(
+                f"[V3 INTRADAY] action={action}인데 실행 proposal {len(valid_proposals)}건 포함 — 안전상 제거"
+            )
+            result = {**result, "proposals": []}
+            return result
+
+        if action == "SELL":
+            valid_proposals = [p for p in valid_proposals if str(p.get("side") or "").upper() == "SELL"]
+        elif action == "BUY":
+            valid_proposals = [p for p in valid_proposals if str(p.get("side") or "").upper() in {"BUY", "SELL"}]
+
+        if valid_proposals != raw_proposals:
+            result = {**result, "proposals": valid_proposals}
+        return result
+
+    def _watchlist_entries_from_scan_result(self, result: dict) -> list[dict]:
+        watchlist = [str(ticker).strip() for ticker in (result.get("watchlist") or [])]
+        candidate_map = {
+            str(item.get("ticker") or "").strip(): item
+            for item in (result.get("candidates") or [])
+            if isinstance(item, dict)
+        }
+        entries: list[dict] = []
+        for ticker in watchlist:
+            if not re.fullmatch(r"\d{6}", ticker):
+                continue
+            candidate = candidate_map.get(ticker, {})
+            entry = {
+                "ticker": ticker,
+                "setup": str(candidate.get("setup") or "TREND"),
+                "confidence": int(candidate.get("confidence") or 0),
+                "reason": str(candidate.get("reason") or ""),
+            }
+            d_day = candidate.get("d_day")
+            if d_day not in (None, ""):
+                entry["d_day"] = str(d_day)
+            entries.append(entry)
+        return entries
 
     def _backfill_scan_result(self, result: dict, context: dict) -> dict:
         """SCAN 결과가 비면 거래대금/상태 기반 deterministic watchlist를 만든다."""
@@ -978,6 +1113,21 @@ class MQKOrchestratorV3:
             logger.warning(f"[V3 RISK BLOCK] {ticker}: {e}")
             return {"action": "BLOCKED", "ticker": ticker, "reason": str(e)}
 
+        buy_review = self._review_v3_buy_proposal(
+            proposal=proposal,
+            snapshot=snapshot,
+            sizing=sizing,
+            portfolio_state=portfolio_state,
+        )
+        if not buy_review.get("approve", True):
+            logger.info(f"[V3 BUY REVIEW] {ticker}: 최종 재판단 거부 - {buy_review.get('reason', '')}")
+            return {
+                "action": "REJECTED",
+                "ticker": ticker,
+                "reason": buy_review.get("reason", "buy_review_rejected"),
+                "buy_review": buy_review,
+            }
+
         approval_request_id = None
         if RISK.require_telegram_approval:
             approval_req = ApprovalRequest(
@@ -1006,7 +1156,88 @@ class MQKOrchestratorV3:
             strategy_type=proposal.get("setup", "TREND"),
         )
         result = self._order_manager.execute_buy(order)
+        if result.success:
+            pnl_sign = "+" if sizing.risk_pct >= 0 else ""
+            try:
+                self._telegram.notify(
+                    f"✅ *매수 체결* {stock_name} ({ticker})\n"
+                    f"체결가: {result.executed_price:,.0f}원 × {result.quantity}주\n"
+                    f"손절: {sizing.stop_loss_price:,.0f}원 | 리스크: {pnl_sign}{sizing.risk_pct:.3f}%\n"
+                    f"확신도: {proposal.get('confidence', 0)}% | {proposal.get('reason', '')[:200]}"
+                )
+            except Exception as e:
+                logger.warning(f"[BUY 체결 알림] 텔레그램 발송 실패: {e}")
         return {"action": "BUY_EXECUTED", "ticker": ticker, "success": result.success}
+
+    def _review_v3_buy_proposal(
+        self,
+        proposal: dict,
+        snapshot,
+        sizing,
+        portfolio_state: PortfolioState,
+    ) -> dict:
+        llm = getattr(self, "_buy_review_llm", None)
+        if llm is None:
+            return {"approve": True, "reason": "buy_review_unavailable"}
+
+        stock_name = getattr(snapshot, "name", "") or proposal.get("ticker", "")
+        current_price = float(getattr(snapshot, "current_price", 0.0) or 0.0)
+        change_pct = float(getattr(snapshot, "change_pct", 0.0) or 0.0)
+        trading_value = self._first_number(
+            getattr(snapshot, "__dict__", {}),
+            ["trading_value_krw", "trading_value", "acml_tr_pbmn", "volume_value"],
+        )
+        market_cap = self._first_number(
+            getattr(snapshot, "__dict__", {}),
+            ["market_cap", "market_cap_krw", "hts_avls"],
+        )
+        portfolio_payload = {
+            "total_capital_krw": round(float(getattr(portfolio_state, "total_capital", 0.0) or 0.0), 0),
+            "daily_pnl_krw": round(float(getattr(portfolio_state, "daily_pnl", 0.0) or 0.0), 0),
+            "open_positions_count": len(getattr(portfolio_state, "open_positions", []) or []),
+            "theme_exposure": getattr(portfolio_state, "theme_exposure", {}) or {},
+        }
+        review_payload = {
+            "ticker": proposal.get("ticker"),
+            "name": stock_name,
+            "setup": proposal.get("setup", "TREND"),
+            "confidence": proposal.get("confidence", 0),
+            "reason": proposal.get("reason", ""),
+            "current_price": current_price,
+            "change_pct": change_pct,
+            "trading_value_krw": trading_value,
+            "market_cap_krw": market_cap,
+            "stop_loss_price": float(sizing.stop_loss_price),
+            "quantity": int(sizing.quantity),
+            "risk_pct": float(sizing.risk_pct),
+        }
+        user_msg = (
+            "MQK soul 전략 기준 최종 매수 재판단이다.\n"
+            "후발주, 약한 2등주, 과도한 추격은 거부하고 진짜 본류 대장 또는 고품질 리더 진입만 승인하라.\n"
+            "리뷰 실패 시 시스템은 fail-open으로 진행하므로, 판단 가능할 때만 명확히 거부하라.\n\n"
+            f"proposal={json.dumps(review_payload, ensure_ascii=False)}\n"
+            f"portfolio={json.dumps(portfolio_payload, ensure_ascii=False)}\n\n"
+            '반드시 단일 JSON으로 답하라: {"approve": true|false, "reason": "..."}'
+        )
+        try:
+            result = llm.call(
+                system=(
+                    "You are the final MQK buy reviewer. "
+                    "Approve only high-quality leader entries consistent with the soul strategy. "
+                    "Reject laggards, weak followers, and overextended chase entries. "
+                    "Return valid JSON only."
+                ),
+                user=user_msg,
+                tier=ModelTier.REASONING,
+                expect_json=True,
+            )
+        except Exception as exc:
+            logger.warning(f"[V3 BUY REVIEW] {proposal.get('ticker')}: 리뷰 호출 실패 — fail-open: {exc}")
+            return {"approve": True, "reason": "buy_review_call_failed"}
+
+        approve = bool(result.get("approve", True))
+        reason = str(result.get("reason") or ("approved" if approve else "buy_review_rejected"))
+        return {"approve": approve, "reason": reason}
 
     def _process_v3_sell_proposal(
         self, proposal: dict, after_hours: bool = False, require_approval: bool = False
@@ -1054,6 +1285,18 @@ class MQKOrchestratorV3:
             after_hours=after_hours,
         )
         result = self._order_manager.execute_sell(order)
+        if result.success:
+            pnl_sign = "+" if pnl_pct >= 0 else ""
+            pnl_color = "🟢" if pnl_pct >= 0 else "🔴"
+            try:
+                self._telegram.notify(
+                    f"{pnl_color} *매도 체결* {stock_name} ({ticker})\n"
+                    f"체결가: {result.executed_price:,.0f}원 × {result.quantity}주\n"
+                    f"손익: {pnl_sign}{pnl_pct:.2f}% ({pnl_sign}{pnl_amount:,.0f}원)\n"
+                    f"사유: {proposal.get('reason', '')[:200]}"
+                )
+            except Exception as e:
+                logger.warning(f"[SELL 체결 알림] 텔레그램 발송 실패: {e}")
         return {"action": "SELL_EXECUTED", "ticker": ticker, "success": result.success}
 
     # ── v3 독립 기반 유틸/장전/복기 ──────────────────────────────────────────

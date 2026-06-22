@@ -153,3 +153,13 @@ def test_notify_falls_back_to_approval_chat_id_when_notify_chat_ids_empty():
     approval.notify("hello")
 
     assert [item["chat_id"] for item in approval.sent] == ["primary"]
+
+
+def test_notify_improvement_proposal_sends_inline_buttons():
+    approval = FakeNotifyTelegramApproval("primary")
+
+    approval.notify_improvement_proposal(12, "proposal message")
+
+    keyboard = approval.sent[0]["reply_markup"]["inline_keyboard"][0]
+    assert keyboard[0]["callback_data"] == "approve_proposal:12"
+    assert keyboard[1]["callback_data"] == "reject_proposal:12"

@@ -12,8 +12,10 @@ from agents.regime_agent import (
 class FakeLLMClient:
     def __init__(self, response):
         self._response = response
+        self.last_user = None
 
     def call(self, system, user, tier=None, expect_json=True):
+        self.last_user = user
         return self._response
 
 
@@ -39,6 +41,29 @@ def test_judge_extracts_risk_guidance_and_drift_triggers():
     assert judgment.drift_triggers[0]["id"] == "index_sharp_drop"
     assert judgment.cooldown_minutes == 60
     assert judgment.max_daily_triggers == 3
+
+
+def test_judge_uses_opening_weighting_by_default():
+    raw = {"status": "GREEN", "regime": "UPTREND", "confidence": 70, "reason": "강세"}
+    llm = FakeLLMClient(raw)
+    agent = RegimeAgent(llm=llm)
+
+    agent.judge({})
+
+    assert "장초반 레짐 평가 데이터" in llm.last_user
+    assert "전일 확정 데이터를 주요 근거로" in llm.last_user
+
+
+def test_judge_uses_intraday_weighting_for_midday():
+    raw = {"status": "GREEN", "regime": "UPTREND", "confidence": 70, "reason": "강세"}
+    llm = FakeLLMClient(raw)
+    agent = RegimeAgent(llm=llm)
+
+    agent.judge({}, evaluation_mode="MIDDAY", evaluation_time="11:03")
+
+    assert "장중 레짐 재평가 데이터 (11:03 기준)" in llm.last_user
+    assert "당일 장중 데이터를 주요 근거로 사용" in llm.last_user
+    assert "전일 확정 데이터는 배경 참고로만 사용" in llm.last_user
 
 
 def test_judge_clamps_extreme_risk_guidance_via_safety_bounds():

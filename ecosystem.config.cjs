@@ -53,12 +53,23 @@ module.exports = {
     // v3로 전환 시 반드시 v2 4개 앱을 `pm2 stop`/`pm2 delete` 하거나 cron_restart를
     // 주석 처리한 후 v3를 시작하세요. (운영 전환은 수동 결정 사항)
     {
+      name: "mqk-v3-premarket-early",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "premarket_early" },
+      // KST 08:50 — 장전거래 포지션 점검 (전일 종가 기준).
+      // 09:03 premarket보다 먼저 실행되어 오늘의 첫 리스크 점검을 담당한다.
+      cron_restart: "50 8 * * 1-5",
+      autorestart: false,
+    },
+    {
       name: "mqk-v3-premarket",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "premarket" },
-      // KST 09:03 / 11:03 / 13:03 — 레짐 재평가 3회.
+      // KST 09:03 / 11:03 / 13:03 — 장중 첫번째 레짐 평가 포함 3회.
       // :03인 이유: intraday */10 틱(:00)과 flock 충돌을 피하기 위함.
       cron_restart: "3 9,11,13 * * 1-5",
       autorestart: false,

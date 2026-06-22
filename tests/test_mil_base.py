@@ -1,6 +1,7 @@
 """MILContext 테스트 - 캐시 + circuit breaker + fetch 통합"""
 import pytest
 
+from broker.kiwoom_api import KiwoomRateLimitError
 from market_intelligence.base import MILContext, ToolFailure
 from market_intelligence.circuit_breaker import CircuitBreaker
 
@@ -74,3 +75,18 @@ def test_cached_call_opens_circuit_after_threshold_then_blocks_without_fetch(mon
         ctx.cached_call("get_market_context", "SCAN", {"i": 99}, fetch)
 
     assert len(fetch_calls) == 6  # 처음 두 호출은 각 3회 재시도, 세 번째 호출은 circuit breaker가 fetch를 막음
+
+
+def test_cached_call_does_not_retry_kiwoom_rate_limit(monkeypatch):
+    monkeypatch.setattr("market_intelligence.base.time.sleep", lambda _: None)
+    ctx = MILContext(kis_api=StubKisApi())
+    fetch_calls = []
+
+    def fetch():
+        fetch_calls.append(1)
+        raise KiwoomRateLimitError("cooldown active")
+
+    with pytest.raises(ToolFailure, match="cooldown active"):
+        ctx.cached_call("get_sector_investor_flow", "INTRADAY", {}, fetch)
+
+    assert len(fetch_calls) == 1

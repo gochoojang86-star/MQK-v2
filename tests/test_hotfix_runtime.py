@@ -86,10 +86,16 @@ def test_non_reasoning_models_use_max_tokens_and_log_usage():
 def test_telegram_news_source_handles_none_chat():
     event = SimpleNamespace(chat=None)
 
-    assert _source_from_event(event) == ""
+    assert _source_from_event(event) == "telegram"
 
 
 def test_telegram_news_source_handles_missing_username():
     event = SimpleNamespace(chat=SimpleNamespace())
 
-    assert _source_from_event(event) == ""
+    assert _source_from_event(event) == "telegram"
+
+
+def test_telegram_news_source_prefers_alias_map_by_channel_id():
+    event = SimpleNamespace(chat=SimpleNamespace(id=1208429502, username=None, title="주식 급등일보"), chat_id=-1001208429502)
+
+    assert _source_from_event(event, {1208429502: "FastStockNews"}) == "FastStockNews"

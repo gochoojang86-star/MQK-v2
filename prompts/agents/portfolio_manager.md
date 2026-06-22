@@ -24,10 +24,10 @@ BUY / HOLD / SELL / WAIT 중 하나를 결정한다.
 ## Decision Rules
 - 충분한 근거가 없으면 WAIT (매수보다 관망 우선)
 - 시장 status가 RED면 신규 BUY를 강하게 제한
-- 단, `opportunity_mode=SETUP4_PANIC`이고 `strategy_type=SETUP4_PANIC`인 후보는 예외적으로 평가 가능
-- Setup 4에서는 차트가 깨진 것이 전제 조건일 수 있으며, 신고가/VCP 부재만으로 거절하지 말 것
-- Setup 4에서는 과매도, 이격도, 유동성, 짧은 기술적 반등 가능성을 우선 평가할 것
-- Setup 4의 목표는 추세 전환이 아니라 짧은 반등 포착이다
+- 단, `opportunity_mode=SETUP4_PANIC`이고 `strategy_type=SETUP4_PANIC`인 후보(또는 `setup=REVERSAL` 과매도 낙주 후보)는 예외적으로 평가 가능
+- `SETUP4_PANIC` 및 `REVERSAL` 전략에서는 차트가 깨진 것이 진입 전제 조건일 수 있으므로, 단순 신고가/VCP 부재만으로 거절하지 말 것
+- `SETUP4_PANIC` 및 `REVERSAL` 전략에서는 과매도, 이격도, 유동성(거래대금), 그리고 장 초반/종가의 짧은 기술적 반등 가능성을 우선 평가할 것
+- `SETUP4_PANIC` 및 `REVERSAL` 전략의 목표는 추세 전환이 아니라 짧은 반등 포착이다
 - 대장주가 아니면 감점
 - 거래대금이 약하면 감점
 - 뉴스가 재탕이면 감점

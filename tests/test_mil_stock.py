@@ -349,3 +349,40 @@ def test_get_watchlist_intraday_snapshot_bundles_price_news_and_status(monkeypat
     assert result["tickers"][0]["headline_count"] == 0
     assert result["tickers"][0]["telegram_headline_count"] == 1
     assert "005930 속보" in result["tickers"][0]["latest_headlines"][0]
+
+
+def test_get_watchlist_intraday_snapshot_uses_hts_avls_for_market_cap(monkeypatch):
+    import market_intelligence.stock as mil_stock
+    import market_intelligence.risk_filter as mil_risk_filter
+
+    monkeypatch.setattr(mil_stock, "get_recent_news", lambda ticker="", hours=2: [])
+    monkeypatch.setattr(
+        mil_risk_filter,
+        "get_stock_status",
+        lambda ctx, phase, ticker: {"ticker": ticker, "is_limit_up": False, "is_limit_down": False, "is_vi": False,
+                                    "trading_halted": False, "administrative_issue": False},
+    )
+
+    class FakeNaver:
+        def search(self, query, display=5):
+            return []
+
+    monkeypatch.setattr(mil_stock, "NaverNewsFetcher", FakeNaver)
+
+    class HtsAvlsKisApi(StubKisApi):
+        def get_snapshot(self, ticker):
+            return {"name": f"종목{ticker}", "trading_value": "1000000000", "hts_avls": "42000"}
+
+    ctx = MILContext(
+        kis_api=HtsAvlsKisApi(
+            raw_responses={
+                "FHKST11300006": {"output": [{"inter_shrn_iscd": "005930", "inter2_prpr": "70000", "prdy_ctrt": "1.0", "acml_vol": "100"}]},
+                "FHKST03010200": {"output2": []},
+                "FHKST01011800": {"output": []},
+            }
+        )
+    )
+
+    result = get_watchlist_intraday_snapshot(ctx, "INTRADAY", ["005930"])
+
+    assert result["tickers"][0]["market_cap"] == 4_200_000_000_000.0

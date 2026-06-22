@@ -47,11 +47,11 @@
   },
   "next_day_premarket_context": {
     "previous_close_prior": {},
-    "tomorrow_bias": {"risk_posture": "NORMAL|DEFENSIVE", "scanner_bias": "NORMAL|RELATIVE_STRENGTH_ONLY"}
+    "tomorrow_bias": {"risk_posture": "NORMAL|DEFENSIVE", "scanner_bias": "NORMAL|RELATIVE_STRENGTH_ONLY"},
+    "focus_themes": ["내일 주목할 테마·섹터"],
+    "intraday_focus": ["내일 장초반 반드시 확인할 섹터/수급 포인트"],
+    "tomorrow_watch_items": ["내일 확인할 이벤트·뉴스·공시"]
   },
-  "tomorrow_watch_items": [
-    "내일 장초반 반드시 확인할 섹터/뉴스/수급 포인트"
-  ],
   "reason": ""
 }
 ```

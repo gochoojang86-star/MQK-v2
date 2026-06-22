@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
+logger = logging.getLogger("mqk_v3")
 
 
 @dataclass
@@ -24,11 +27,19 @@ class KiwoomConfig:
     ws_base_url: str = os.environ.get("KIWOOM_WS_URL", "wss://api.kiwoom.com:10000")
 
 
+class KiwoomRateLimitError(RuntimeError):
+    """키움 API 호출 제한/쿨다운 상태."""
+
+
 class KiwoomApi:
     def __init__(self, config: KiwoomConfig | None = None, token_cache_path: Path | None = None):
         self._cfg = config or KiwoomConfig()
         self._token: str | None = None
         self._token_expires_at: float = 0.0
+        self._last_call_at: dict[str, float] = {}
+        self._cooldown_until: dict[str, float] = {}
+        self._min_interval_seconds = float(os.environ.get("KIWOOM_MIN_INTERVAL_SECONDS", "0.35"))
+        self._rate_limit_cooldown_seconds = float(os.environ.get("KIWOOM_RATE_LIMIT_COOLDOWN_SECONDS", "30"))
         self._token_cache_path = token_cache_path or (
             Path(__file__).parent.parent / "data" / "cache" / "kiwoom_token.json"
         )
@@ -111,6 +122,84 @@ class KiwoomApi:
         self._save_cached_token(token, str(data.get("expires_dt") or ""))
         return token
 
+    def _guard_rate_limit(self, api_id: str) -> None:
+        cooldown_until = self._cooldown_until.get(api_id, 0.0)
+        now = time.time()
+        if now < cooldown_until:
+            remaining = max(cooldown_until - now, 0.0)
+            raise KiwoomRateLimitError(
+                f"Kiwoom API cooldown active for {api_id} ({remaining:.1f}s remaining)"
+            )
+
+    def _respect_min_interval(self, api_id: str) -> None:
+        last_call_at = self._last_call_at.get(api_id, 0.0)
+        wait_seconds = self._min_interval_seconds - (time.time() - last_call_at)
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+
+    def _mark_call(self, api_id: str) -> None:
+        self._last_call_at[api_id] = time.time()
+
+    def _apply_rate_limit(self, api_id: str, reason: str) -> None:
+        cooldown_until = time.time() + self._rate_limit_cooldown_seconds
+        self._cooldown_until[api_id] = cooldown_until
+        logger.warning(
+            "[KiwoomApi] rate limit detected for %s — cooldown %.1fs (%s)",
+            api_id,
+            self._rate_limit_cooldown_seconds,
+            reason,
+        )
+
+    def _looks_like_rate_limit(self, payload: Any) -> bool:
+        if payload is None:
+            return False
+        try:
+            serialized = json.dumps(payload, ensure_ascii=False).lower()
+        except (TypeError, ValueError):
+            serialized = str(payload).lower()
+        markers = (
+            "rate limit",
+            "too many",
+            "호출제한",
+            "전송제한",
+            "조회제한",
+            "요청제한",
+            "접근제한",
+        )
+        return any(marker in serialized for marker in markers)
+
+    def _rest_request(self, api_id: str, path: str, payload: dict[str, Any], timeout: int = 10) -> dict[str, Any]:
+        self._guard_rate_limit(api_id)
+        self._respect_min_interval(api_id)
+        resp = requests.post(
+            f"{self._cfg.base_url}{path}",
+            headers=self._api_headers(api_id),
+            json=payload,
+            timeout=timeout,
+        )
+        self._mark_call(api_id)
+        if resp.status_code == 429:
+            self._apply_rate_limit(api_id, "http_429")
+            raise KiwoomRateLimitError(f"Kiwoom API rate limited: {api_id} (HTTP 429)")
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = None
+            try:
+                body = resp.json()
+            except ValueError:
+                body = resp.text
+            if self._looks_like_rate_limit(body):
+                self._apply_rate_limit(api_id, f"http_error:{resp.status_code}")
+                raise KiwoomRateLimitError(f"Kiwoom API rate limited: {api_id}") from exc
+            raise
+
+        data = resp.json()
+        if self._looks_like_rate_limit(data):
+            self._apply_rate_limit(api_id, "payload_message")
+            raise KiwoomRateLimitError(f"Kiwoom API rate limited: {api_id}")
+        return data
+
     def _ws_request(self, api_id: str, payload: dict) -> dict[str, Any]:
         """키움 WebSocket 단발 요청-응답.
 
@@ -119,6 +208,8 @@ class KiwoomApi:
         """
         import websocket as _ws  # websocket-client
 
+        self._guard_rate_limit(api_id)
+        self._respect_min_interval(api_id)
         token = self._get_token()
         headers = [
             f"api-id: {api_id}",
@@ -134,6 +225,10 @@ class KiwoomApi:
             conn.send(json.dumps({"trnm": "LOGIN", "token": token}, ensure_ascii=False))
             login_raw = conn.recv()
             login = self._parse_ws_response(login_raw)
+            self._mark_call(api_id)
+            if self._looks_like_rate_limit(login):
+                self._apply_rate_limit(api_id, "ws_login_payload")
+                raise KiwoomRateLimitError(f"Kiwoom WS rate limited during login: {api_id}")
             if login.get("return_code", -1) != 0:
                 raise RuntimeError(f"키움 WS 로그인 실패: {login.get('return_msg')} (code={login.get('return_code')})")
 
@@ -142,7 +237,11 @@ class KiwoomApi:
         finally:
             conn.close()
 
-        return self._parse_ws_response(raw)
+        parsed = self._parse_ws_response(raw)
+        if self._looks_like_rate_limit(parsed):
+            self._apply_rate_limit(api_id, "ws_payload")
+            raise KiwoomRateLimitError(f"Kiwoom WS rate limited: {api_id}")
+        return parsed
 
     def _parse_ws_response(self, raw: str) -> dict[str, Any]:
         try:
@@ -181,19 +280,16 @@ class KiwoomApi:
         amt_qty_tp: "0"=금액(억원), "1"=수량.
         orgn_netprps = 기관계 순매수, frgnr_netprps = 외국인 순매수.
         """
-        resp = requests.post(
-            f"{self._cfg.base_url}/api/dostk/sect",
-            headers=self._api_headers("ka10051"),
-            json={
+        return self._rest_request(
+            "ka10051",
+            "/api/dostk/sect",
+            {
                 "mrkt_tp": mrkt_tp,
                 "amt_qty_tp": amt_qty_tp,
                 "base_dt": "",
                 "stex_tp": stex_tp,
             },
-            timeout=10,
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def bid_queue_surge(
         self,
@@ -212,10 +308,10 @@ class KiwoomApi:
         tm_tp: 기준 시간(분) "30"|"60"|"120".
         sdnin_rt = 급증률(%), tot_buy_qty = 총매수잔량.
         """
-        resp = requests.post(
-            f"{self._cfg.base_url}/api/dostk/rkinfo",
-            headers=self._api_headers("ka10021"),
-            json={
+        return self._rest_request(
+            "ka10021",
+            "/api/dostk/rkinfo",
+            {
                 "mrkt_tp": mrkt_tp,
                 "trde_tp": trde_tp,
                 "sort_tp": sort_tp,
@@ -224,10 +320,7 @@ class KiwoomApi:
                 "stk_cnd": stk_cnd,
                 "stex_tp": stex_tp,
             },
-            timeout=10,
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def theme_groups(
         self,
@@ -239,10 +332,10 @@ class KiwoomApi:
         stk_cd: str = "",
     ) -> dict[str, Any]:
         """ka90001 테마그룹별요청."""
-        resp = requests.post(
-            f"{self._cfg.base_url}/api/dostk/thme",
-            headers=self._api_headers("ka90001"),
-            json={
+        return self._rest_request(
+            "ka90001",
+            "/api/dostk/thme",
+            {
                 "qry_tp": qry_tp,
                 "stk_cd": stk_cd,
                 "date_tp": date_tp,
@@ -250,10 +343,7 @@ class KiwoomApi:
                 "flu_pl_amt_tp": flu_pl_amt_tp,
                 "stex_tp": stex_tp,
             },
-            timeout=10,
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def realtime_viewing_rank(self, qry_tp: str = "1") -> dict[str, Any]:
         """ka00198 실시간종목조회순위 (빅데이터 기반).
@@ -261,14 +351,7 @@ class KiwoomApi:
         qry_tp: "1"=1분, "2"=10분, "3"=1시간, "4"=당일누적, "5"=30초
         반환: item_inq_rank 리스트 (stk_cd, stk_nm, bigd_rank, rank_chg_sign, base_comp_chgr)
         """
-        resp = requests.post(
-            f"{self._cfg.base_url}/api/dostk/stkinfo",
-            headers=self._api_headers("ka00198"),
-            json={"qry_tp": qry_tp},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._rest_request("ka00198", "/api/dostk/stkinfo", {"qry_tp": qry_tp})
 
     def theme_components(
         self,
@@ -277,18 +360,15 @@ class KiwoomApi:
         stex_tp: str = "1",
     ) -> dict[str, Any]:
         """ka90002 테마구성종목요청."""
-        resp = requests.post(
-            f"{self._cfg.base_url}/api/dostk/thme",
-            headers=self._api_headers("ka90002"),
-            json={
+        return self._rest_request(
+            "ka90002",
+            "/api/dostk/thme",
+            {
                 "date_tp": date_tp,
                 "thema_grp_cd": thema_grp_cd,
                 "stex_tp": stex_tp,
             },
-            timeout=10,
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def foreign_institution_top(
         self,
@@ -298,19 +378,16 @@ class KiwoomApi:
         stex_tp: str = "1",
     ) -> dict[str, Any]:
         """ka90009 외국인기관매매상위요청. 외인/기관 순매수·순매도 상위 종목."""
-        resp = requests.post(
-            f"{self._cfg.base_url}/api/dostk/rkinfo",
-            headers=self._api_headers("ka90009"),
-            json={
+        return self._rest_request(
+            "ka90009",
+            "/api/dostk/rkinfo",
+            {
                 "mrkt_tp": mrkt_tp,
                 "amt_qty_tp": amt_qty_tp,
                 "qry_dt_tp": qry_dt_tp,
                 "stex_tp": stex_tp,
             },
-            timeout=10,
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def foreign_continuous_rank(
         self,
@@ -320,41 +397,24 @@ class KiwoomApi:
         stex_tp: str = "1",
     ) -> dict[str, Any]:
         """ka10035 외인연속순매매상위요청. trde_tp=2(순매수)."""
-        resp = requests.post(
-            f"{self._cfg.base_url}/api/dostk/rkinfo",
-            headers=self._api_headers("ka10035"),
-            json={
+        return self._rest_request(
+            "ka10035",
+            "/api/dostk/rkinfo",
+            {
                 "mrkt_tp": mrkt_tp,
                 "trde_tp": trde_tp,
                 "base_dt_tp": base_dt_tp,
                 "stex_tp": stex_tp,
             },
-            timeout=10,
         )
-        resp.raise_for_status()
-        return resp.json()
 
     def volume_surge(self, mrkt_tp: str = "000") -> dict[str, Any]:
         """ka10023 거래량급증요청."""
-        resp = requests.post(
-            f"{self._cfg.base_url}/api/dostk/rkinfo",
-            headers=self._api_headers("ka10023"),
-            json={"mrkt_tp": mrkt_tp},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._rest_request("ka10023", "/api/dostk/rkinfo", {"mrkt_tp": mrkt_tp})
 
     def intraday_investor_rank(self, trde_tp: str) -> dict[str, Any]:
         """ka10065 장중투자자별매매상위요청. trde_tp: 1=기관, 2=외국인, 3=개인."""
-        resp = requests.post(
-            f"{self._cfg.base_url}/api/dostk/rkinfo",
-            headers=self._api_headers("ka10065"),
-            json={"trde_tp": trde_tp},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        return self._rest_request("ka10065", "/api/dostk/rkinfo", {"trde_tp": trde_tp})
 
 
 def _expires_dt_to_epoch(value: str) -> float:

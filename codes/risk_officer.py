@@ -50,7 +50,6 @@ class RiskOfficer:
         """
         self._check_averaging_down(proposal, state)
         self._check_daily_loss(state)
-        self._check_max_positions(state)
         self._check_single_position_size(proposal, state)
         self._check_theme_exposure(proposal, state)
         self._check_trade_risk(proposal, state)
@@ -73,14 +72,6 @@ class RiskOfficer:
                 "MAX_DAILY_LOSS",
                 f"일일 손실 {daily_loss_pct:.2f}% >= 한도 {self._cfg.max_daily_loss_pct}%. "
                 "오늘 신규 매수 불가."
-            )
-
-    def _check_max_positions(self, state: PortfolioState) -> None:
-        if len(state.open_positions) >= self._cfg.max_positions:
-            raise RiskViolation(
-                "MAX_POSITIONS",
-                f"보유종목 {len(state.open_positions)}개 = 최대 {self._cfg.max_positions}개. "
-                "신규 매수 불가."
             )
 
     def _check_single_position_size(self, proposal: TradeProposal, state: PortfolioState) -> None:
@@ -122,8 +113,8 @@ class RiskOfficer:
             "open_positions": len(state.open_positions),
             "max_positions": self._cfg.max_positions,
             "theme_exposure": state.theme_exposure,
-            "trading_allowed": daily_loss_pct < self._cfg.max_daily_loss_pct
-                               and len(state.open_positions) < self._cfg.max_positions,
+            "trading_allowed": daily_loss_pct < self._cfg.max_daily_loss_pct,
+            "max_positions_guidance_hit": len(state.open_positions) >= self._cfg.max_positions,
         }
 
 

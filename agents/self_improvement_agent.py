@@ -57,7 +57,7 @@ class SelfImprovementAgent:
 
         stats   = self._compute_stats(trade_history)
         user_msg = self._build_prompt(stats, journal_summary)
-        raw     = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.REASONING)
+        raw     = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.FAST)
 
         proposals = []
         for p in raw.get("improvement_proposals", [])[:5]:

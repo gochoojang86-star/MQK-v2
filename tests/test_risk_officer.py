@@ -53,16 +53,14 @@ def test_daily_loss_limit():
     assert exc_info.value.rule == "MAX_DAILY_LOSS"
 
 
-def test_max_positions_blocked():
+def test_max_positions_is_no_longer_hard_block():
     officer = RiskOfficer()
     proposal = make_proposal()
     positions = [
         {"ticker": f"A{i}", "quantity": 10} for i in range(5)
     ]
     state = make_state(open_positions=positions)
-    with pytest.raises(RiskViolation) as exc_info:
-        officer.check(proposal, state)
-    assert exc_info.value.rule == "MAX_POSITIONS"
+    officer.check(proposal, state)
 
 
 def test_theme_exposure_blocked():

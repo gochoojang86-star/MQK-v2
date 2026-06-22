@@ -48,6 +48,9 @@
       "expected_effect": "",
       "risk": "",
       "requires_backtest": true,
+      "settings_patch": [
+        {"section": "RISK|SCANNER|LLM_CONFIG|EXECUTION", "key": "필드명", "value": "변경할 값"}
+      ],
       "auto_apply": false
     }
   ]

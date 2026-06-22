@@ -29,7 +29,8 @@ class RiskConfig:
     atr_multiplier: float = 1.5
     max_stop_loss_pct: float = 10.0          # 손절폭은 유연하되 진입가 대비 최대 10%
     allow_averaging_down: bool = False
-    require_telegram_approval: bool = True
+    # 실전 전환 시 runtime_overrides 또는 이 값을 True로 변경
+    require_telegram_approval: bool = False
 
 
 @dataclass(frozen=True)

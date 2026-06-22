@@ -42,6 +42,7 @@
 - `STABLE`일 때: `risk_guidance_delta`는 빈 객체 `{}`, `new_status`는 `null`
 - `CAUTION`일 때: `risk_guidance_delta`에 조정값, `new_status`는 `null`
 - `REGIME_SHIFT`일 때: `new_status`에 새 상태 필수, `risk_guidance_delta`도 함께 제공
+- *중요*: `risk_guidance_delta` 내의 설정값(예: `buy_confidence_threshold`, `risk_per_trade_pct` 등)은 상대적인 증감(+5, -10 등)이 아니라, **기존 설정을 덮어쓸 새로운 절대값**을 의미합니다. 절대값으로 기입하세요.
 
 ## Forbidden
 - 직접 주문/매수/매도 판단 금지 (TradingAgent의 역할)
