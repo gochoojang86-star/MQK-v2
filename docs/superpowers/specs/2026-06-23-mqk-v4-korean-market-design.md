@@ -178,7 +178,7 @@ class TradingSetupV4(str, Enum):
 
 ## 9. 미결 사항
 
-- [ ] `get_limit_up_stocks` KIS API 상세 파라미터 확인 (FHPST01700000)
-- [ ] `get_intraday_volume_trend` 분봉 간격 및 임계값 결정 (10분봉 vs 5분봉)
-- [ ] 세력 지지선 산출 방법 정의 (진입가 기준 vs 당일 저점 기준)
-- [ ] 최대 동시 포지션 수 (v3와 동일하게 4개 유지할지 검토)
+- [x] `get_limit_up_stocks`: FHPST01700000(등락률순위) + change_pct >= 25% 필터
+- [x] `get_intraday_volume_trend`: 10분봉, 최근 3봉 vs 직전 3봉 -40% → VOLUME_DRY
+- [x] 세력 지지선: 당일 저점 하향돌파 + 해당 봉 거래대금 ≥ 직전10봉 평균 2배
+- [x] 최대 포지션: 3개 (v3의 4개에서 축소, 집중 투자)
