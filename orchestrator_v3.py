@@ -124,6 +124,9 @@ def _normalize_watchlist_entries(watchlist: list[object]) -> list[dict]:
                 "confidence": int(raw.get("confidence") or 0),
                 "reason": str(raw.get("reason") or ""),
             }
+            cluster = raw.get("cluster")
+            if cluster not in (None, ""):
+                entry["cluster"] = str(cluster)
             d_day = raw.get("d_day")
             if d_day not in (None, ""):
                 entry["d_day"] = str(d_day)
@@ -773,12 +776,16 @@ class MQKOrchestratorV3:
                 "daily_loss_remaining_pct": daily_loss_remaining,
             },
             watchlist=watchlist,
-            exploration_policy={
-                "allow_intraday_discovery": phase == TradingPhase.INTRADAY,
-                "max_new_tickers": 2 if phase == TradingPhase.INTRADAY else 0,
-                "require_strong_evidence": True,
-                "discovery_priority": "watchlist_first_then_new_leaders",
-            },
+            exploration_policy=(
+                {
+                    "allow_intraday_discovery": True,
+                    "max_new_tickers": 2,
+                    "require_strong_evidence": True,
+                    "discovery_priority": "watchlist_first_then_new_leaders",
+                }
+                if phase == TradingPhase.INTRADAY
+                else None
+            ),
             context_timestamps={
                 "regime": regime.get("timestamp", ""),
                 "now": datetime.now().isoformat(),
@@ -856,6 +863,9 @@ class MQKOrchestratorV3:
                 "confidence": int(candidate.get("confidence") or 0),
                 "reason": str(candidate.get("reason") or ""),
             }
+            cluster = candidate.get("cluster")
+            if cluster not in (None, ""):
+                entry["cluster"] = str(cluster)
             d_day = candidate.get("d_day")
             if d_day not in (None, ""):
                 entry["d_day"] = str(d_day)
@@ -888,6 +898,7 @@ class MQKOrchestratorV3:
                 "change_pct": _to_float(row.get("change_pct")),
                 "source": "kiwoom_theme",
                 "theme_name": row.get("theme_name"),
+                "cluster": row.get("cluster") or row.get("subtheme") or row.get("group_name"),
             }
 
         try:
@@ -916,6 +927,7 @@ class MQKOrchestratorV3:
                     "change_pct": _to_float(row.get("change_pct")),
                     "source": "top_movers",
                     "theme_name": None,
+                    "cluster": row.get("cluster") or row.get("subtheme") or row.get("group_name"),
                 }
 
         candidates = []

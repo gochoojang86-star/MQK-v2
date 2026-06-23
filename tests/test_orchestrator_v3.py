@@ -71,16 +71,61 @@ def test_save_and_load_watchlist_preserves_metadata_entries(tmp_path):
     path = tmp_path / "watchlist.json"
     save_watchlist(
         [
-            {"ticker": "005930", "setup": "TREND", "confidence": 81, "reason": "leader"},
-            {"ticker": "000660", "setup": "D_DAY", "confidence": 77, "reason": "event", "d_day": "2026-07-10"},
+            {"ticker": "005930", "setup": "TREND", "confidence": 81, "reason": "leader", "cluster": "memory_core"},
+            {
+                "ticker": "000660",
+                "setup": "D_DAY",
+                "confidence": 77,
+                "reason": "event",
+                "cluster": "memory_core",
+                "d_day": "2026-07-10",
+            },
         ],
         path=path,
     )
 
     assert load_watchlist(path=path) == ["005930", "000660"]
     assert load_watchlist_entries(path=path) == [
-        {"ticker": "005930", "setup": "TREND", "confidence": 81, "reason": "leader"},
-        {"ticker": "000660", "setup": "D_DAY", "confidence": 77, "reason": "event", "d_day": "2026-07-10"},
+        {"ticker": "005930", "setup": "TREND", "confidence": 81, "reason": "leader", "cluster": "memory_core"},
+        {
+            "ticker": "000660",
+            "setup": "D_DAY",
+            "confidence": 77,
+            "reason": "event",
+            "cluster": "memory_core",
+            "d_day": "2026-07-10",
+        },
+    ]
+
+
+def test_watchlist_entries_from_scan_result_preserves_cluster(tmp_path):
+    orch = make_orchestrator(tmp_path)
+
+    result = {
+        "watchlist": ["005930", "000660"],
+        "candidates": [
+            {"ticker": "005930", "setup": "TREND", "confidence": 81, "reason": "leader", "cluster": "memory_core"},
+            {
+                "ticker": "000660",
+                "setup": "D_DAY",
+                "confidence": 77,
+                "reason": "event",
+                "cluster": "memory_core",
+                "d_day": "2026-07-10",
+            },
+        ],
+    }
+
+    assert orch._watchlist_entries_from_scan_result(result) == [
+        {"ticker": "005930", "setup": "TREND", "confidence": 81, "reason": "leader", "cluster": "memory_core"},
+        {
+            "ticker": "000660",
+            "setup": "D_DAY",
+            "confidence": 77,
+            "reason": "event",
+            "cluster": "memory_core",
+            "d_day": "2026-07-10",
+        },
     ]
 
 

@@ -80,9 +80,21 @@ module.exports = {
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "scan" },
-      // KST 09:17/11:17/14:17 — 09:03 레짐 판단 후 첫 스캔.
+      // KST 09:17/11:17/13:17 — 각 레짐 평가(09:03/11:03/13:03) 직후 14분 내 스캔.
+      // 13:17 추가: 13:03 레짐 재평가와 바로 연결 (기존 74분 갭 해소).
       // :17인 이유: intraday */5 틱(:15, :20)과 flock 충돌을 피하기 위함.
-      cron_restart: "17 9,11,14 * * 1-5",
+      cron_restart: "17 9,11,13 * * 1-5",
+      autorestart: false,
+    },
+    {
+      name: "mqk-v3-scan-eod",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "scan" },
+      // KST 15:00 — 장마감 전 마지막 watchlist 갱신 (기존 14:17에서 이동).
+      // close(15:18) 직전 최신 watchlist 확보 목적.
+      cron_restart: "0 15 * * 1-5",
       autorestart: false,
     },
     {

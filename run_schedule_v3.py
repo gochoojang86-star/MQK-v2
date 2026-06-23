@@ -5,7 +5,7 @@ MQK v3 자동 운영 진입점 (PM2 cron_restart로 각 단계별 실행)
 MQK_PHASE 환경변수 (KST, ecosystem.config.cjs 기준):
   premarket_early - 08:50 장전거래 포지션 점검 (전일 종가 기준, 레짐은 참고용)
   premarket    - 09:03 장중 첫번째 레짐 판단 (시가/초반 흐름 반영) + risk_guidance/drift_triggers 생성
-  scan         - 09:17 / 11:17 / 14:17 watchlist 생성/갱신
+  scan         - 09:17 / 11:17 / 13:17 / 15:00 watchlist 생성/갱신 (각 레짐 평가 직후 14분 내)
   intraday     - 09:00~14:50 */10 드리프트 체크 + 매수/청산 proposal (당일 레짐 없거나 한가하면[watchlist 0+보유 0+STABLE] LLM 스킵)
   late_intraday - 15:08/15:13 폭락일 전용 과매도 낙주 종가 부근 진입 (지수 -3%↓ 또는 RED만, 아니면 LLM 미호출 스킵)
   close        - 15:18 정규장 내 청산 판단 (복기는 market_close가 수행)
@@ -42,7 +42,7 @@ _LOCK_PATH = Path(__file__).parent / "data" / "mqk_v3.lock"
 _PHASE_WINDOWS: dict[str, tuple[str, str] | list[tuple[str, str]]] = {
     "premarket_early": ("08:45", "09:00"),
     "premarket": [("09:00", "09:10"), ("10:55", "11:10"), ("12:55", "13:10")],
-    "scan": ("09:10", "14:30"),
+    "scan": ("09:10", "15:05"),
     "intraday": ("08:55", "15:05"),
     "late_intraday": ("15:05", "15:20"),
     "close": ("15:15", "15:28"),
@@ -132,7 +132,7 @@ def run_intraday() -> None:
     _guard_trading_day()
     orch = _make_orchestrator()
     result = orch.run_intraday_v3()
-    logger.info(f"[v3 INTRADAY] action={result.get('action')}")
+    logger.info(f"[v3 INTRADAY] action={result.get('action')} reason={result.get('reason', '')[:80]}")
 
 
 def run_late_intraday() -> None:
