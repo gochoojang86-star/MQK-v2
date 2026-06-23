@@ -70,6 +70,9 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "get_event_schedule": risk_filter.get_event_schedule,
     "get_open_positions": portfolio.get_open_positions,
     "get_daily_pnl": portfolio.get_daily_pnl,
+    # v4 tools
+    "get_limit_up_stocks": screening.get_limit_up_stocks,
+    "get_intraday_volume_trend": stock.get_intraday_volume_trend,
 }
 
 PHASE_TOOLS: dict[TradingPhase, list[str]] = {
@@ -138,6 +141,8 @@ _NO_ARG_TOOLS = {
     "get_intraday_investor_rank",
     "get_open_positions",
     "get_daily_pnl",
+    # v4 no-arg tools
+    "get_limit_up_stocks",
 }
 _ALLOWED_TOOL_ARGS: dict[str, set[str]] = {
     "get_theme_candidates": {"topn_themes", "theme_date_tp", "component_date_tp"},
@@ -154,6 +159,8 @@ _ALLOWED_TOOL_ARGS: dict[str, set[str]] = {
     "get_stock_status": {"ticker"},
     "get_event_schedule": {"ticker"},
     "get_orderbook": {"ticker"},
+    # v4 tools
+    "get_intraday_volume_trend": {"ticker"},
 }
 _MIN_MONITORING_WATCHLIST = 6
 _MAX_WATCHLIST_SIZE = 10
@@ -171,12 +178,13 @@ def build_context(
     watchlist: list[Any] | None = None,
     context_timestamps: dict | None = None,
     exploration_policy: dict | None = None,
+    allowed_tools: list[str] | None = None,
 ) -> dict:
     """TradingAgent에 사전 주입할 컨텍스트를 구성한다 (스펙 섹션 2.4)."""
     watchlist = watchlist or []
     watchlist_tickers = _normalize_tickers([], watchlist)
     return {
-        "current_phase": phase.value,
+        "current_phase": phase.value if hasattr(phase, "value") else str(phase),
         "trading_date": trading_date,
         "regime": regime,
         "drift_status": drift_status,
@@ -187,7 +195,7 @@ def build_context(
         "watchlist": watchlist,
         "watchlist_tickers": watchlist_tickers,
         "exploration_policy": exploration_policy or {},
-        "allowed_tools": list(PHASE_TOOLS[phase]),
+        "allowed_tools": allowed_tools if allowed_tools is not None else list(PHASE_TOOLS[phase]),
         "context_timestamps": context_timestamps or {},
     }
 
@@ -195,13 +203,24 @@ def build_context(
 class TradingAgent:
     """Phase별 프롬프트 + MIL 도구로 ReAct 루프를 실행하는 단일 LLM 에이전트."""
 
-    def __init__(self, mil: MILContext, llm: LLMClient | None = None, max_steps: int = 12):
+    def __init__(
+        self,
+        mil: MILContext | None = None,
+        llm: LLMClient | None = None,
+        max_steps: int = 12,
+        phase_prompt_names: dict | None = None,
+        phase_tools: dict | None = None,
+        tier_map: dict | None = None,
+    ) -> None:
         self._mil = mil
         self._llm = llm or LLMClient()
         self._max_steps = max_steps
+        self._phase_prompt_names = phase_prompt_names or _PHASE_PROMPT_NAMES
+        self._phase_tools = phase_tools or PHASE_TOOLS
+        self._tier_map_override = tier_map
 
     def run(self, phase: TradingPhase, context: dict) -> dict:
-        system_prompt = inject_agent(_PHASE_PROMPT_NAMES[phase])
+        system_prompt = inject_agent(self._phase_prompt_names[phase])
         transcript = [json.dumps({"context": context}, ensure_ascii=False)]
         tool_history: list[dict[str, Any]] = []
         tier = self._tier_for_phase(phase)
@@ -272,7 +291,9 @@ class TradingAgent:
             return self._fallback_scan_result(context, tool_history, reason="max_steps_exceeded")
         return {"next_action": "final", "action": "NO_TRADE", "reason": "max_steps_exceeded"}
 
-    def _tier_for_phase(self, phase: TradingPhase) -> ModelTier:
+    def _tier_for_phase(self, phase) -> ModelTier:
+        if self._tier_map_override and phase in self._tier_map_override:
+            return self._tier_map_override[phase]
         if phase == TradingPhase.SCAN:
             return ModelTier.REASONING
         if phase in {TradingPhase.PREMARKET, TradingPhase.CLOSE, TradingPhase.MARKET_CLOSE}:
@@ -401,12 +422,13 @@ class TradingAgent:
             return fallback
         return response
 
-    def _execute_tool(self, phase: TradingPhase, tool_name: str, tool_args: dict) -> dict:
+    def _execute_tool(self, phase, tool_name: str, tool_args: dict) -> dict:
         if tool_name not in TOOL_REGISTRY:
             return {"error": "unknown_tool", "tool": tool_name}
 
-        if tool_name not in PHASE_TOOLS[phase]:
-            return {"error": "tool_not_allowed_in_phase", "tool": tool_name, "phase": phase.value}
+        if tool_name not in self._phase_tools.get(phase, PHASE_TOOLS.get(phase, [])):
+            phase_str = phase.value if hasattr(phase, "value") else str(phase)
+            return {"error": "tool_not_allowed_in_phase", "tool": tool_name, "phase": phase_str}
 
         if not isinstance(tool_args, dict):
             return {"error": "invalid_tool_args", "tool": tool_name}
@@ -417,7 +439,8 @@ class TradingAgent:
             call_args["user_id"] = os.environ.get("KIS_HTS_ID", "")
 
         try:
-            return func(self._mil, phase.value, **call_args)
+            phase_str = phase.value if hasattr(phase, "value") else str(phase)
+            return func(self._mil, phase_str, **call_args)
         except ToolFailure as e:
             return {"error": "tool_failure", "tool": tool_name, "message": str(e)}
         except Exception as e:
