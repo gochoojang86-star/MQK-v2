@@ -65,7 +65,7 @@ PHASE_TOOLS_V4: dict[TradingPhaseV4, list[str]] = {
 _TIER_MAP: dict[TradingPhaseV4, ModelTier] = {
     TradingPhaseV4.PREMARKET_SEJUK: ModelTier.REASONING,
     TradingPhaseV4.PREMARKET:       ModelTier.FAST,
-    TradingPhaseV4.SCAN:            ModelTier.REASONING,
+    TradingPhaseV4.SCAN:            ModelTier.STANDARD,
     TradingPhaseV4.INTRADAY:        ModelTier.FAST,
     TradingPhaseV4.CLOSE:           ModelTier.FAST,
     TradingPhaseV4.MARKET_CLOSE:    ModelTier.FAST,

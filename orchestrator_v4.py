@@ -268,6 +268,7 @@ class MQKOrchestratorV4:
         context["volume_surge_candidates"] = volume_surge.get("surge_top", [])
 
         result = self._run_agent(TradingPhaseV4.SCAN, context)
+        logger.info(f"[v4 SCAN reason] {result.get('reason', '')[:300]}")
 
         new_candidates = result.get("candidates", [])
         if new_candidates:

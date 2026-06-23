@@ -248,8 +248,16 @@ class TradingAgent:
                 continue
 
             next_action = response.get("next_action")
+
+            # SCAN 모델이 next_action 없이 WATCHLIST_UPDATE/WAIT를 반환하는 경우 방어 처리.
+            # 최신 모델(gpt-5.4-mini 등)은 ReAct 형식을 건너뛰고 바로 최종 답을 내기도 한다.
+            _is_scan = hasattr(phase, "value") and str(phase.value) == "SCAN" or phase == TradingPhase.SCAN
+            if next_action is None and _is_scan and response.get("action") in {"WATCHLIST_UPDATE", "WAIT"}:
+                response["next_action"] = "final"
+                next_action = "final"
+
             if next_action == "final":
-                if phase == TradingPhase.SCAN:
+                if phase == TradingPhase.SCAN or _is_scan:
                     response = self._maybe_backfill_scan_result(context, tool_history, response)
                 return response
 
