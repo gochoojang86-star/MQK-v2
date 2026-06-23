@@ -37,3 +37,27 @@ def test_scan_has_theme_and_news_tools():
 def test_trading_agent_v4_instantiates():
     agent = TradingAgentV4()
     assert agent is not None
+
+
+# ── 프롬프트-도구 계약 검증 (코덱스 이슈 3 재발 방지) ───────────────────────
+def test_intraday_has_market_context_for_reversal_bottom():
+    """REVERSAL_BOTTOM 진입 전 폭락일 확인에 get_market_context가 필요하다."""
+    tools = PHASE_TOOLS_V4[TradingPhaseV4.INTRADAY]
+    assert "get_market_context" in tools, (
+        "intraday 프롬프트가 REVERSAL_BOTTOM 폭락일 확인에 get_market_context를 요구함"
+    )
+
+
+def test_premarket_phase_has_no_prompt_file():
+    """v4 PREMARKET은 RegimeAgent 직행 — 프롬프트 파일이 없어야 한다."""
+    import os
+    prompt_path = "prompts/agents/trading_agent_v4/premarket.md"
+    assert not os.path.exists(prompt_path), (
+        "premarket.md가 존재하면 실제 실행 경로(RegimeAgent 직행)와 불일치 혼란 유발"
+    )
+
+
+def test_scan_tools_include_market_context():
+    """scan 프롬프트가 get_market_context로 폭락일을 감지한다."""
+    tools = PHASE_TOOLS_V4[TradingPhaseV4.SCAN]
+    assert "get_market_context" in tools

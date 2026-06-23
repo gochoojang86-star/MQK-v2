@@ -165,7 +165,8 @@ class MQKOrchestratorV4:
 
     # ── 09:03 레짐 판단 ────────────────────────────────────────────────────
     def run_premarket_v4(self) -> dict:
-        """v3 RegimeAgent.judge()를 재사용해 레짐을 판단한다."""
+        """레짐 판단은 TradingAgentV4를 거치지 않고 RegimeAgent를 직접 호출한다.
+        v3와 동일한 구조. prompts/agents/trading_agent_v4/premarket.md 는 존재하지 않는다."""
         from agents.regime_agent import RegimeAgent
         agent = RegimeAgent()
 
@@ -320,6 +321,22 @@ class MQKOrchestratorV4:
     def run_market_close_v4(self) -> dict:
         regime = load_last_regime(path=_LAST_REGIME_PATH_V4) or {}
         context = self._build_context_v4(TradingPhaseV4.MARKET_CLOSE, regime, watchlist=[])
+
+        # market_close_data를 코드가 결정론적으로 수집해 주입 (LLM이 스킵하는 것을 방지).
+        # v3와 동일한 패턴 — 프롬프트는 이 데이터를 전제로 해석/prior를 생성한다.
+        try:
+            from market_intelligence import market as mil_market
+            from market_intelligence import portfolio as mil_portfolio
+            snapshot = {
+                "market": mil_market.get_market_context(self._mil, TradingPhaseV4.MARKET_CLOSE.value),
+                "positions": mil_portfolio.get_open_positions(self._mil, TradingPhaseV4.MARKET_CLOSE.value),
+                "daily_pnl": mil_portfolio.get_daily_pnl(self._mil, TradingPhaseV4.MARKET_CLOSE.value),
+            }
+        except Exception as e:
+            logger.warning(f"[v4 MARKET_CLOSE] 스냅샷 수집 실패 — 빈 데이터로 진행: {e}")
+            snapshot = {}
+        context["market_close_data"] = snapshot
+
         result = self._run_agent(TradingPhaseV4.MARKET_CLOSE, context)
         logger.info("[v4 MARKET_CLOSE] 복기 완료")
         return result

@@ -43,6 +43,7 @@ PHASE_TOOLS_V4: dict[TradingPhaseV4, list[str]] = {
         "kw_psearch_title", "kw_psearch_result",
     ],
     TradingPhaseV4.INTRADAY: [
+        "get_market_context",  # REVERSAL_BOTTOM 폭락일 확인용
         "get_watchlist_intraday_snapshot", "get_intraday_candles",
         "get_intraday_volume_trend", "get_realtime_price",
         "get_sector_investor_flow", "get_foreign_institution_rank",
