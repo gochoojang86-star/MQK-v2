@@ -58,7 +58,7 @@ class MQKOrchestratorV4:
         self._journal = TradeJournal()
         self._risk = RiskOfficer()
         self._sizer = PositionSizer()
-        self._order_mgr = OrderManager(kis_api=kis_api)
+        self._order_mgr = OrderManager(kis_api=kis_api, journal=self._journal)
         self._telegram = TelegramApproval()
 
     def _run_agent(self, phase: TradingPhaseV4, context: dict) -> dict:
@@ -177,6 +177,7 @@ class MQKOrchestratorV4:
         regime_dict["regime"] = judgment.regime.value
         regime_dict["opportunity_mode"] = judgment.opportunity_mode.value
         regime_dict["scanner_mode"] = judgment.scanner_mode.value
+        regime_dict["timestamp"] = datetime.now().isoformat()
         logger.info(f"[v4 PREMARKET] {regime_dict.get('regime')} ({regime_dict.get('status')})")
         return regime_dict
 
