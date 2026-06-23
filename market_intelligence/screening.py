@@ -739,6 +739,57 @@ def get_intraday_investor_rank(ctx: MILContext, phase: str) -> dict:
     return ctx.cached_call("get_intraday_investor_rank", phase, {}, fetch)
 
 
+def get_limit_up_stocks(ctx: MILContext, phase: str) -> dict:
+    """당일 상한가(29.9%) 또는 상한가 근접(25%↑) 종목 리스트.
+
+    v4 세력주 매매의 핵심 탐지 도구. 등락률 순위 API(FHPST01700000)에서
+    change_pct >= 25% 종목을 추출한다. is_limit_up은 29% 이상 여부.
+    """
+
+    def fetch():
+        raw = ctx.kis_api.raw_get(
+            "FHPST01700000",
+            "domestic-stock/v1/ranking/fluctuation",
+            {
+                "fid_cond_mrkt_div_code": "J",
+                "fid_cond_scr_div_code": "20170",
+                "fid_input_iscd": "0000",
+                "fid_rank_sort_cls_code": "0",   # 등락률 높은 순
+                "fid_input_cnt_1": "0",
+                "fid_prc_cls_code": "1",
+                "fid_input_price_1": "",
+                "fid_input_price_2": "",
+                "fid_vol_cnt": "",
+                "fid_trgt_cls_code": "0",
+                "fid_trgt_exls_cls_code": "0",
+                "fid_div_cls_code": "0",
+                "fid_rsfl_rate1": "",
+                "fid_rsfl_rate2": "",
+            },
+        )
+        rows = raw.get("output", []) or []
+        stocks = []
+        for row in rows:
+            change_pct = _to_float(row.get("prdy_ctrt"))
+            if change_pct < 25.0:
+                continue
+            trading_value = _to_float(row.get("acml_tr_pbmn"))
+            if trading_value == 0:
+                price = _to_float(row.get("stck_prpr"))
+                volume = _to_float(row.get("acml_vol"))
+                trading_value = price * volume
+            stocks.append({
+                "ticker": row.get("mksc_shrn_iscd"),
+                "name": row.get("hts_kor_isnm"),
+                "change_pct": change_pct,
+                "trading_value_krw": trading_value,
+                "is_limit_up": change_pct >= 29.0,
+            })
+        return {"stocks": stocks}
+
+    return ctx.cached_call("get_limit_up_stocks", phase, {}, fetch)
+
+
 def _to_float(value) -> float:
     if value in (None, ""):
         return 0.0
