@@ -1,4 +1,5 @@
 """TradingAgentV4 구조 테스트"""
+from pathlib import Path
 import pytest
 from agents.trading_agent_v4 import TradingPhaseV4, PHASE_TOOLS_V4, TradingAgentV4
 
@@ -48,16 +49,21 @@ def test_intraday_has_market_context_for_reversal_bottom():
     )
 
 
-def test_premarket_phase_has_no_prompt_file():
-    """v4 PREMARKET은 RegimeAgent 직행 — 프롬프트 파일이 없어야 한다."""
-    import os
-    prompt_path = "prompts/agents/trading_agent_v4/premarket.md"
-    assert not os.path.exists(prompt_path), (
-        "premarket.md가 존재하면 실제 실행 경로(RegimeAgent 직행)와 불일치 혼란 유발"
-    )
+def test_premarket_phase_is_not_supported_by_trading_agent_v4():
+    """v4 PREMARKET은 RegimeAgent 직행이므로 TradingAgentV4가 직접 처리하면 안 된다."""
+    agent = TradingAgentV4()
+    with pytest.raises(ValueError, match="RegimeAgent directly"):
+        agent.run(TradingPhaseV4.PREMARKET, {})
 
 
 def test_scan_tools_include_market_context():
     """scan 프롬프트가 get_market_context로 폭락일을 감지한다."""
     tools = PHASE_TOOLS_V4[TradingPhaseV4.SCAN]
     assert "get_market_context" in tools
+
+
+def test_market_close_prompt_does_not_reference_missing_snapshot():
+    prompt_path = Path("prompts/agents/trading_agent_v4/market_close.md")
+    prompt = prompt_path.read_text(encoding="utf-8")
+    assert "**`market_close_data`: 마감 팩트 스냅샷이 이미 주입되어 있다**" not in prompt
+    assert "없는 주입 데이터(`market_close_data` 등)를 있다고 가정하지 말 것" in prompt

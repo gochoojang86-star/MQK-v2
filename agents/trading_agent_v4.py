@@ -18,7 +18,6 @@ class TradingPhaseV4(str, Enum):
 
 _PHASE_PROMPT_NAMES_V4: dict[TradingPhaseV4, str] = {
     TradingPhaseV4.PREMARKET_SEJUK: "trading_agent_v4/premarket_sejuk",
-    TradingPhaseV4.PREMARKET:       "trading_agent_v4/premarket",
     TradingPhaseV4.SCAN:            "trading_agent_v4/scan",
     TradingPhaseV4.INTRADAY:        "trading_agent_v4/intraday",
     TradingPhaseV4.CLOSE:           "trading_agent_v4/close",
@@ -85,4 +84,9 @@ class TradingAgentV4:
         )
 
     def run(self, phase: TradingPhaseV4, context: dict) -> dict:
+        if phase == TradingPhaseV4.PREMARKET:
+            raise ValueError(
+                "TradingPhaseV4.PREMARKET is handled by RegimeAgent directly; "
+                "TradingAgentV4.run() does not support it."
+            )
         return self._agent.run(phase, context)  # type: ignore[arg-type]
