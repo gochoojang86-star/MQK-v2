@@ -34,6 +34,7 @@ logger = logging.getLogger("mqk_v4")
 _DATA_DIR = Path(__file__).parent / "data"
 _WATCHLIST_PATH_V4 = _DATA_DIR / "watchlist_v4.json"
 _LAST_REGIME_PATH_V4 = _DATA_DIR / "last_regime_v4.json"
+_NEXT_DAY_PRIOR_PATH_V4 = _DATA_DIR / "next_day_prior_v4.json"
 
 MAX_POSITIONS_V4 = 3  # v3(4개)보다 적게 — 세력주 집중 투자
 
@@ -81,8 +82,20 @@ class MQKOrchestratorV4:
         position_count = positions.get("position_count", 0)
         positions_left = max(MAX_POSITIONS_V4 - position_count, 0)
 
+        # 저널 포지션 병합: entry_date·setup 포함 (KIS API에는 없음).
+        # close/intraday의 "3일차 청산" 등 시간 기반 판단에 필요.
+        try:
+            journal_positions = self._journal.get_open_positions()
+        except Exception:
+            journal_positions = []
+        if journal_positions:
+            positions = {**positions, "journal_positions": journal_positions}
+
+        # 전날 market_close가 남긴 prior 로드 (다음날 전략 연속성).
+        next_day_prior = self._load_next_day_prior()
+
         risk_guidance = regime.get("risk_guidance", {})
-        return build_context(
+        ctx = build_context(
             phase=phase,  # type: ignore[arg-type]
             trading_date=self._today,
             regime={
@@ -102,6 +115,27 @@ class MQKOrchestratorV4:
             watchlist=watchlist,
             allowed_tools=list(PHASE_TOOLS_V4[phase]),
         )
+        if next_day_prior:
+            ctx["next_day_prior"] = next_day_prior
+        return ctx
+
+    def _load_next_day_prior(self) -> dict:
+        if not _NEXT_DAY_PRIOR_PATH_V4.exists():
+            return {}
+        try:
+            import json as _json
+            with open(_NEXT_DAY_PRIOR_PATH_V4, encoding="utf-8") as f:
+                return _json.load(f)
+        except Exception:
+            return {}
+
+    def _save_next_day_prior(self, payload: dict) -> None:
+        if not payload:
+            return
+        import json as _json
+        _NEXT_DAY_PRIOR_PATH_V4.parent.mkdir(parents=True, exist_ok=True)
+        with open(_NEXT_DAY_PRIOR_PATH_V4, "w", encoding="utf-8") as f:
+            _json.dump(payload, f, ensure_ascii=False, indent=2)
 
     def _save_watchlist_v4(self, candidates: list[dict]) -> None:
         _WATCHLIST_PATH_V4.parent.mkdir(parents=True, exist_ok=True)
@@ -338,5 +372,12 @@ class MQKOrchestratorV4:
         context["market_close_data"] = snapshot
 
         result = self._run_agent(TradingPhaseV4.MARKET_CLOSE, context)
+
+        # 다음 날 전략 연속성을 위해 prior 저장.
+        next_day_prior = result.get("next_day_premarket_context", {})
+        if next_day_prior:
+            self._save_next_day_prior(next_day_prior)
+            logger.info(f"[v4 MARKET_CLOSE] next_day_prior 저장 완료")
+
         logger.info("[v4 MARKET_CLOSE] 복기 완료")
         return result
