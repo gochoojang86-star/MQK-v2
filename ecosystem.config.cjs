@@ -169,5 +169,76 @@ module.exports = {
       autorestart: true,
       restart_delay: 3000,
     },
+    // ── MQK v4 (국장 세력주 스나이퍼) ─────────────────────────────────────────
+    {
+      name: "mqk-v4-premarket-sejuk",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "premarket_sejuk" },
+      // KST 08:45 — 장전 상한가 세력 검증
+      cron_restart: "45 8 * * 1-5",
+      autorestart: false,
+    },
+    {
+      name: "mqk-v4-premarket",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "premarket" },
+      // KST 09:03/11:03/13:03 — 레짐 판단 (v3와 동일)
+      cron_restart: "3 9,11,13 * * 1-5",
+      autorestart: false,
+    },
+    {
+      name: "mqk-v4-scan",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "scan" },
+      // KST 09:17/11:17/13:17
+      cron_restart: "17 9,11,13 * * 1-5",
+      autorestart: false,
+    },
+    {
+      name: "mqk-v4-scan-eod",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "scan" },
+      // KST 15:00 — 마감 전 마지막 스캔
+      cron_restart: "0 15 * * 1-5",
+      autorestart: false,
+    },
+    {
+      name: "mqk-v4-intraday",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "intraday" },
+      // KST 09:20~14:50, 10분 간격
+      cron_restart: "*/10 9-14 * * 1-5",
+      autorestart: false,
+    },
+    {
+      name: "mqk-v4-close",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "close" },
+      // KST 15:18
+      cron_restart: "18 15 * * 1-5",
+      autorestart: false,
+    },
+    {
+      name: "mqk-v4-market-close",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "market_close" },
+      // KST 17:00
+      cron_restart: "0 17 * * 1-5",
+      autorestart: false,
+    },
   ],
 };
