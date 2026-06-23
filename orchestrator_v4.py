@@ -19,7 +19,7 @@ from broker.kiwoom_api import KiwoomApi
 from broker.telegram import TelegramApproval
 from codes.order_manager import OrderManager, OrderRequest
 from codes.position_sizer import PositionSizer
-from codes.risk_officer import PortfolioState, RiskOfficer, TradeProposal
+from codes.risk_officer import RiskOfficer
 from codes.trade_journal import TradeJournal
 from config.settings import RISK
 from market_intelligence import market as mil_market
@@ -33,7 +33,7 @@ logger = logging.getLogger("mqk_v4")
 
 _DATA_DIR = Path(__file__).parent / "data"
 _WATCHLIST_PATH_V4 = _DATA_DIR / "watchlist_v4.json"
-_LAST_REGIME_PATH = _DATA_DIR / "last_regime.json"  # v3와 레짐 공유
+_LAST_REGIME_PATH_V4 = _DATA_DIR / "last_regime_v4.json"
 
 MAX_POSITIONS_V4 = 3  # v3(4개)보다 적게 — 세력주 집중 투자
 
@@ -117,9 +117,18 @@ class MQKOrchestratorV4:
         except Exception:
             return []
 
+    def _resolve_evaluation_mode(self) -> str:
+        hour = datetime.now().hour
+        if hour < 10:
+            return "OPENING"
+        elif hour < 12:
+            return "MIDDAY"
+        else:
+            return "AFTERNOON"
+
     # ── 08:45 장전 상한가 세력 검증 ────────────────────────────────────────
     def run_premarket_sejuk_v4(self) -> dict:
-        regime = load_last_regime(path=_LAST_REGIME_PATH) or {}
+        regime = load_last_regime(path=_LAST_REGIME_PATH_V4) or {}
 
         try:
             limit_up = mil_screening.get_limit_up_stocks(
@@ -168,8 +177,8 @@ class MQKOrchestratorV4:
         except ToolFailure:
             market_ctx = {}
 
-        judgment = agent.judge(market_ctx, evaluation_mode="OPENING")
-        save_last_regime(judgment, path=_LAST_REGIME_PATH)
+        judgment = agent.judge(market_ctx, evaluation_mode=self._resolve_evaluation_mode())
+        save_last_regime(judgment, path=_LAST_REGIME_PATH_V4)
 
         from dataclasses import asdict
         regime_dict = asdict(judgment)
@@ -183,7 +192,7 @@ class MQKOrchestratorV4:
 
     # ── 09:17/11:17/13:17/15:00 스캔 ──────────────────────────────────────
     def run_scan_v4(self) -> dict:
-        regime = load_last_regime(path=_LAST_REGIME_PATH) or {}
+        regime = load_last_regime(path=_LAST_REGIME_PATH_V4) or {}
         watchlist = self._load_watchlist_v4()
 
         try:
@@ -212,7 +221,7 @@ class MQKOrchestratorV4:
 
     # ── 09:20~14:50 장중 ───────────────────────────────────────────────────
     def run_intraday_v4(self) -> dict:
-        regime = load_last_regime(path=_LAST_REGIME_PATH)
+        regime = load_last_regime(path=_LAST_REGIME_PATH_V4)
         if regime is None or str(regime.get("timestamp", ""))[:10] != self._today:
             logger.warning("[v4 INTRADAY] 당일 레짐 없음 — 스킵")
             return {"action": "NO_TRADE", "reason": "stale_regime"}
@@ -277,7 +286,7 @@ class MQKOrchestratorV4:
 
     # ── 15:18 마감 청산 ────────────────────────────────────────────────────
     def run_close_v4(self) -> dict:
-        regime = load_last_regime(path=_LAST_REGIME_PATH) or {}
+        regime = load_last_regime(path=_LAST_REGIME_PATH_V4) or {}
         context = self._build_context_v4(TradingPhaseV4.CLOSE, regime, watchlist=[])
         result = self._run_agent(TradingPhaseV4.CLOSE, context)
 
@@ -309,7 +318,7 @@ class MQKOrchestratorV4:
 
     # ── 17:00 복기 ─────────────────────────────────────────────────────────
     def run_market_close_v4(self) -> dict:
-        regime = load_last_regime(path=_LAST_REGIME_PATH) or {}
+        regime = load_last_regime(path=_LAST_REGIME_PATH_V4) or {}
         context = self._build_context_v4(TradingPhaseV4.MARKET_CLOSE, regime, watchlist=[])
         result = self._run_agent(TradingPhaseV4.MARKET_CLOSE, context)
         logger.info("[v4 MARKET_CLOSE] 복기 완료")

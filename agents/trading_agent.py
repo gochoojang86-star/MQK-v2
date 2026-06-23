@@ -310,7 +310,7 @@ class TradingAgent:
             "missing_capability": str(response.get("missing_capability") or "unspecified_capability"),
             "why_needed": str(response.get("why_needed") or "missing capability reduced decision quality"),
             "priority": str(response.get("priority") or "medium").lower(),
-            "phase": str(response.get("phase") or phase.value),
+            "phase": str(response.get("phase") or (phase.value if hasattr(phase, "value") else str(phase))),
             "affected_tickers": _normalize_tickers(response.get("affected_tickers"), context.get("watchlist", [])),
             "suggested_data_source": _normalize_str_list(response.get("suggested_data_source")),
             "fallback_action": str(response.get("fallback_action") or "NO_TRADE"),
