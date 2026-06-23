@@ -594,3 +594,66 @@ def _coerce_market_cap(row: dict) -> float:
         return hts_avls * 100_000_000
 
     return 0.0
+
+
+def get_intraday_volume_trend(ctx: MILContext, phase: str, ticker: str) -> dict:
+    """10분봉 기준 거래대금 트렌드 분석 — v4 세력 이탈 감지 핵심 도구.
+
+    최근 3봉 평균 거래대금 vs 직전 3봉 평균을 비교한다.
+    decline_pct <= -40% 이면 signal="VOLUME_DRY" (세력 이탈 신호).
+    """
+
+    def fetch():
+        raw = ctx.kis_api.raw_get(
+            "FHKST03010230",
+            "domestic-stock/v1/quotations/inquire-time-itemconclusion",
+            {
+                "fid_cond_mrkt_div_code": "J",
+                "fid_input_iscd": ticker,
+                "fid_hour_cls_code": "10",  # 10분봉
+                "fid_pw_data_incu_yn": "N",
+            },
+        )
+        candles = raw.get("output2", []) or []
+        vols = []
+        for c in candles[:6]:
+            v = float(c.get("acml_tr_pbmn") or 0)
+            vols.append(v)
+
+        if len(vols) < 6:
+            return {
+                "ticker": ticker,
+                "trend": "STABLE",
+                "recent_avg_krw": 0,
+                "prev_avg_krw": 0,
+                "decline_pct": 0.0,
+                "signal": None,
+            }
+
+        recent_avg = sum(vols[:3]) / 3
+        prev_avg = sum(vols[3:6]) / 3
+        decline_pct = ((recent_avg - prev_avg) / prev_avg * 100) if prev_avg > 0 else 0.0
+
+        if decline_pct <= -40.0:
+            trend = "DECLINING"
+            signal = "VOLUME_DRY"
+        elif decline_pct <= -10.0:
+            trend = "DECLINING"
+            signal = None
+        elif decline_pct >= 20.0:
+            trend = "INCREASING"
+            signal = None
+        else:
+            trend = "STABLE"
+            signal = None
+
+        return {
+            "ticker": ticker,
+            "trend": trend,
+            "recent_avg_krw": recent_avg,
+            "prev_avg_krw": prev_avg,
+            "decline_pct": round(decline_pct, 1),
+            "signal": signal,
+        }
+
+    return ctx.cached_call("get_intraday_volume_trend", phase, {"ticker": ticker}, fetch)
