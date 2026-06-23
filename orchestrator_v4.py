@@ -396,12 +396,21 @@ class MQKOrchestratorV4:
                     confidence=int(p.get("confidence") or 70),
                     strategy_type=p.get("setup", "VOLUME_SURGE_LEADER"),
                 )
-                self._order_mgr.execute_buy(req)
-                self._telegram.notify(
-                    f"📈 [v4 매수] {ticker} {quantity}주 @ 시장가\n"
-                    f"셋업={p.get('setup')} 손절={stop_loss_price:,.0f}\n"
-                    f"{p.get('reason', '')[:100]}"
-                )
+                result = self._order_mgr.execute_buy(req)
+                if result.success:
+                    logger.info(
+                        f"[v4 BUY 체결] {ticker} {quantity}주 "
+                        f"체결가={result.executed_price:,.0f} 주문번호={result.order_no}"
+                    )
+                    self._telegram.notify(
+                        f"📈 [v4 매수체결] {ticker} {quantity}주 @ {result.executed_price:,.0f}\n"
+                        f"셋업={p.get('setup')} 손절={stop_loss_price:,.0f}\n"
+                        f"{p.get('reason', '')[:100]}"
+                    )
+                else:
+                    logger.warning(
+                        f"[v4 BUY 실패] {ticker}: {result.error_msg}"
+                    )
             except Exception as e:
                 logger.warning(f"[v4 BUY] {p.get('ticker')} 실패: {e}")
 
@@ -430,12 +439,18 @@ class MQKOrchestratorV4:
                     reason=p.get("reason", ""),
                     confidence=int(p.get("confidence") or 100),
                 )
-                self._order_mgr.execute_sell(req)
-                self._telegram.notify(
-                    f"📉 [v4 매도] {ticker} {qty}주 @ 시장가\n"
-                    f"사유={p.get('sell_type')} {p.get('reason', '')[:80]}"
-                )
-                logger.info(f"[v4 SELL] {ticker} sell_type={p.get('sell_type')}")
+                result = self._order_mgr.execute_sell(req)
+                if result.success:
+                    logger.info(
+                        f"[v4 SELL 체결] {ticker} {qty}주 "
+                        f"체결가={result.executed_price:,.0f} sell_type={p.get('sell_type')}"
+                    )
+                    self._telegram.notify(
+                        f"📉 [v4 매도체결] {ticker} {qty}주 @ {result.executed_price:,.0f}\n"
+                        f"사유={p.get('sell_type')} {p.get('reason', '')[:80]}"
+                    )
+                else:
+                    logger.warning(f"[v4 SELL 실패] {ticker}: {result.error_msg}")
             except Exception as e:
                 logger.warning(f"[v4 SELL] {p.get('ticker')} 실패: {e}")
 
@@ -469,10 +484,15 @@ class MQKOrchestratorV4:
                     reason=p.get("reason", "close_v4"),
                     confidence=100,
                 )
-                self._order_mgr.execute_sell(req)
-                self._telegram.notify(
-                    f"📉 [v4 마감청산] {ticker} {qty}주\n{p.get('reason', '')[:80]}"
-                )
+                result = self._order_mgr.execute_sell(req)
+                if result.success:
+                    logger.info(f"[v4 CLOSE SELL 체결] {ticker} {qty}주 @ {result.executed_price:,.0f}")
+                    self._telegram.notify(
+                        f"📉 [v4 마감청산] {ticker} {qty}주 @ {result.executed_price:,.0f}\n"
+                        f"{p.get('reason', '')[:80]}"
+                    )
+                else:
+                    logger.warning(f"[v4 CLOSE SELL 실패] {ticker}: {result.error_msg}")
             except Exception as e:
                 logger.warning(f"[v4 CLOSE SELL] {p.get('ticker')}: {e}")
 
