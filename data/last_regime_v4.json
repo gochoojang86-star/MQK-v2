@@ -1,0 +1,39 @@
+{
+  "status": "YELLOW",
+  "regime": "SIDEWAYS",
+  "confidence": 66,
+  "reason": "코스피가 상승 중이지만 상승/하락 종목 수가 400/479로 내부 확산이 약하고, 섹터 강도와 뉴스 모멘텀이 비어 있어 추세형 장세로 보기 어렵다. 전일 대비 지수는 플러스지만 현재 제공된 장중 누적 거래대금과 섹터 리더십이 확인되지 않아 강한 기관 매수 파티로 판단하기엔 근거가 부족하다. 따라서 전체 시장은 매매 가능하되, 방향성 확신이 낮은 선별 장세로 해석한다.",
+  "risk_notes": [
+    "거래대금 데이터가 0으로 제공되어 수급 강도 판단이 제한적이다.",
+    "상승 종목 수보다 하락 종목 수가 많아 종목 확산이 약하다.",
+    "섹터 성과 정보가 없어 테마/대장주 우위 판단이 불가능하다.",
+    "뉴스 모멘텀이 없어 새로운 추세 촉발 요인이 확인되지 않는다."
+  ],
+  "opportunity_mode": "NORMAL",
+  "scanner_mode": "TREND",
+  "risk_guidance": {
+    "buy_confidence_threshold": 80,
+    "risk_per_trade_pct": 0.2,
+    "max_positions": 2,
+    "min_trading_value_krw": 10000000000
+  },
+  "drift_triggers": [
+    {
+      "id": "breadth_collapse",
+      "metric": "advance_decline_ratio",
+      "threshold": 0.85,
+      "direction": "below",
+      "description": "상승/하락 종목 비율이 0.85 아래로 유지되면 방어적으로 재평가"
+    },
+    {
+      "id": "recovery_signal",
+      "metric": "kospi_recovery_from_low_pct",
+      "threshold": 1.0,
+      "direction": "above",
+      "description": "장중 저점 대비 회복이 1% 이상이면 GREEN 재검토"
+    }
+  ],
+  "cooldown_minutes": 60,
+  "max_daily_triggers": 3,
+  "timestamp": "2026-06-24T13:03:22.136390"
+}

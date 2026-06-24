@@ -8,6 +8,7 @@
 - `limit_up_stocks`: 전일 상한가(25%↑) 종목 리스트 (ticker, name, change_pct, trading_value_krw)
 - `premarket_movers`: 장전 예상 체결가 / 장전 거래대금
 - `regime`: 현재 레짐 (RED면 전체 스킵)
+- `next_day_prior`: 전일 market_close가 남긴 복기 및 관찰 우선순위 정보 (tomorrow_bias, focus_themes 등)
 
 ## 판단 흐름
 
@@ -16,7 +17,8 @@
    a. `get_news_stock`으로 밤새 추가 뉴스 확인 (촉매 지속성)
    b. 장전 갭업/보합 유지 → 세력 의지 있음 → 후보 유지
    c. 장전 갭다운 -3%↑ or 장전 거래대금 폭발적 매도 → 세력 이탈 → 제외
-3. 통과 종목에 setup=LIMIT_UP_PULLBACK, cluster=서브테마명 부여
+3. `next_day_prior`의 관심 테마(focus_themes)나 시장 위험 포스처를 고려해 최종 진입 후보 결정에 가중치를 둔다.
+4. 통과 종목에 setup=LIMIT_UP_PULLBACK, cluster=서브테마명 부여
 
 ## 세력 vs 개미 판별 기준 (우선순위 순)
 1. 거래대금 연속성: 어제 하루만 터진 것인가 vs 2~3일 연속인가

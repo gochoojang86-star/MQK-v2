@@ -304,14 +304,54 @@ class MQKOrchestratorV3:
         self._trading_agent = TradingAgent(mil=self._mil)
         self._last_portfolio_snapshot: tuple[dict, dict] | None = None
 
-    # ── 08:50 PREMARKET_EARLY (장전거래 전일 비교) ───────────────────────────
+    # ── 08:45 PREMARKET_SEJUK (장전 상한가 세력 검증) ───────────────────────
     def run_premarket_early_v3(self) -> dict:
-        """08:50 장전거래 루틴. 전일 종가 기준 포지션 리스크 점검.
-
-        레짐 판단(RegimeAgent)도 실행하되, 아직 장이 열리지 않았으므로 전일 데이터
-        기반임을 컨텍스트에 명시한다. 오늘의 확정 레짐은 09:03 run_premarket_v3()가 담당.
+        """08:45 장전 루틴 (v4 전략). 전날 상한가 종목 + 장전거래를 교차 분석해
+        오늘 진입 후보를 watchlist에 선주입한다. 세력 이탈 종목은 제거.
+        레짐 판단은 09:03 run_premarket_v3()가 담당.
         """
-        return self.run_premarket_v3(session_type="PREMARKET_EARLY")
+        regime = load_last_regime(path=_LAST_REGIME_PATH) or {}
+        regime_dict = _regime_to_dict(regime) if hasattr(regime, 'status') else regime
+
+        # 코드가 결정론적으로 수집: 상한가 종목 + 장전 체결 데이터
+        try:
+            limit_up = mil_screening.get_limit_up_stocks(
+                self._mil, TradingPhase.PREMARKET_SEJUK.value
+            )
+        except ToolFailure:
+            limit_up = {"stocks": []}
+        try:
+            premarket = mil_screening.get_premarket_movers(
+                self._mil, TradingPhase.PREMARKET_SEJUK.value
+            )
+        except ToolFailure:
+            premarket = {"movers": []}
+
+        context = self._build_context(
+            TradingPhase.PREMARKET_SEJUK, regime_dict, "STABLE", watchlist=[]
+        )
+        context["limit_up_stocks"] = limit_up.get("stocks", [])
+        context["premarket_movers"] = premarket.get("movers", [])
+        context["next_day_prior"] = load_next_day_premarket_context(
+            path=_NEXT_DAY_PREMARKET_CONTEXT_PATH
+        )
+
+        result = self._trading_agent.run(TradingPhase.PREMARKET_SEJUK, context)
+        self._record_tool_request(result, TradingPhase.PREMARKET_SEJUK, regime_dict)
+        self._alert_on_tool_failures(result, TradingPhase.PREMARKET_SEJUK)
+        self._save_json("premarket_early_review.json", result)
+
+        # LLM이 선별한 후보를 watchlist에 선주입 (run_scan_v3에서 최종 확정)
+        candidates = result.get("candidates", [])
+        if candidates:
+            save_watchlist(candidates, path=_WATCHLIST_PATH)
+            logger.info(
+                f"[v4 PREMARKET_SEJUK] 진입 후보 {len(candidates)}개 → watchlist.json"
+            )
+        else:
+            logger.info("[v4 PREMARKET_SEJUK] 통과 후보 없음")
+
+        return result
 
     # ── 09:03 PREMARKET (장중 첫번째 레짐 평가) ──────────────────────────────
     def run_premarket_v3(self, session_type: str = "PREMARKET_REGIME") -> dict:

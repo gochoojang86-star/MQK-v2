@@ -54,7 +54,8 @@ def test_phase_tools_only_reference_known_tools():
 def test_tier_for_phase_uses_reasoning_only_for_scan():
     agent = TradingAgent(mil=object(), llm=FakeLLMClient([]))
 
-    assert agent._tier_for_phase(TradingPhase.SCAN).value == "reasoning"
+    assert agent._tier_for_phase(TradingPhase.SCAN).value == "standard"
+    assert agent._tier_for_phase(TradingPhase.PREMARKET_SEJUK).value == "standard"
     assert agent._tier_for_phase(TradingPhase.INTRADAY).value == "standard"
     assert agent._tier_for_phase(TradingPhase.LATE_INTRADAY).value == "standard"
     assert agent._tier_for_phase(TradingPhase.PREMARKET).value == "fast"

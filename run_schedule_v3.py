@@ -111,7 +111,8 @@ def run_premarket_early() -> None:
     _guard_trading_day()
     orch = _make_orchestrator()
     result = orch.run_premarket_early_v3()
-    logger.info(f"[v3 PREMARKET_EARLY] {result.get('regime')} ({result.get('status')})")
+    n = len(result.get("candidates", []))
+    logger.info(f"[PREMARKET_SEJUK] 진입 후보={n}개")
 
 
 def run_premarket() -> None:
@@ -158,6 +159,7 @@ def run_market_close() -> None:
 
 _RUNNERS = {
     "premarket_early": run_premarket_early,
+    "premarket_sejuk": run_premarket_early,   # v4 PM2 앱 호환 별칭
     "premarket": run_premarket,
     "scan": run_scan,
     "intraday": run_intraday,

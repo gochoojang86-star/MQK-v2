@@ -173,7 +173,7 @@ module.exports = {
     {
       name: "mqk-v4-premarket-sejuk",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
-      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "premarket_sejuk" },
       // KST 08:45 — 장전 상한가 세력 검증
@@ -183,7 +183,7 @@ module.exports = {
     {
       name: "mqk-v4-premarket",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
-      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "premarket" },
       // KST 09:03/11:03/13:03 — 레짐 판단 (v3와 동일)
@@ -193,7 +193,7 @@ module.exports = {
     {
       name: "mqk-v4-scan",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
-      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "scan" },
       // KST 09:17/11:17/13:17
@@ -203,7 +203,7 @@ module.exports = {
     {
       name: "mqk-v4-scan-eod",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
-      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "scan" },
       // KST 15:00 — 마감 전 마지막 스캔
@@ -213,7 +213,7 @@ module.exports = {
     {
       name: "mqk-v4-intraday",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
-      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "intraday" },
       // KST 09:20~14:50, 10분 간격
@@ -223,7 +223,7 @@ module.exports = {
     {
       name: "mqk-v4-close",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
-      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "close" },
       // KST 15:18
@@ -233,7 +233,7 @@ module.exports = {
     {
       name: "mqk-v4-market-close",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
-      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v4.py",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "market_close" },
       // KST 17:00

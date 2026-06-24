@@ -637,7 +637,7 @@ git commit -m "feat: DataLayer (yfinance 래퍼 + 종목 유니버스)"
 
 ## 현재가 조회
 - TR: `HHDFS00000300` (해외주식 현재체결가)
-- GET `/uapi/overseas-stock/v1/quotations/price`
+- GET `/uapi/overseas-price/v1/quotations/price`
 - 파라미터: AUTH="", EXCD(거래소: NAS/NYS), SYMB(티커)
 - 응답: output.last(현재가), output.tvol(거래량)
 
@@ -647,17 +647,17 @@ git commit -m "feat: DataLayer (yfinance 래퍼 + 종목 유니버스)"
 - 파라미터: AUTH, EXCD, SYMB, GUBN(0=일), BYMD(조회시작일), MODYN(수정주가)
 
 ## 잔고 조회
-- TR: `TTTS3012R`
+- TR: `TTTS3012R` (실전) / `VTTS3012R` (모의)
 - GET `/uapi/overseas-stock/v1/trading/inquire-balance`
 - 응답: output1(종목별), output2(계좌 합계)
 
 ## 매수 주문
-- TR: `TTTS0002U` (실전) / `VTTS0002U` (모의)
+- TR: `TTTT1002U` (실전) / `VTTT1002U` (모의)
 - POST `/uapi/overseas-stock/v1/trading/order`
 - 파라미터: OVRS_EXCG_CD, PDNO(티커), ORD_DVSN(00=지정가/01=시장가), ORD_QTY, OVRS_ORD_UNPR(지정가)
 
 ## 매도 주문
-- TR: `TTTS0001U` (실전) / `VTTS0001U` (모의)
+- TR: `TTTT1006U` (실전) / `VTTT1001U` (모의)
 - POST `/uapi/overseas-stock/v1/trading/order`
 
 ## 거래소 코드
@@ -782,8 +782,8 @@ _REAL_BASE = "https://openapi.koreainvestment.com:9443"
 _PAPER_BASE = "https://openapivts.koreainvestment.com:29443"
 
 _ORDER_TR = {
-    "buy":  {"real": "TTTS0002U", "paper": "VTTS0002U"},
-    "sell": {"real": "TTTS0001U", "paper": "VTTS0001U"},
+    "buy":  {"real": "TTTT1002U", "paper": "VTTT1002U"},
+    "sell": {"real": "TTTT1006U", "paper": "VTTT1001U"},
 }
 
 
@@ -833,7 +833,7 @@ class KisUSApi:
     def get_current_price(self, ticker: str) -> dict[str, Any]:
         """해외주식 현재가 + 거래량 조회"""
         resp = requests.get(
-            f"{self._base}/uapi/overseas-stock/v1/quotations/price",
+            f"{self._base}/uapi/overseas-price/v1/quotations/price",
             headers=self._headers("HHDFS00000300"),
             params={"AUTH": "", "EXCD": self._exchange_code(ticker), "SYMB": ticker},
             timeout=10,

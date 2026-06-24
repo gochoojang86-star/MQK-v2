@@ -1,0 +1,28 @@
+{
+  "date": "2026-06-24",
+  "evaluation_mode": "AFTERNOON",
+  "evaluation_time": "22:22",
+  "kospi": 2750.12,
+  "kospi_change_pct": 0.83,
+  "kosdaq": 860.44,
+  "kosdaq_change_pct": 1.12,
+  "kospi_trading_value": 12345678901,
+  "kosdaq_trading_value": 9876543210,
+  "kospi_advancers": 600,
+  "kospi_decliners": 250,
+  "kosdaq_advancers": 700,
+  "kosdaq_decliners": 180,
+  "prev_kospi_change_pct": -0.41,
+  "prev_kosdaq_change_pct": -0.93,
+  "prev_kospi_trading_value": 10000000000,
+  "prev_kosdaq_trading_value": 8000000000,
+  "status": "GREEN",
+  "regime": "UPTREND",
+  "confidence": 80,
+  "reason": "시장 확산 양호",
+  "risk_notes": [
+    "유동성 주의"
+  ],
+  "opportunity_mode": "NORMAL",
+  "scanner_mode": "NORMAL"
+}

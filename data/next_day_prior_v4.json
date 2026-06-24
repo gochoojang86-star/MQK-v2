@@ -1,0 +1,31 @@
+{
+  "previous_close_prior": {
+    "kospi_change_pct": 3.26,
+    "kosdaq_change_pct": 2.0,
+    "program_net_buy_krw": -3122230000000,
+    "foreign_net_buy_krw": -4654594000000,
+    "institution_net_buy_krw": 1909449000000,
+    "portfolio_status": "보유 2종목 모두 평가이익 중",
+    "portfolio_pnl_summary": "SK하이닉스 +8.59%, 삼성전자 +14.26%, 실현손익 없음"
+  },
+  "tomorrow_bias": {
+    "risk_posture": "NORMAL",
+    "scanner_bias": "RELATIVE_STRENGTH_ONLY"
+  },
+  "focus_themes": [
+    "반도체",
+    "대형주/지수주",
+    "AI·메모리"
+  ],
+  "intraday_focus": [
+    "장초반 반도체 대형주 강세 유지 여부",
+    "외국인/프로그램 수급이 지수 강세를 지지하는지",
+    "코스피 신고가/추세 연장 여부와 거래대금 지속성"
+  ],
+  "tomorrow_watch_items": [
+    "반도체 업종 관련 수급/정책/실적 뉴스",
+    "대형주 중심의 갭상승 이후 거래대금 유지 여부",
+    "보유주 이격 과열 여부 및 시초가 변동성"
+  ],
+  "prior_date": "2026-06-24"
+}

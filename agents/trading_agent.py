@@ -20,6 +20,7 @@ from market_intelligence.base import MILContext, ToolFailure
 
 
 class TradingPhase(str, Enum):
+    PREMARKET_SEJUK = "PREMARKET_SEJUK"  # 08:45 장전 상한가 + 장전거래 세력 검증
     PREMARKET = "PREMARKET"
     SCAN = "SCAN"
     INTRADAY = "INTRADAY"
@@ -29,6 +30,7 @@ class TradingPhase(str, Enum):
 
 
 _PHASE_PROMPT_NAMES = {
+    TradingPhase.PREMARKET_SEJUK: "trading_agent/premarket_sejuk",
     TradingPhase.PREMARKET: "trading_agent/premarket",
     TradingPhase.SCAN: "trading_agent/scan",
     TradingPhase.INTRADAY: "trading_agent/intraday",
@@ -76,6 +78,11 @@ TOOL_REGISTRY: dict[str, Callable] = {
 }
 
 PHASE_TOOLS: dict[TradingPhase, list[str]] = {
+    TradingPhase.PREMARKET_SEJUK: [
+        "get_limit_up_stocks", "get_premarket_movers",
+        "get_news_market", "get_news_stock", "get_ohlcv",
+        "get_market_context", "get_sector_investor_flow",
+    ],
     TradingPhase.PREMARKET: [
         "get_market_context", "get_sector_breadth", "get_intraday_index_candles",
         "get_news_market", "get_event_schedule", "get_ohlcv", "get_flow",
@@ -104,6 +111,7 @@ PHASE_TOOLS: dict[TradingPhase, list[str]] = {
         "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot", "get_intraday_candles",
         "get_flow", "get_intraday_institutional_flow", "get_news_stock", "get_stock_status",
         "get_orderbook",
+        "get_intraday_volume_trend",  # 세력 이탈 감지 (VOLUME_DRY 신호)
     ],
     TradingPhase.LATE_INTRADAY: [
         "get_market_context", "psearch_title", "psearch_result",
@@ -302,8 +310,8 @@ class TradingAgent:
     def _tier_for_phase(self, phase) -> ModelTier:
         if self._tier_map_override and phase in self._tier_map_override:
             return self._tier_map_override[phase]
-        if phase == TradingPhase.SCAN:
-            return ModelTier.REASONING
+        if phase in {TradingPhase.SCAN, TradingPhase.PREMARKET_SEJUK}:
+            return ModelTier.STANDARD
         if phase in {TradingPhase.PREMARKET, TradingPhase.CLOSE, TradingPhase.MARKET_CLOSE}:
             return ModelTier.FAST
         return ModelTier.STANDARD

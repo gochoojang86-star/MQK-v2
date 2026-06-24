@@ -236,6 +236,7 @@ def test_build_context_uses_mil_portfolio_tools(monkeypatch, tmp_path):
         "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot", "get_intraday_candles",
         "get_flow", "get_intraday_institutional_flow", "get_news_stock", "get_stock_status",
         "get_orderbook",
+        "get_intraday_volume_trend",
     ]
 
 
