@@ -109,6 +109,17 @@ module.exports = {
       autorestart: false,
     },
     {
+      name: "mqk-v3-premarket-close",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "premarket_close" },
+      // KST 15:10 — 마감 직전 레짐 재평가. 직전 13:03 레짐과 비교해 마감 국면 판단.
+      // close(15:18)보다 먼저 실행해 최신 레짐을 close context에 반영.
+      cron_restart: "10 15 * * 1-5",
+      autorestart: false,
+    },
+    {
       name: "mqk-v3-late-intraday",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",

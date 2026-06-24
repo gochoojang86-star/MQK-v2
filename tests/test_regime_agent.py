@@ -63,7 +63,9 @@ def test_judge_uses_intraday_weighting_for_midday():
 
     assert "장중 레짐 재평가 데이터 (11:03 기준)" in llm.last_user
     assert "당일 장중 데이터를 주요 근거로 사용" in llm.last_user
-    assert "전일 확정 데이터는 배경 참고로만 사용" in llm.last_user
+    assert "전일 확정 데이터는 완전히 무시하라" in llm.last_user
+    # 전일 데이터 섹션이 MIDDAY에서 제외돼야 함
+    assert "전일 코스피 등락률" not in llm.last_user
 
 
 def test_judge_clamps_extreme_risk_guidance_via_safety_bounds():

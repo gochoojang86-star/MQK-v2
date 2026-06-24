@@ -68,6 +68,8 @@ def _resolve_regime_evaluation_mode(now: datetime | None = None) -> str:
         return "OPENING"
     if now.hour < 12:
         return "MIDDAY"
+    if now.hour >= 15:
+        return "CLOSE_PRE"
     return "AFTERNOON"
 
 
@@ -1484,10 +1486,16 @@ class MQKOrchestratorV3:
             "market_news_summary": market_news_summary,
             "sector_performance": self._sector_performance,
         }
+        # MIDDAY/AFTERNOON/CLOSE_PRE는 직전 레짐을 비교 기준으로 전달
+        prev_regime_dict = None
+        if evaluation_mode != "OPENING":
+            prev_regime_dict = load_last_regime(path=_LAST_REGIME_PATH)
+
         regime = self._regime_agent.judge(
             market_ctx,
             evaluation_mode=evaluation_mode,
             evaluation_time=now.strftime("%H:%M"),
+            prev_regime=prev_regime_dict,
         )
         self._last_regime = regime
         logger.info(f"[V3] Regime: {regime.regime.value} (확신도 {regime.confidence}%)")

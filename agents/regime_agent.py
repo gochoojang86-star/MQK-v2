@@ -86,6 +86,7 @@ class RegimeAgent:
         market_context: dict[str, Any],
         evaluation_mode: str = "OPENING",
         evaluation_time: str | None = None,
+        prev_regime: dict | None = None,
     ) -> RegimeJudgment:
         prev_kospi_tv = market_context.get('prev_kospi_trading_value', 0)
         prev_kosdaq_tv = market_context.get('prev_kosdaq_trading_value', 0)
@@ -97,32 +98,53 @@ class RegimeAgent:
         mode = str(evaluation_mode or "OPENING").upper()
         clock = evaluation_time or datetime.now().strftime("%H:%M")
 
+        # 이전 레짐 섹션 (MIDDAY/AFTERNOON/CLOSE_PRE만 포함, OPENING은 제외)
+        prev_regime_section = ""
+        if prev_regime and mode != "OPENING":
+            prev_regime_section = f"""
+[직전 레짐 판단 — 변화 여부 비교 기준]
+- 직전 레짐: {prev_regime.get('regime', '?')} / {prev_regime.get('status', '?')} (확신도 {prev_regime.get('confidence', '?')}%)
+- 직전 판단 시각: {str(prev_regime.get('timestamp', ''))[:16]}
+- 직전 판단 이유 요약: {str(prev_regime.get('reason', ''))[:200]}
+"""
+
         if mode == "MIDDAY":
             header = f"장중 레짐 재평가 데이터 ({clock} 기준):"
             weighting = (
-                "당일 장중 데이터를 주요 근거로 사용하고, 전일 확정 데이터는 배경 참고로만 사용하여 "
-                "현재 시장 체제와 매매 가능 여부를 판단하고 JSON으로 출력하세요."
+                "당일 장중 데이터를 주요 근거로 사용하고, 전일 확정 데이터는 완전히 무시하라. "
+                "직전 레짐과 비교해 시장 구조가 바뀌었는지 판단하고 JSON으로 출력하세요."
             )
         elif mode == "AFTERNOON":
             header = f"오후 레짐 재평가 데이터 ({clock} 기준):"
             weighting = (
-                "당일 장중 누적 데이터와 현재 섹터/수급 구조를 주요 근거로 사용하고, "
-                "전일 확정 데이터는 배경 참고로만 사용하여 현재 시장 체제와 매매 가능 여부를 판단하고 JSON으로 출력하세요."
+                "당일 누적 수급과 섹터 리더십을 주요 근거로 사용하고, 전일 확정 데이터는 완전히 무시하라. "
+                "직전 레짐 대비 마감 흐름이 강화/약화됐는지 판단하고 JSON으로 출력하세요."
             )
-        else:
+        elif mode == "CLOSE_PRE":
+            header = f"마감 직전 레짐 재평가 데이터 ({clock} 기준):"
+            weighting = (
+                "당일 누적 데이터와 마감 수급을 주요 근거로 사용하고, 전일 데이터는 완전히 무시하라. "
+                "직전 레짐 대비 마감 국면이 유지/전환됐는지 판단하고 JSON으로 출력하세요."
+            )
+        else:  # OPENING
             header = f"장초반 레짐 평가 데이터 ({clock} 기준):"
             weighting = (
                 "전일 확정 데이터를 주요 근거로, 당일 장초반 실시간 데이터를 보조 참고로 사용하여 "
                 "시장 체제와 매매 가능 여부를 판단하고 JSON으로 출력하세요."
             )
 
-        user_msg = f"""{header}
-
+        # OPENING에서만 전일 데이터 포함
+        prev_day_section = ""
+        if mode == "OPENING":
+            prev_day_section = f"""
 [전일 확정 데이터]
 - 전일 코스피 등락률: {market_context.get('prev_kospi_change_pct', 0):.2f}%
 - 전일 코스닥 등락률: {market_context.get('prev_kosdaq_change_pct', 0):.2f}%
 - 전일 코스피/코스닥 거래대금: {prev_tv_note}
+"""
 
+        user_msg = f"""{header}
+{prev_regime_section}{prev_day_section}
 [당일 실시간 데이터]
 - 코스피 등락률: {market_context.get('kospi_change_pct', 0):.2f}%
 - 코스닥 등락률: {market_context.get('kosdaq_change_pct', 0):.2f}%

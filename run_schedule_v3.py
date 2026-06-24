@@ -45,6 +45,7 @@ _PHASE_WINDOWS: dict[str, tuple[str, str] | list[tuple[str, str]]] = {
     "scan": ("09:10", "15:05"),
     "intraday": ("08:55", "15:05"),
     "late_intraday": ("15:05", "15:20"),
+    "premarket_close": ("15:07", "15:17"),  # 15:10 마감 직전 레짐 재평가
     "close": ("15:15", "15:28"),
     "market_close": ("16:50", "18:00"),
 }
@@ -157,10 +158,19 @@ def run_market_close() -> None:
     logger.info("[v3 MARKET_CLOSE] 분석 완료")
 
 
+def run_premarket_close() -> None:
+    """15:10 마감 직전 레짐 재평가 (CLOSE_PRE). 직전 레짐과 비교해 마감 판단에 활용."""
+    _guard_trading_day()
+    orch = _make_orchestrator()
+    result = orch.run_premarket_v3(session_type="CLOSE_PRE")
+    logger.info(f"[v3 PREMARKET_CLOSE] {result.get('regime')} ({result.get('status')})")
+
+
 _RUNNERS = {
     "premarket_early": run_premarket_early,
     "premarket_sejuk": run_premarket_early,   # v4 PM2 앱 호환 별칭
     "premarket": run_premarket,
+    "premarket_close": run_premarket_close,   # 15:10 마감 직전 레짐 재평가
     "scan": run_scan,
     "intraday": run_intraday,
     "late_intraday": run_late_intraday,
