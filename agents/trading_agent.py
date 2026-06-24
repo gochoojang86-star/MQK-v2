@@ -41,6 +41,7 @@ _PHASE_PROMPT_NAMES = {
 
 TOOL_REGISTRY: dict[str, Callable] = {
     "get_market_context": market.get_market_context,
+    "get_us_market_context": market.get_us_market_context,
     "get_sector_breadth": market.get_sector_breadth,
     "get_intraday_index_candles": market.get_intraday_index_candles,
     "get_news_market": market.get_news_market,
@@ -84,7 +85,8 @@ PHASE_TOOLS: dict[TradingPhase, list[str]] = {
         "get_market_context", "get_sector_investor_flow",
     ],
     TradingPhase.PREMARKET: [
-        "get_market_context", "get_sector_breadth", "get_intraday_index_candles",
+        "get_market_context", "get_us_market_context",
+        "get_sector_breadth", "get_intraday_index_candles",
         "get_news_market", "get_event_schedule", "get_ohlcv", "get_flow",
         "get_premarket_movers", "get_sector_investor_flow",
     ],
@@ -133,6 +135,7 @@ PHASE_TOOLS: dict[TradingPhase, list[str]] = {
 _TOOLS_REQUIRING_USER_ID = {"psearch_title", "psearch_result"}
 _NO_ARG_TOOLS = {
     "get_market_context",
+    "get_us_market_context",
     "get_sector_breadth",
     "get_intraday_index_candles",
     "get_news_market",

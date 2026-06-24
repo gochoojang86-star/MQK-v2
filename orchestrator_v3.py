@@ -1486,6 +1486,14 @@ class MQKOrchestratorV3:
             "market_news_summary": market_news_summary,
             "sector_performance": self._sector_performance,
         }
+
+        # OPENING 레짐에만 미국 증시 데이터 추가 (야간 나스닥/S&P500/VIX/환율)
+        if evaluation_mode == "OPENING":
+            try:
+                us_ctx = mil_market.get_us_market_context(self._mil, TradingPhase.PREMARKET.value)
+                market_ctx["us_market"] = us_ctx
+            except Exception as e:
+                logger.warning(f"[V3 PREMARKET] 미국 증시 데이터 조회 실패: {e}")
         # MIDDAY/AFTERNOON/CLOSE_PRE는 직전 레짐을 비교 기준으로 전달
         prev_regime_dict = None
         if evaluation_mode != "OPENING":

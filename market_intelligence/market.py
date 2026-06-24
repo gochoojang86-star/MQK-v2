@@ -249,6 +249,49 @@ def get_news_market(ctx: MILContext, phase: str) -> dict:
     return ctx.cached_call("get_news_market", phase, {}, fetch)
 
 
+def get_us_market_context(ctx: MILContext, phase: str) -> dict:
+    """미국 증시 야간 등락률, VIX, 달러/원 환율 — yfinance 경유.
+
+    09:03 OPENING 레짐 판단에만 사용. KIS/키움 모의투자 계정이 해외 API를
+    지원하지 않아 yfinance(Yahoo Finance)로 대체한다.
+    캐시 TTL 300초 — 장전 레짐 평가 1회 호출로 충분.
+    """
+
+    def fetch() -> dict:
+        result: dict = {}
+        try:
+            import yfinance as yf  # type: ignore[import]
+
+            symbols = {
+                "nasdaq": "^IXIC",
+                "sp500":  "^GSPC",
+                "vix":    "^VIX",
+                "usdkrw": "USDKRW=X",
+            }
+            for key, sym in symbols.items():
+                try:
+                    hist = yf.Ticker(sym).history(period="2d")
+                    if hist.empty:
+                        result[key] = None
+                        result[f"{key}_change_pct"] = None
+                        continue
+                    last = float(hist["Close"].iloc[-1])
+                    prev = float(hist["Close"].iloc[-2]) if len(hist) > 1 else last
+                    chg_pct = round((last - prev) / prev * 100, 2) if prev else 0.0
+                    result[key] = round(last, 2)
+                    result[f"{key}_change_pct"] = chg_pct
+                except Exception as e:
+                    result[key] = None
+                    result[f"{key}_change_pct"] = None
+                    result.setdefault("missing_fields", []).append(f"{key}({e})")
+        except ImportError:
+            result["error"] = "yfinance 미설치 — pip install yfinance"
+
+        return result
+
+    return ctx.cached_call("get_us_market_context", phase, {}, fetch)
+
+
 def _to_float(value) -> float:
     if value in (None, ""):
         return 0.0

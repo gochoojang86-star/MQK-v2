@@ -133,15 +133,29 @@ class RegimeAgent:
                 "시장 체제와 매매 가능 여부를 판단하고 JSON으로 출력하세요."
             )
 
-        # OPENING에서만 전일 데이터 포함
+        # OPENING에서만 전일 데이터 + 미국 증시 데이터 포함
         prev_day_section = ""
         if mode == "OPENING":
+            us = market_context.get("us_market") or {}
+
+            def _fmt(val, suffix=""):
+                return f"{val:.2f}{suffix}" if val is not None else "데이터 없음"
+
+            us_section = ""
+            if us and not us.get("error"):
+                us_section = f"""
+[미국 증시 야간 데이터]
+- 나스닥 (COMP): {_fmt(us.get('nasdaq'))} ({_fmt(us.get('nasdaq_change_pct'), '%')})
+- S&P500: {_fmt(us.get('sp500'))} ({_fmt(us.get('sp500_change_pct'), '%')})
+- VIX (공포지수): {_fmt(us.get('vix'))} ({_fmt(us.get('vix_change_pct'), '%')})
+- 달러/원 환율: {_fmt(us.get('usdkrw'))} ({_fmt(us.get('usdkrw_change_pct'), '%')})
+"""
             prev_day_section = f"""
 [전일 확정 데이터]
 - 전일 코스피 등락률: {market_context.get('prev_kospi_change_pct', 0):.2f}%
 - 전일 코스닥 등락률: {market_context.get('prev_kosdaq_change_pct', 0):.2f}%
 - 전일 코스피/코스닥 거래대금: {prev_tv_note}
-"""
+{us_section}"""
 
         user_msg = f"""{header}
 {prev_regime_section}{prev_day_section}
