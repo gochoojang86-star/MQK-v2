@@ -86,7 +86,7 @@ class Scanner:
         technicals: dict[str, TechnicalSignals],
         flows: dict[str, FlowSignals],
     ) -> list[CandidateScore]:
-        """Setup 4용 과매도 평균회귀 후보 스캔."""
+        """폭락/과매도 구간의 REVERSAL 전술 후보 스캔."""
         candidates = []
         for snap in snapshots:
             score = self._score_reversal(snap, technicals.get(snap.ticker), flows.get(snap.ticker))
@@ -257,7 +257,7 @@ class Scanner:
             sector=snap.sector,
             change_pct=snap.change_pct,
             trading_value=snap.trading_value,
-            strategy_type="SETUP4_PANIC",
+            strategy_type="REVERSAL",
             reversal_score=round(oversold_score + disparity_score + selloff_score, 2),
             disparity20_pct=tech.disparity20_pct,
             disparity60_pct=tech.disparity60_pct,

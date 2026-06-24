@@ -303,7 +303,7 @@ def test_run_scan_uses_reversal_path_when_scanner_mode_requests_it(tmp_path):
                     sector="semiconductor",
                     change_pct=-8.0,
                     trading_value=70_000_000_000,
-                    strategy_type="SETUP4_PANIC",
+                    strategy_type="REVERSAL",
                     reversal_score=40.0,
                     disparity20_pct=-9.0,
                     disparity60_pct=-14.0,
@@ -318,7 +318,7 @@ def test_run_scan_uses_reversal_path_when_scanner_mode_requests_it(tmp_path):
     )
 
     assert len(candidates) == 1
-    assert candidates[0]["strategy_type"] == "SETUP4_PANIC"
+    assert candidates[0]["strategy_type"] == "REVERSAL"
     assert candidates[0]["opportunity_mode"] == "SETUP4_PANIC"
 
 

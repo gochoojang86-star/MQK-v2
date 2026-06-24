@@ -114,6 +114,6 @@ def test_reversal_scanner_finds_oversold_liquid_candidate():
     result = scanner.scan_reversal([snap], {"REV": tech}, {})
 
     assert len(result) == 1
-    assert result[0].strategy_type == "SETUP4_PANIC"
+    assert result[0].strategy_type == "REVERSAL"
     assert result[0].reversal_score > 0
     assert "과매도" in result[0].passed_filters

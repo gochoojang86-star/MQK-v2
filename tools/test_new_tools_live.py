@@ -5,6 +5,9 @@
 """
 from __future__ import annotations
 
+# pytest collection 제외: 이 파일은 수동 라이브 진단 스크립트다.
+__test__ = False
+
 import sys
 from pathlib import Path
 
