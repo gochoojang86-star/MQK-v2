@@ -57,10 +57,9 @@ module.exports = {
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
-      env: { MQK_PHASE: "premarket_early" },
-      // KST 08:50 — 장전거래 포지션 점검 (전일 종가 기준).
-      // 09:03 premarket보다 먼저 실행되어 오늘의 첫 리스크 점검을 담당한다.
-      cron_restart: "50 8 * * 1-5",
+      env: { MQK_PHASE: "premarket_sejuk" },
+      // KST 08:45 — 장전 상한가 세력 검증 + 진입 후보 watchlist 선주입.
+      cron_restart: "45 8 * * 1-5",
       autorestart: false,
     },
     {
