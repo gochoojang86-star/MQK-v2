@@ -257,15 +257,25 @@ class TradingAgent:
 
             next_action = response.get("next_action")
 
-            # SCAN 모델이 next_action 없이 WATCHLIST_UPDATE/WAIT를 반환하는 경우 방어 처리.
-            # 최신 모델(gpt-5.4-mini 등)은 ReAct 형식을 건너뛰고 바로 최종 답을 내기도 한다.
-            _is_scan = hasattr(phase, "value") and str(phase.value) == "SCAN" or phase == TradingPhase.SCAN
-            if next_action is None and _is_scan and response.get("action") in {"WATCHLIST_UPDATE", "WAIT"}:
-                response["next_action"] = "final"
-                next_action = "final"
+            # 최신 모델(gpt-5.4-mini 등)이 next_action 없이 바로 최종 답을 내는 경우 방어 처리.
+            # ReAct 형식을 건너뛰고 action 필드만 반환하면 여기서 복구한다.
+            if next_action is None:
+                _phase_val = phase.value if hasattr(phase, "value") else str(phase)
+                _action = response.get("action") or ""
+                _is_scan = _phase_val == "SCAN"
+                _is_intraday_final = _phase_val == "INTRADAY" and _action.upper() in {
+                    "BUY", "SELL", "HOLD", "NO_TRADE"
+                }
+                _is_scan_final = _is_scan and _action.upper() in {"WATCHLIST_UPDATE", "WAIT"}
+                if _is_scan_final or _is_intraday_final:
+                    response["next_action"] = "final"
+                    next_action = "final"
+            else:
+                _is_scan = hasattr(phase, "value") and str(phase.value) == "SCAN" or phase == TradingPhase.SCAN
 
             if next_action == "final":
-                if phase == TradingPhase.SCAN or _is_scan:
+                _phase_str = phase.value if hasattr(phase, "value") else str(phase)
+                if _phase_str == "SCAN":
                     response = self._maybe_backfill_scan_result(context, tool_history, response)
                 return response
 

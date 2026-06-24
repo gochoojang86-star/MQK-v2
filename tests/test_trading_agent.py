@@ -1,4 +1,5 @@
 """TradingAgent 테스트 - Phase별 도구 바인딩 + ReAct 루프 + 사전주입 컨텍스트"""
+from pathlib import Path
 import pytest
 
 from agents import trading_agent
@@ -232,6 +233,56 @@ def test_run_returns_no_trade_after_max_steps():
     assert result["action"] == "NO_TRADE"
     assert result["reason"] == "max_steps_exceeded"
     assert len(llm.calls) == 3
+
+
+def test_v3_strategy_prompts_do_not_contain_v4_titles():
+    prompt_paths = [
+        Path("prompts/agents/trading_agent/premarket_sejuk.md"),
+        Path("prompts/agents/trading_agent/scan.md"),
+        Path("prompts/agents/trading_agent/intraday.md"),
+    ]
+    for path in prompt_paths:
+        text = path.read_text(encoding="utf-8")
+        assert "TradingAgent v4" not in text
+
+
+def test_regime_prompt_uses_korean_swing_philosophy_not_minervini():
+    text = Path("prompts/agents/regime_agent.md").read_text(encoding="utf-8")
+    assert "마크 미네르비니" not in text
+    assert "국내 주식 스윙 트레이딩 시장 전략가" in text
+    assert "국장 특유의 유동성·테마 순환·리스크오프 압력" in text
+    assert "전략 허용/금지 결정 금지" in text
+
+
+def test_close_prompt_mentions_gap_risk_and_time_exit():
+    text = Path("prompts/agents/trading_agent/close.md").read_text(encoding="utf-8")
+    assert "GAP_RISK_EXIT" in text
+    assert "TIME_EXIT" in text
+    assert "익일 갭 리스크" in text
+
+
+def test_v3_reversal_prompts_use_single_reversal_tactic_name():
+    scan_text = Path("prompts/agents/trading_agent/scan.md").read_text(encoding="utf-8")
+    intraday_text = Path("prompts/agents/trading_agent/intraday.md").read_text(encoding="utf-8")
+
+    assert "REVERSAL_BOTTOM" not in scan_text
+    assert "REVERSAL_BOTTOM" not in intraday_text
+    assert '"setup": "VOLUME_SURGE_LEADER|THEME_CATALYST|REVERSAL"' in scan_text
+    assert "### REVERSAL (폭락 대장주 저점 반등)" in intraday_text
+    assert '"next_action": "final"' in intraday_text
+
+
+def test_v3_prompts_treat_regime_as_reference_only():
+    premarket_sejuk_text = Path("prompts/agents/trading_agent/premarket_sejuk.md").read_text(encoding="utf-8")
+    scan_text = Path("prompts/agents/trading_agent/scan.md").read_text(encoding="utf-8")
+    intraday_text = Path("prompts/agents/trading_agent/intraday.md").read_text(encoding="utf-8")
+    close_text = Path("prompts/agents/trading_agent/close.md").read_text(encoding="utf-8")
+
+    assert "RED면 전체 스킵" not in premarket_sejuk_text
+    assert "후보 제외/채택은 장전 갭·뉴스·거래대금 연속성으로 결정" in premarket_sejuk_text
+    assert "`regime`은 시장 온도 참고용일 뿐" in scan_text
+    assert "실제 진입/청산 판단은 분봉, 거래대금, 수급 이탈 여부로 결정" in intraday_text
+    assert "실제 청산 여부는 보유 이유 유지 여부, 거래대금, 장후반 가격 실패" in close_text
 
 
 def test_run_normalizes_tool_request():

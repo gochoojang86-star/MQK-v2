@@ -129,6 +129,22 @@ def test_watchlist_entries_from_scan_result_preserves_cluster(tmp_path):
     ]
 
 
+def test_watchlist_entries_from_scan_result_normalizes_reversal_aliases(tmp_path):
+    orch = make_orchestrator(tmp_path)
+    result = {
+        "watchlist": ["005930", "000660"],
+        "candidates": [
+            {"ticker": "005930", "setup": "REVERSAL_BOTTOM", "confidence": 81, "reason": "panic bounce"},
+            {"ticker": "000660", "setup": "SETUP4_PANIC", "confidence": 77, "reason": "legacy alias"},
+        ],
+    }
+
+    assert orch._watchlist_entries_from_scan_result(result) == [
+        {"ticker": "005930", "setup": "REVERSAL", "confidence": 81, "reason": "panic bounce"},
+        {"ticker": "000660", "setup": "REVERSAL", "confidence": 77, "reason": "legacy alias"},
+    ]
+
+
 def test_resolve_regime_evaluation_mode_by_time():
     from datetime import datetime
 
@@ -222,7 +238,7 @@ def test_build_context_uses_mil_portfolio_tools(monkeypatch, tmp_path):
     assert ctx["portfolio"]["available_cash_krw"] == 3_000_000
     assert ctx["portfolio"]["cash_ratio_pct"] == 30.0
     assert ctx["portfolio"]["positions_left_is_soft"] is True
-    assert ctx["risk_budget_remaining"]["positions_left"] == 3
+    assert ctx["risk_budget_remaining"]["positions_left"] == 4
     assert ctx["daily_pnl"]["realized_pnl_pct"] == -0.5
     assert ctx["watchlist"] == ["005930"]
     assert ctx["watchlist_tickers"] == ["005930"]
@@ -375,7 +391,7 @@ def test_build_context_retries_portfolio_fetch_before_degrading(monkeypatch, tmp
 
     assert calls["n"] == 2
     assert ctx["portfolio"].get("data_unavailable") is None
-    assert ctx["risk_budget_remaining"]["positions_left"] == 3
+    assert ctx["risk_budget_remaining"]["positions_left"] == 4
 
 
 def test_build_context_falls_back_to_last_snapshot_after_retries_exhausted(monkeypatch, tmp_path):
@@ -407,8 +423,8 @@ def test_build_context_falls_back_to_last_snapshot_after_retries_exhausted(monke
     assert ctx["portfolio"]["data_unavailable"] is True
     assert ctx["portfolio"]["stale"] is True
     assert ctx["portfolio"]["position_count"] == 2
-    # 4 - 2 = 2개 신규 진입 여력 — 0으로 잘못 강등되지 않는다.
-    assert ctx["risk_budget_remaining"]["positions_left"] == 2
+    # 정적 실행 가이드 기준 5 - 2 = 3개 신규 진입 여력 — 0으로 잘못 강등되지 않는다.
+    assert ctx["risk_budget_remaining"]["positions_left"] == 3
     assert ctx["risk_budget_remaining"]["daily_loss_remaining_pct"] > 0.0
 
 
@@ -968,7 +984,7 @@ def test_run_intraday_v3_idle_skip_gate(monkeypatch, tmp_path):
     assert orch._trading_agent.calls  # 보유 있음 → LLM 호출됨
 
 
-def test_run_intraday_v3_regime_shift_updates_status_and_rescans(monkeypatch, tmp_path):
+def test_run_intraday_v3_does_not_let_regime_shift_rewrite_execution(monkeypatch, tmp_path):
     import market_intelligence.portfolio as mil_portfolio
     import market_intelligence.market as mil_market
 
@@ -984,14 +1000,7 @@ def test_run_intraday_v3_regime_shift_updates_status_and_rescans(monkeypatch, tm
                          lambda ctx, phase: {"market_breadth": {"advancers": 100, "decliners": 600}})
 
     orch = make_orchestrator(tmp_path)
-    orch._drift_detector = FakeDriftDetector({
-        "drift_judgment": "REGIME_SHIFT", "reason": "지수 급락 + 외인 대량매도", "metrics": {}, "triggered": [],
-        "new_status": "RED", "risk_guidance_delta": {"buy_confidence_threshold": 88, "risk_per_trade_pct": 0.15, "max_positions": 2},
-        "drift_state": {"date": "2026-06-09", "last_trigger_time": {}, "today_caution_count": 3, "daily_lite_llm_calls": 1},
-    })
     orch._trading_agent = FakeTradingAgent({"action": "NO_TRADE", "proposals": [], "reason": "관망"})
-    rescan_calls = []
-    monkeypatch.setattr(orch, "run_scan_v3", lambda: rescan_calls.append(1))
 
     regime = {
         "status": "YELLOW", "regime": "SIDEWAYS", "confidence": 50,
@@ -1010,10 +1019,10 @@ def test_run_intraday_v3_regime_shift_updates_status_and_rescans(monkeypatch, tm
 
     orch.run_intraday_v3()
 
-    assert rescan_calls == [1]
     updated = json.loads(last_regime_path.read_text(encoding="utf-8"))
-    assert updated["status"] == "RED"
-    assert updated["risk_guidance"]["max_positions"] == 2
+    assert updated["status"] == "YELLOW"
+    assert updated["risk_guidance"]["max_positions"] == 4
+    assert orch._trading_agent.calls[0][1]["risk_guidance"]["max_positions"] == 5
 
 
 # ── run_late_intraday_v3 (폭락일 전용) ──────────────────────────────────────
@@ -1068,7 +1077,7 @@ def test_late_intraday_runs_agent_on_crash(monkeypatch, tmp_path):
     assert "psearch_result" in allowed and "get_top_movers" in allowed
 
 
-def test_late_intraday_runs_on_red_regime_without_index_crash(monkeypatch, tmp_path):
+def test_late_intraday_does_not_run_on_red_regime_without_index_crash(monkeypatch, tmp_path):
     import market_intelligence.market as mil_market
     import market_intelligence.portfolio as mil_portfolio
 
@@ -1084,7 +1093,8 @@ def test_late_intraday_runs_on_red_regime_without_index_crash(monkeypatch, tmp_p
     _write_today_regime(tmp_path, monkeypatch, status="RED")
 
     result = orch.run_late_intraday_v3()
-    assert orch._trading_agent.calls  # RED면 지수 폭락 없어도 게이트 통과
+    assert result == {"action": "NO_TRADE", "reason": "no_crash_gate"}
+    assert orch._trading_agent.calls == []
 
 
 def test_late_intraday_skips_when_gate_data_unavailable(monkeypatch, tmp_path):
@@ -1211,11 +1221,19 @@ def test_process_v3_buy_proposal_executes_order_when_approved(tmp_path, monkeypa
 
     monkeypatch.setattr(orch, "_market_data", type("MD", (), {"get_snapshot": staticmethod(lambda t: FakeSnapshot())})())
 
-    proposal = {"ticker": "005930", "side": "BUY", "confidence": 82, "stop_loss_price": 68000, "reason": "강한 회복"}
+    proposal = {
+        "ticker": "005930",
+        "side": "BUY",
+        "setup": "REVERSAL_BOTTOM",
+        "confidence": 82,
+        "stop_loss_price": 68000,
+        "reason": "강한 회복",
+    }
     result = orch._process_v3_buy_proposal(proposal)
 
     assert result["action"] == "BUY_EXECUTED"
     assert orch._order_manager.buy_calls[0].ticker == "005930"
+    assert orch._order_manager.buy_calls[0].strategy_type == "REVERSAL"
 
 
 def test_orchestrator_init_builds_milcontext_with_kiwoom_api(monkeypatch, tmp_path):
@@ -1527,3 +1545,10 @@ def test_process_v3_buy_proposal_rejected_by_buy_review(tmp_path, monkeypatch):
     assert result["action"] == "REJECTED"
     assert result["reason"] == "weak follower"
     assert orch._order_manager.buy_calls == []
+
+
+def test_v3_orchestrator_source_does_not_contain_v4_premarket_sejuk_log_label():
+    text = Path("orchestrator_v3.py").read_text(encoding="utf-8")
+
+    assert "[v4 PREMARKET_SEJUK]" not in text
+    assert "[v3 PREMARKET_SEJUK]" in text

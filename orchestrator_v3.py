@@ -1,10 +1,9 @@
 """MQK v3 오케스트레이터 - 단일 TradingAgent + MIL + v2 Safety Layer.
 
-v2의 RED hard block을 제거한다. RegimeAgent가 매일 아침 risk_guidance/drift_triggers를
-선언하면, RegimeDriftDetector가 장중 5분마다 무료로 감시한다(Tier2). 드리프트가 발동하면
-Lite LLM(Tier3)을 호출해 risk_guidance를 조정하거나 레짐을 전환한다. TradingAgent는
-Phase별로 MIL 16개 도구를 사용해 proposal을 생성하고, v2 Safety Layer
-(RiskOfficer/PositionSizer/Telegram/OrderManager)가 이를 코드로 강제한다.
+RegimeAgent는 시장 상태를 해석하는 상위 지표일 뿐, 개별 phase의 전략 선택이나
+매수/청산 문턱을 직접 통제하지 않는다. TradingAgent는 phase별로 MIL 도구를 사용해
+proposal을 생성하고, v2 Safety Layer(RiskOfficer/PositionSizer/Telegram/OrderManager)가
+이를 코드로 강제한다.
 """
 from __future__ import annotations
 
@@ -36,7 +35,7 @@ from codes.risk_officer import PortfolioState, RiskOfficer, RiskViolation, Trade
 from codes.stop_take_profit import StopTakeProfitManager
 from codes.technical import TechnicalAnalysis
 from codes.trade_journal import TradeJournal
-from config.settings import EXECUTION, LOG_CONFIG, RISK, ModelTier
+from config.settings import EXECUTION, LOG_CONFIG, RISK, SCANNER, REGIME_SAFETY_BOUNDS, ModelTier
 from llm.client import LLMClient
 from market_intelligence import market as mil_market
 from market_intelligence import portfolio as mil_portfolio
@@ -56,6 +55,7 @@ _NEXT_DAY_PREMARKET_CONTEXT_PATH = _DATA_DIR / "next_day_premarket_context.json"
 _TOOL_GAP_LOG_RETENTION_DAYS = 30
 _MIN_MONITORING_WATCHLIST = 6
 _MAX_WATCHLIST_SIZE = 10
+_REVERSAL_SETUP_ALIASES = {"REVERSAL_BOTTOM", "SETUP4_PANIC"}
 
 
 def _default_drift_state(date: str) -> dict:
@@ -105,6 +105,27 @@ def _watchlist_ticker(entry: object) -> str:
     if isinstance(entry, dict):
         return str(entry.get("ticker") or "").strip()
     return str(entry).strip()
+
+
+def _normalize_setup_name(setup: str | None) -> str:
+    raw = str(setup or "TREND").strip().upper()
+    if raw in _REVERSAL_SETUP_ALIASES:
+        return "REVERSAL"
+    return raw or "TREND"
+
+
+def _static_execution_guidance() -> dict:
+    """레짐과 무관하게 적용되는 기본 실행 가이드.
+
+    시장 레짐은 참고 지표일 뿐, phase별 매수 문턱/유동성 하한/최대 포지션 수는
+    상시 기준값을 사용한다.
+    """
+    return {
+        "buy_confidence_threshold": 75.0,
+        "risk_per_trade_pct": float(RISK.risk_per_trade_pct),
+        "max_positions": int(RISK.max_positions),
+        "min_trading_value_krw": int(max(SCANNER.min_trading_value_krw, REGIME_SAFETY_BOUNDS.min_trading_value_krw)),
+    }
 
 
 def _normalize_watchlist_entries(watchlist: list[object]) -> list[dict]:
@@ -346,10 +367,10 @@ class MQKOrchestratorV3:
         if candidates:
             save_watchlist(candidates, path=_WATCHLIST_PATH)
             logger.info(
-                f"[v4 PREMARKET_SEJUK] 진입 후보 {len(candidates)}개 → watchlist.json"
+                f"[v3 PREMARKET_SEJUK] 진입 후보 {len(candidates)}개 → watchlist.json"
             )
         else:
-            logger.info("[v4 PREMARKET_SEJUK] 통과 후보 없음")
+            logger.info("[v3 PREMARKET_SEJUK] 통과 후보 없음")
 
         return result
 
@@ -376,8 +397,22 @@ class MQKOrchestratorV3:
     def run_scan_v3(self) -> dict:
         regime = load_last_regime(path=_LAST_REGIME_PATH) or {}
         drift_state = load_drift_state(path=_DRIFT_STATE_PATH, today=self._today)
-        context = self._build_context(TradingPhase.SCAN, regime, _drift_status(drift_state), watchlist=[])
+
+        # premarket_sejuk이 저장한 상한가 후보를 scan context에 전달
+        existing_watchlist = load_watchlist_entries(path=_WATCHLIST_PATH)
+        context = self._build_context(
+            TradingPhase.SCAN, regime, _drift_status(drift_state),
+            watchlist=existing_watchlist,
+        )
         context["next_day_prior"] = load_next_day_premarket_context(path=_NEXT_DAY_PREMARKET_CONTEXT_PATH)
+
+        # 거래대금 폭증 종목 사전 탐지 (코드가 수집 → LLM이 검증)
+        try:
+            volume_surge = mil_screening.get_volume_surge(self._mil, TradingPhase.SCAN.value)
+            context["volume_surge_candidates"] = volume_surge.get("surge_top", [])
+        except Exception:
+            context["volume_surge_candidates"] = []
+
         result = self._trading_agent.run(TradingPhase.SCAN, context)
         self._record_tool_request(result, TradingPhase.SCAN, regime)
         self._alert_on_tool_failures(result, TradingPhase.SCAN)
@@ -404,34 +439,9 @@ class MQKOrchestratorV3:
             return {"action": "NO_TRADE", "reason": "stale_regime"}
 
         drift_state = load_drift_state(path=_DRIFT_STATE_PATH, today=self._today)
-        snapshot = self._collect_drift_snapshot()
-
-        risk_guidance = dict(regime.get("risk_guidance", {}))
-        if snapshot is None:
-            logger.warning("[INTRADAY] 드리프트 스냅샷 수집 실패 — 드리프트 체크 스킵, 기존 risk_guidance 유지")
-            drift_judgment = "STABLE"
-        else:
-            drift_result = self._drift_detector.check(
-                market_snapshot=snapshot,
-                drift_triggers=regime.get("drift_triggers", []),
-                cooldown_minutes=regime.get("cooldown_minutes", 60),
-                max_daily_triggers=regime.get("max_daily_triggers", 3),
-                drift_state=drift_state,
-                current_status=regime.get("status", "YELLOW"),
-                current_regime=regime,
-            )
-            save_drift_state(drift_result["drift_state"], path=_DRIFT_STATE_PATH)
-
-            drift_judgment = drift_result["drift_judgment"]
-            if drift_judgment in {"CAUTION", "REGIME_SHIFT"}:
-                risk_guidance.update(drift_result.get("risk_guidance_delta", {}))
-                self._notify_drift(drift_result)
-
-            if drift_judgment == "REGIME_SHIFT":
-                regime["status"] = drift_result["new_status"]
-                regime["risk_guidance"] = risk_guidance
-                save_last_regime_dict(regime, path=_LAST_REGIME_PATH)
-                self.run_scan_v3()
+        if not _DRIFT_STATE_PATH.exists():
+            save_drift_state(drift_state, path=_DRIFT_STATE_PATH)
+        drift_judgment = _drift_status(drift_state)
 
         watchlist = load_watchlist_entries(path=_WATCHLIST_PATH)
 
@@ -451,7 +461,7 @@ class MQKOrchestratorV3:
 
         context = self._build_context(
             TradingPhase.INTRADAY, regime, drift_judgment,
-            watchlist=watchlist, risk_guidance_override=risk_guidance,
+            watchlist=watchlist,
         )
         result = self._trading_agent.run(TradingPhase.INTRADAY, context)
         result = self._sanitize_intraday_result(result)
@@ -488,18 +498,17 @@ class MQKOrchestratorV3:
         is_crash = (
             kospi_chg <= self._CRASH_GATE_CHANGE_PCT
             or kosdaq_chg <= self._CRASH_GATE_CHANGE_PCT
-            or regime.get("status") == "RED"
         )
         if not is_crash:
             logger.info(
-                f"[LATE_INTRADAY] 폭락 게이트 미충족 (KOSPI {kospi_chg:+.2f}%, KOSDAQ {kosdaq_chg:+.2f}%, "
-                f"status={regime.get('status')}) — LLM 미호출 스킵"
+                f"[LATE_INTRADAY] 폭락 게이트 미충족 (KOSPI {kospi_chg:+.2f}%, KOSDAQ {kosdaq_chg:+.2f}) "
+                f"— LLM 미호출 스킵"
             )
             return {"action": "NO_TRADE", "reason": "no_crash_gate"}
 
         logger.warning(
-            f"[LATE_INTRADAY] 폭락 게이트 통과 (KOSPI {kospi_chg:+.2f}%, KOSDAQ {kosdaq_chg:+.2f}%, "
-            f"status={regime.get('status')}) — 낙주 진입 판단 시작"
+            f"[LATE_INTRADAY] 폭락 게이트 통과 (KOSPI {kospi_chg:+.2f}%, KOSDAQ {kosdaq_chg:+.2f}) "
+            f"— 낙주 진입 판단 시작"
         )
         drift_state = load_drift_state(path=_DRIFT_STATE_PATH, today=self._today)
         watchlist = load_watchlist(path=_WATCHLIST_PATH)
@@ -707,7 +716,7 @@ class MQKOrchestratorV3:
         watchlist: list[str],
         risk_guidance_override: dict | None = None,
     ) -> dict:
-        risk_guidance = risk_guidance_override or regime.get("risk_guidance", {})
+        risk_guidance = _static_execution_guidance()
 
         # 잔고 조회는 일시적 KIS 500/타임아웃으로 실패할 수 있다 (D1 라이브 테스트 및
         # 2026-06-15 발견). 최대 3회 재시도 후에도 실패하면, 직전에 성공한 스냅샷을
@@ -899,7 +908,7 @@ class MQKOrchestratorV3:
             candidate = candidate_map.get(ticker, {})
             entry = {
                 "ticker": ticker,
-                "setup": str(candidate.get("setup") or "TREND"),
+                "setup": _normalize_setup_name(candidate.get("setup")),
                 "confidence": int(candidate.get("confidence") or 0),
                 "reason": str(candidate.get("reason") or ""),
             }
@@ -983,24 +992,39 @@ class MQKOrchestratorV3:
             candidates.append(row)
 
         candidates.sort(key=lambda x: (x["trading_value"], x["change_pct"]), reverse=True)
-        watchlist = [row["ticker"] for row in candidates[:limit]]
-        if not watchlist:
+        backfill_watchlist = [row["ticker"] for row in candidates[:limit]]
+
+        # premarket_sejuk이 저장한 LIMIT_UP_PULLBACK 후보를 backfill 앞에 붙여서 보존
+        premarket_entries = [
+            e for e in (context.get("watchlist") or [])
+            if isinstance(e, dict) and e.get("setup") == "LIMIT_UP_PULLBACK"
+        ]
+        premarket_tickers = [e["ticker"] for e in premarket_entries]
+        merged_watchlist = premarket_tickers + [t for t in backfill_watchlist if t not in premarket_tickers]
+        merged_watchlist = merged_watchlist[:limit]
+
+        if not merged_watchlist:
             return result
 
-        logger.info(f"[SCAN BACKFILL] deterministic watchlist={watchlist}")
+        logger.info(f"[SCAN BACKFILL] deterministic watchlist={merged_watchlist}")
+        backfill_candidates = [
+            {
+                "ticker": row["ticker"],
+                "confidence": 65,
+                "reason": f"orchestrator_scan_backfill:{row['source']}",
+                "setup": "RELATIVE_STRENGTH" if "theme" not in row["source"] else "TREND",
+            }
+            for row in candidates[:limit]
+        ]
+        # premarket 후보는 원본 metadata 유지
+        merged_candidates = premarket_entries + [
+            c for c in backfill_candidates if c["ticker"] not in premarket_tickers
+        ]
         return {
             "next_action": "final",
             "action": "WATCHLIST_UPDATE",
-            "watchlist": watchlist,
-            "candidates": [
-                {
-                    "ticker": row["ticker"],
-                    "confidence": 65,
-                    "reason": f"orchestrator_scan_backfill:{row['source']}",
-                    "setup": "RELATIVE_STRENGTH" if "theme" not in row["source"] else "TREND",
-                }
-                for row in candidates[:limit]
-            ],
+            "watchlist": merged_watchlist,
+            "candidates": merged_candidates[:limit],
             "overheated_bias_warning": overheated_bias_warning,
             "reason": f"{result.get('reason', '')} | orchestrator_scan_backfill".strip(" |"),
         }
@@ -1123,6 +1147,7 @@ class MQKOrchestratorV3:
 
     def _process_v3_buy_proposal(self, proposal: dict) -> dict:
         ticker = str(proposal["ticker"])
+        normalized_setup = _normalize_setup_name(proposal.get("setup"))
         stop_loss_price = float(proposal["stop_loss_price"])
         snapshot = self._market_data.get_snapshot(ticker)
         entry_price = snapshot.current_price
@@ -1205,7 +1230,7 @@ class MQKOrchestratorV3:
             reason=proposal.get("reason", ""),
             confidence=proposal.get("confidence", 0),
             approval_request_id=approval_request_id,
-            strategy_type=proposal.get("setup", "TREND"),
+            strategy_type=normalized_setup,
         )
         result = self._order_manager.execute_buy(order)
         if result.success:
@@ -1252,7 +1277,7 @@ class MQKOrchestratorV3:
         review_payload = {
             "ticker": proposal.get("ticker"),
             "name": stock_name,
-            "setup": proposal.get("setup", "TREND"),
+            "setup": _normalize_setup_name(proposal.get("setup")),
             "confidence": proposal.get("confidence", 0),
             "reason": proposal.get("reason", ""),
             "current_price": current_price,
@@ -1488,8 +1513,6 @@ class MQKOrchestratorV3:
             "confidence": regime.confidence,
             "reason": regime.reason,
             "risk_notes": regime.risk_notes,
-            "opportunity_mode": regime.opportunity_mode.value,
-            "scanner_mode": regime.scanner_mode.value,
         }
         self._save_json("market_status.json", market_status)
         self._notify_market_regime(market_status)
@@ -1512,8 +1535,6 @@ class MQKOrchestratorV3:
             f"상태: *{status}*",
             f"레짐: *{regime}*",
             f"확신도: *{confidence}%*",
-            f"기회 모드: {market_status.get('opportunity_mode', 'NORMAL')}",
-            f"스캐너 모드: {market_status.get('scanner_mode', 'TREND')}",
             "",
             "근거:",
             reason,
