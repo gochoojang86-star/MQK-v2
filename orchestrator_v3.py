@@ -150,6 +150,18 @@ def _normalize_watchlist_entries(watchlist: list[object]) -> list[dict]:
             cluster = raw.get("cluster")
             if cluster not in (None, ""):
                 entry["cluster"] = str(cluster)
+            theme = raw.get("theme")
+            if theme not in (None, ""):
+                entry["theme"] = str(theme)
+            subtheme = raw.get("subtheme")
+            if subtheme not in (None, ""):
+                entry["subtheme"] = str(subtheme)
+            role = raw.get("role")
+            if role not in (None, ""):
+                entry["role"] = str(role)
+            theme_evidence = raw.get("theme_evidence")
+            if isinstance(theme_evidence, list):
+                entry["theme_evidence"] = [str(item) for item in theme_evidence if str(item).strip()]
             d_day = raw.get("d_day")
             if d_day not in (None, ""):
                 entry["d_day"] = str(d_day)
@@ -219,6 +231,10 @@ def load_watchlist(path: Path = _WATCHLIST_PATH) -> list[str]:
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"[orchestrator_v3] watchlist.json 손상 — 빈 목록 반환: {e}")
         return []
+    updated_at = str(data.get("updated_at") or "")
+    if updated_at and updated_at[:10] != datetime.now().strftime("%Y-%m-%d"):
+        logger.info("[orchestrator_v3] 전일 watchlist 감지 — stale watchlist 무시")
+        return []
     return [entry["ticker"] for entry in _normalize_watchlist_entries(data.get("watchlist", []))]
 
 
@@ -229,6 +245,10 @@ def load_watchlist_entries(path: Path = _WATCHLIST_PATH) -> list[dict]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"[orchestrator_v3] watchlist.json 손상 — 빈 목록 반환: {e}")
+        return []
+    updated_at = str(data.get("updated_at") or "")
+    if updated_at and updated_at[:10] != datetime.now().strftime("%Y-%m-%d"):
+        logger.info("[orchestrator_v3] 전일 watchlist entry 감지 — stale watchlist 무시")
         return []
     return _normalize_watchlist_entries(data.get("watchlist", []))
 
@@ -411,7 +431,11 @@ class MQKOrchestratorV3:
         # 거래대금 폭증 종목 사전 탐지 (코드가 수집 → LLM이 검증)
         try:
             volume_surge = mil_screening.get_volume_surge(self._mil, TradingPhase.SCAN.value)
-            context["volume_surge_candidates"] = volume_surge.get("surge_top", [])
+            context["volume_surge_candidates"] = (
+                volume_surge.get("surge_top")
+                or volume_surge.get("stocks")
+                or []
+            )
         except Exception:
             context["volume_surge_candidates"] = []
 
@@ -547,13 +571,18 @@ class MQKOrchestratorV3:
     def run_market_close_v3(self) -> dict:
         """장마감 분석. 팩트(snapshot)는 코드가 결정론적으로 수집해 컨텍스트에 주입하고
         파일로 저장한다 — LLM의 도구 호출 재량에 맡기면 수집을 건너뛸 수 있다 (D1 확인).
-        LLM은 해석(close_market_read)과 다음날 prior 생성만 담당한다."""
+        LLM은 해석(close_market_read), 놓친 종목 반성, 다음날 prior 생성을 담당한다."""
         regime = load_last_regime(path=_LAST_REGIME_PATH) or {}
         snapshot = self._collect_market_close_snapshot()
         self._save_json("market_close_snapshot.json", snapshot)
 
+        # 매매 여부와 무관한 일일 반성 데이터 수집
+        daily_reflection = self._collect_daily_reflection()
+        self._save_json("daily_reflection.json", daily_reflection)
+
         context = self._build_context(TradingPhase.MARKET_CLOSE, regime, "STABLE", watchlist=[])
         context["market_close_data"] = snapshot
+        context["daily_reflection"] = daily_reflection
         result = self._trading_agent.run(TradingPhase.MARKET_CLOSE, context)
         self._record_tool_request(result, TradingPhase.MARKET_CLOSE, regime)
         self._alert_on_tool_failures(result, TradingPhase.MARKET_CLOSE)
@@ -564,6 +593,126 @@ class MQKOrchestratorV3:
         save_next_day_premarket_context(next_day_context, path=_NEXT_DAY_PREMARKET_CONTEXT_PATH)
         self._save_json("tool_gap_summary.json", self._summarize_tool_gaps())
         return result
+
+    def _collect_daily_reflection(self) -> dict:
+        """매매 여부와 무관하게 오늘의 봇 행동과 시장 실제 결과를 비교 수집.
+
+        LLM이 이 데이터로 ① 놓친 종목, ② 놓친 이유, ③ 시스템 개선 포인트를 분석한다.
+        """
+        reflection: dict = {"date": self._today}
+        missing: list[str] = []
+
+        # 1. 오늘 watchlist (봇이 주목하고 있던 종목)
+        try:
+            reflection["today_watchlist"] = load_watchlist_entries(path=_WATCHLIST_PATH)
+        except Exception as e:
+            reflection["today_watchlist"] = []
+            missing.append(f"watchlist({e})")
+
+        # 2. 오늘 보유 포지션 및 손익
+        try:
+            positions = mil_portfolio.get_open_positions(self._mil, TradingPhase.MARKET_CLOSE.value)
+            pnl = mil_portfolio.get_daily_pnl(self._mil, TradingPhase.MARKET_CLOSE.value)
+            reflection["open_positions"] = positions.get("positions", [])
+            reflection["daily_pnl_pct"] = pnl.get("realized_pnl_pct", 0.0)
+            reflection["daily_pnl_krw"] = pnl.get("realized_pnl_krw", 0.0)
+        except Exception as e:
+            reflection["open_positions"] = []
+            missing.append(f"portfolio({e})")
+
+        # 3. 오늘 실제 상위 종목 (봇이 잡았어야 할 후보군)
+        try:
+            movers = mil_screening.get_top_movers(self._mil, TradingPhase.MARKET_CLOSE.value)
+            tv_top = movers.get("trading_value_top") or movers.get("movers") or []
+            reflection["actual_top_movers"] = [
+                {
+                    "ticker": s.get("ticker"),
+                    "name": s.get("name"),
+                    "change_pct": s.get("change_pct"),
+                    "trading_value_krw": s.get("trading_value_krw"),
+                }
+                for s in tv_top[:10]
+                if (s.get("change_pct") or 0) > 0
+            ]
+        except Exception as e:
+            reflection["actual_top_movers"] = []
+            missing.append(f"top_movers({e})")
+
+        # 4. 놓친 종목 식별: 상위 종목인데 watchlist에 없던 것 (ETF/레버리지 제외)
+        _ETF_KEYWORDS = {"KODEX", "TIGER", "SOL", "RISE", "KBSTAR", "ACE", "PLUS",
+                         "레버리지", "인버스", "ETF", "ETN"}
+        def _is_individual_stock(s: dict) -> bool:
+            name = str(s.get("name") or "").upper()
+            return not any(kw in name for kw in _ETF_KEYWORDS)
+
+        watchlist_tickers = {e.get("ticker") for e in reflection.get("today_watchlist", []) if isinstance(e, dict)}
+        reflection["missed_opportunities"] = [
+            s for s in reflection.get("actual_top_movers", [])
+            if s.get("ticker") and s["ticker"] not in watchlist_tickers
+               and (s.get("change_pct") or 0) >= 5.0  # +5% 이상 오른 종목만
+               and _is_individual_stock(s)             # ETF/레버리지 제외
+        ]
+
+        # 5. 오늘 intraday 행동 요약 (로그에서 수집)
+        try:
+            log_path = self._log_dir / f"intraday_v3_{self._today.replace('-','')}_summary.json"
+            intraday_actions = self._summarize_intraday_actions()
+            reflection["intraday_summary"] = intraday_actions
+        except Exception as e:
+            reflection["intraday_summary"] = {"error": str(e)}
+            missing.append(f"intraday_summary({e})")
+
+        # 6. 오늘 레짐 흐름
+        try:
+            last_regime = load_last_regime(path=_LAST_REGIME_PATH) or {}
+            reflection["regime_today"] = {
+                "final_regime": last_regime.get("regime"),
+                "final_status": last_regime.get("status"),
+                "confidence": last_regime.get("confidence"),
+            }
+        except Exception:
+            pass
+
+        reflection["data_quality"] = {"missing_fields": missing}
+        return reflection
+
+    def _summarize_intraday_actions(self) -> dict:
+        """오늘 intraday 디버그 JSON에서 action 통계를 수집한다."""
+        log_dir = self._log_dir
+        counts: dict[str, int] = {"HOLD": 0, "NO_TRADE": 0, "BUY": 0, "SELL": 0}
+        tool_called_count = 0
+        no_tool_count = 0
+        last_reason = ""
+
+        if not log_dir.exists():
+            return {"note": "log_dir 없음"}
+
+        for path in sorted(log_dir.glob("intraday_v3_*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                action = (data.get("action") or "NO_TRADE").upper()
+                counts[action] = counts.get(action, 0) + 1
+                last_reason = data.get("reason", "")[:200]
+                # tool_history가 있으면 도구 호출된 것
+                if data.get("tool_history"):
+                    tool_called_count += 1
+                else:
+                    no_tool_count += 1
+            except Exception:
+                continue
+
+        total = sum(counts.values())
+        return {
+            "total_ticks": total,
+            "action_counts": counts,
+            "tool_called_ticks": tool_called_count,
+            "no_tool_ticks": no_tool_count,
+            "last_reason_sample": last_reason,
+            "assessment": (
+                "도구 미호출 반복 — 실시간 데이터 없이 판단" if no_tool_count > tool_called_count
+                else "정상 도구 활용"
+            ),
+        }
 
     def _record_tool_request(self, result: dict, phase: TradingPhase, regime: dict) -> None:
         if result.get("action") != "TOOL_REQUEST":
@@ -917,6 +1066,18 @@ class MQKOrchestratorV3:
             cluster = candidate.get("cluster")
             if cluster not in (None, ""):
                 entry["cluster"] = str(cluster)
+            theme = candidate.get("theme")
+            if theme not in (None, ""):
+                entry["theme"] = str(theme)
+            subtheme = candidate.get("subtheme")
+            if subtheme not in (None, ""):
+                entry["subtheme"] = str(subtheme)
+            role = candidate.get("role")
+            if role not in (None, ""):
+                entry["role"] = str(role)
+            theme_evidence = candidate.get("theme_evidence")
+            if isinstance(theme_evidence, list):
+                entry["theme_evidence"] = [str(item) for item in theme_evidence if str(item).strip()]
             d_day = candidate.get("d_day")
             if d_day not in (None, ""):
                 entry["d_day"] = str(d_day)
