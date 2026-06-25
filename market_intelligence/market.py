@@ -250,43 +250,84 @@ def get_news_market(ctx: MILContext, phase: str) -> dict:
 
 
 def get_us_market_context(ctx: MILContext, phase: str) -> dict:
-    """미국 증시 야간 등락률, VIX, 달러/원 환율 — yfinance 경유.
+    """미국 증시 야간 등락률, VIX, 달러/원 환율.
 
-    09:03 OPENING 레짐 판단에만 사용. KIS/키움 모의투자 계정이 해외 API를
-    지원하지 않아 yfinance(Yahoo Finance)로 대체한다.
+    나스닥/S&P500/다우/환율: KIS FHKST03030100 (실전계좌 토큰 사용, 모의도 지원).
+    VIX: KIS 미제공 → yfinance 유지.
     캐시 TTL 300초 — 장전 레짐 평가 1회 호출로 충분.
     """
+    from datetime import timedelta
+
+    def _fetch_kis_index(mkt_code: str, iscd: str) -> tuple[float | None, float | None]:
+        """KIS FHKST03030100으로 해외지수/환율 전일 종가 + 등락률 조회."""
+        today = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
+        try:
+            r = ctx.kis_api.raw_get(
+                "FHKST03030100",
+                "overseas-price/v1/quotations/inquire-daily-chartprice",
+                {
+                    "FID_COND_MRKT_DIV_CODE": mkt_code,
+                    "FID_INPUT_ISCD": iscd,
+                    "FID_INPUT_DATE_1": start,
+                    "FID_INPUT_DATE_2": today,
+                    "FID_PERIOD_DIV_CODE": "D",
+                },
+            )
+            o1 = r.get("output1", {}) or {}
+            last = _to_float(o1.get("ovrs_nmix_prdy_clpr") or o1.get("ovrs_nmix_prpr"))
+            chg = _to_float(o1.get("prdy_ctrt"))
+            if last and last > 0:
+                return round(last, 4), round(chg, 2)
+            # output2에서 가장 최근 값
+            rows = r.get("output2") or []
+            if rows:
+                last2 = _to_float(rows[0].get("ovrs_nmix_clpr"))
+                prev2 = _to_float(rows[1].get("ovrs_nmix_clpr")) if len(rows) > 1 else last2
+                chg2 = round((last2 - prev2) / prev2 * 100, 2) if prev2 else 0.0
+                return round(last2, 4), chg2
+        except Exception:
+            pass
+        return None, None
 
     def fetch() -> dict:
         result: dict = {}
+        missing: list[str] = []
+
+        # ── KIS API: 나스닥, S&P500, 다우존스, USD/KRW ──────────────────────────
+        kis_targets = [
+            ("nasdaq",  "N", "COMP"),    # 나스닥 Composite
+            ("sp500",   "N", "SPX"),     # S&P 500
+            ("dow",     "N", ".DJI"),    # 다우존스
+            ("usdkrw",  "X", "FX@KRW"), # 달러/원 환율
+        ]
+        for key, mkt, iscd in kis_targets:
+            val, chg = _fetch_kis_index(mkt, iscd)
+            result[key] = val
+            result[f"{key}_change_pct"] = chg
+            if val is None:
+                missing.append(key)
+
+        # ── yfinance: VIX (KIS 미제공) ──────────────────────────────────────────
         try:
             import yfinance as yf  # type: ignore[import]
+            hist = yf.Ticker("^VIX").history(period="2d")
+            if not hist.empty:
+                last_v = float(hist["Close"].iloc[-1])
+                prev_v = float(hist["Close"].iloc[-2]) if len(hist) > 1 else last_v
+                result["vix"] = round(last_v, 2)
+                result["vix_change_pct"] = round((last_v - prev_v) / prev_v * 100, 2) if prev_v else 0.0
+            else:
+                result["vix"] = None
+                result["vix_change_pct"] = None
+                missing.append("vix(empty)")
+        except Exception as e:
+            result["vix"] = None
+            result["vix_change_pct"] = None
+            missing.append(f"vix({e})")
 
-            symbols = {
-                "nasdaq": "^IXIC",
-                "sp500":  "^GSPC",
-                "vix":    "^VIX",
-                "usdkrw": "USDKRW=X",
-            }
-            for key, sym in symbols.items():
-                try:
-                    hist = yf.Ticker(sym).history(period="2d")
-                    if hist.empty:
-                        result[key] = None
-                        result[f"{key}_change_pct"] = None
-                        continue
-                    last = float(hist["Close"].iloc[-1])
-                    prev = float(hist["Close"].iloc[-2]) if len(hist) > 1 else last
-                    chg_pct = round((last - prev) / prev * 100, 2) if prev else 0.0
-                    result[key] = round(last, 2)
-                    result[f"{key}_change_pct"] = chg_pct
-                except Exception as e:
-                    result[key] = None
-                    result[f"{key}_change_pct"] = None
-                    result.setdefault("missing_fields", []).append(f"{key}({e})")
-        except ImportError:
-            result["error"] = "yfinance 미설치 — pip install yfinance"
-
+        if missing:
+            result["missing_fields"] = missing
         return result
 
     return ctx.cached_call("get_us_market_context", phase, {}, fetch)
