@@ -63,12 +63,24 @@ module.exports = {
       autorestart: false,
     },
     {
+      name: "mqk-v3-premarket-first",
+      script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
+      cwd: "/mnt/c/Users/gocho/MQK-v2",
+      env: { MQK_PHASE: "premarket_first" },
+      // KST 08:50 — 장 열리기 전 첫 레짐 판단.
+      // 미국 야간 데이터(나스닥/S&P500/VIX/환율) + 전일 확정 데이터 기반.
+      // 09:03 일반 레짐과 달리 시가 전 판단이라 선제적 포지셔닝에 활용.
+      cron_restart: "50 8 * * 1-5",
+      autorestart: false,
+    },
+    {
       name: "mqk-v3-premarket",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
       args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "premarket" },
-      // KST 09:03 / 11:03 / 13:03 — 장중 첫번째 레짐 평가 포함 3회.
+      // KST 09:03 / 11:03 / 13:03 — 장 시작 후 시가 흐름 반영 레짐 평가.
       // :03인 이유: intraday */10 틱(:00)과 flock 충돌을 피하기 위함.
       cron_restart: "3 9,11,13 * * 1-5",
       autorestart: false,

@@ -41,6 +41,7 @@ _LOCK_PATH = Path(__file__).parent / "data" / "mqk_v3.lock"
 # 값은 tuple 또는 list[tuple] — 여러 시간 슬롯을 허용할 때 리스트로 지정한다.
 _PHASE_WINDOWS: dict[str, tuple[str, str] | list[tuple[str, str]]] = {
     "premarket_early": ("08:45", "09:00"),
+    "premarket_first": ("08:47", "09:00"),   # 08:50 첫 레짐 (장 열리기 전, US 데이터 기반)
     "premarket": [("09:00", "09:10"), ("10:55", "11:10"), ("12:55", "13:10")],
     "scan": ("09:10", "15:05"),
     "intraday": ("08:55", "15:05"),
@@ -116,6 +117,14 @@ def run_premarket_early() -> None:
     logger.info(f"[PREMARKET_SEJUK] 진입 후보={n}개")
 
 
+def run_premarket_first() -> None:
+    """08:50 첫 레짐 판단 — 장 열리기 전. 미국 야간 데이터 + 전일 기반."""
+    _guard_trading_day()
+    orch = _make_orchestrator()
+    result = orch.run_premarket_v3()
+    logger.info(f"[v3 PREMARKET_FIRST] {result.get('regime')} ({result.get('status')})")
+
+
 def run_premarket() -> None:
     _guard_trading_day()
     orch = _make_orchestrator()
@@ -169,6 +178,7 @@ def run_premarket_close() -> None:
 _RUNNERS = {
     "premarket_early": run_premarket_early,
     "premarket_sejuk": run_premarket_early,   # v4 PM2 앱 호환 별칭
+    "premarket_first": run_premarket_first,   # 08:50 첫 레짐 (장전, US 데이터 기반)
     "premarket": run_premarket,
     "premarket_close": run_premarket_close,   # 15:10 마감 직전 레짐 재평가
     "scan": run_scan,
