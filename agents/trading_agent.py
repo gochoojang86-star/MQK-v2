@@ -280,6 +280,26 @@ class TradingAgent:
                 _phase_str = phase.value if hasattr(phase, "value") else str(phase)
                 if _phase_str == "SCAN":
                     response = self._maybe_backfill_scan_result(context, tool_history, response)
+                    return response
+
+                # INTRADAY: 도구 호출 없이 바로 HOLD/NO_TRADE를 냈으면 강제 재시도.
+                # LLM이 실시간 데이터 없이 판단하면 세력 이탈 신호를 놓친다.
+                if _phase_str == "INTRADAY" and not tool_history:
+                    _action = (response.get("action") or "").upper()
+                    if _action in {"HOLD", "NO_TRADE"}:
+                        transcript.append(json.dumps({
+                            "error": "tool_call_required",
+                            "instruction": (
+                                "도구 호출 없이 판단 금지. "
+                                "반드시 get_watchlist_intraday_snapshot을 먼저 호출해 "
+                                "실시간 분봉·거래대금 데이터를 확인한 후 판단하라. "
+                                "도구 호출 형식: {\"next_action\": \"call_tool\", "
+                                "\"tool\": \"get_watchlist_intraday_snapshot\", "
+                                "\"tool_args\": {\"tickers\": [\"종목코드\"]}}"
+                            ),
+                        }, ensure_ascii=False))
+                        continue  # 루프 재실행 — 이번엔 도구를 호출해야 함
+
                 return response
 
             if next_action == "tool_request":

@@ -1545,19 +1545,15 @@ class MQKOrchestratorV3:
         if len(reason) > 700:
             reason = reason[:700].rstrip() + "..."
 
+        # plain text 사용 (마크다운 특수문자가 reason에 섞이면 400 오류 발생)
+        reason_safe = reason[:300].replace("*", "").replace("_", "").replace("`", "")
         lines = [
-            f"📊 *MQK v3 시장레짐 평가 완료* ({market_status.get('date', self._today)})",
+            f"📊 MQK 시장레짐 ({market_status.get('date', self._today)})",
+            f"레짐: {regime} / {status} (확신도 {confidence}%)",
             "",
-            f"상태: *{status}*",
-            f"레짐: *{regime}*",
-            f"확신도: *{confidence}%*",
+            f"근거: {reason_safe}",
             "",
-            "근거:",
-            reason,
-            "",
-            "리스크 노트:",
-            risk_text,
-            "",
+            f"리스크: {risk_text[:200]}",
             f"전일 KOSPI/KOSDAQ: {market_status.get('prev_kospi_change_pct', 0):+.2f}% / {market_status.get('prev_kosdaq_change_pct', 0):+.2f}%",
         ]
         try:

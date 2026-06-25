@@ -130,9 +130,9 @@ class TelegramApproval:
         )
 
     def notify(self, message: str) -> None:
-        """일반 알림 전송 (승인 불필요)"""
+        """일반 알림 전송 (승인 불필요). parse_mode 없이 plain text로 전송."""
         for chat_id in self._notify_chat_ids:
-            self._send_message(message, chat_id=chat_id)
+            self._send_message(message, chat_id=chat_id, parse_mode=None)
 
     def notify_improvement_proposal(self, proposal_id: int, message: str) -> None:
         """MARKET_CLOSE 개선 제안 알림 전송.
