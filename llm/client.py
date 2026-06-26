@@ -23,18 +23,21 @@ from llm.oauth_loader import load_openai_token
 
 logger = logging.getLogger(__name__)
 
+_PROVIDER_OPENAI = "openai"
+_PROVIDER_OPENROUTER = "openrouter"
+
 # max_completion_tokens 사용 모델 (o-series + gpt-5.x)
 _REASONING_MODEL_PREFIXES = (
     "o1", "o3", "o4", "gpt-5",
 )
 
 
-def _uses_max_completion_tokens(model: str) -> bool:
-    """OpenAI Chat Completions에서 max_completion_tokens를 요구하는 모델 판별."""
-    return model.startswith(_REASONING_MODEL_PREFIXES)
+def _uses_max_completion_tokens(model: str, provider: str) -> bool:
+    """OpenAI Chat Completions에서만 max_completion_tokens를 사용한다."""
+    return provider == _PROVIDER_OPENAI and model.startswith(_REASONING_MODEL_PREFIXES)
 
 
-def _resolve_api_key() -> str:
+def _resolve_openai_api_key() -> str:
     """OPENAI_API_KEY → OAuth 토큰 순으로 인증 키를 결정."""
     key = os.environ.get("OPENAI_API_KEY", "").strip()
     if key:
@@ -48,6 +51,13 @@ def _resolve_api_key() -> str:
     )
 
 
+def _resolve_openrouter_api_key() -> str:
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if key:
+        return key
+    raise RuntimeError("OpenRouter 인증 수단 없음. OPENROUTER_API_KEY 설정 후 재시도하세요.")
+
+
 class LLMClient:
     """
     OpenAI API 클라이언트.
@@ -57,8 +67,32 @@ class LLMClient:
 
     def __init__(self, config=None):
         self._cfg = config or LLM_CONFIG
-        self._client = OpenAI(api_key=_resolve_api_key())
+        self._provider_name = self._resolve_provider_name()
+        self._client = self._build_client()
         self._usage_log_dir = LOG_CONFIG.base_dir
+
+    def _resolve_provider_name(self) -> str:
+        provider = str(getattr(self._cfg, "provider", _PROVIDER_OPENAI) or _PROVIDER_OPENAI).strip().lower()
+        if provider not in {_PROVIDER_OPENAI, _PROVIDER_OPENROUTER}:
+            raise ValueError(f"지원하지 않는 LLM provider: {provider}")
+        return provider
+
+    def _build_client(self):
+        if self._provider_name == _PROVIDER_OPENAI:
+            return OpenAI(api_key=_resolve_openai_api_key())
+
+        default_headers: dict[str, str] = {}
+        if self._cfg.openrouter_http_referer:
+            default_headers["HTTP-Referer"] = self._cfg.openrouter_http_referer
+        if self._cfg.openrouter_app_title:
+            default_headers["X-OpenRouter-Title"] = self._cfg.openrouter_app_title
+        kwargs: dict[str, Any] = {
+            "api_key": _resolve_openrouter_api_key(),
+            "base_url": self._cfg.openrouter_base_url,
+        }
+        if default_headers:
+            kwargs["default_headers"] = default_headers
+        return OpenAI(**kwargs)
 
     def call(
         self,
@@ -73,8 +107,9 @@ class LLMClient:
         - o-series는 temperature 제거, max_completion_tokens 사용
         - expect_json=True면 JSON 파싱 후 반환
         """
-        model = self._cfg.model_for(tier)
-        is_reasoning = _uses_max_completion_tokens(model)
+        provider = getattr(self, "_provider_name", self._resolve_provider_name())
+        model = self._cfg.model_for_provider(provider, tier)
+        is_reasoning = _uses_max_completion_tokens(model, provider)
 
         kwargs: dict[str, Any] = {
             "model": model,
@@ -91,7 +126,7 @@ class LLMClient:
 
         response = self._client.chat.completions.create(**kwargs)
         raw = response.choices[0].message.content.strip()
-        self._log_usage(response, model, tier, system, user, raw, expect_json)
+        self._log_usage(response, provider, model, tier, system, user, raw, expect_json)
 
         # ── Anthropic (원복용 주석) ───────────────────────────────────────────
         # response = self._client.messages.create(
@@ -135,6 +170,7 @@ class LLMClient:
     def _log_usage(
         self,
         response: Any,
+        provider: str,
         model: str,
         tier: ModelTier,
         system: str,
@@ -145,6 +181,7 @@ class LLMClient:
         usage = getattr(response, "usage", None)
         record = {
             "timestamp": datetime.now().isoformat(),
+            "provider": provider,
             "model": model,
             "tier": str(tier.value if hasattr(tier, "value") else tier),
             "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),

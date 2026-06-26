@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 
 PYTHON="${PYTHON:-.venv/bin/python}"
 
-"$PYTHON" -m compileall -q agents broker codes config data llm tests orchestrator.py
+"$PYTHON" -m compileall -q agents broker codes config data llm tests orchestrator_v3.py
 
 if command -v timeout >/dev/null 2>&1; then
   timeout 60 "$PYTHON" -m pytest -q -k 'not run_close_review and not improvement and not backtest'

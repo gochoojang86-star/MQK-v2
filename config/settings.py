@@ -1,5 +1,5 @@
 """
-MQK-v2 전역 설정 - 단일 기준 파일
+MQK v3 전역 설정 - 단일 기준 파일
 모든 리스크 파라미터는 이 파일에서만 변경 가능
 """
 from dataclasses import dataclass
@@ -38,7 +38,7 @@ class RegimeSafetyBounds:
     """RegimeAgent가 선언한 risk_guidance 값의 코드 강제 한계.
 
     LLM이 risk_guidance에 어떤 값을 선언해도 이 범위를 벗어나면
-    clamp_risk_guidance()가 강제로 잘라낸다. v2 RiskConfig가 천장.
+    clamp_risk_guidance()가 강제로 잘라낸다. RiskConfig가 천장.
     """
     min_buy_confidence_threshold: float = 65.0
     max_buy_confidence_threshold: float = 95.0
@@ -77,6 +77,9 @@ class ReversalConfig:
 
 @dataclass(frozen=True)
 class LLMConfig:
+    # ── Provider 스위치 ─────────────────────────────────────────────────────
+    provider: str = os.environ.get("LLM_PROVIDER", "openai").strip().lower() or "openai"
+
     # ── OpenAI 모델 배치 (Hermes/Codex OAuth 인증) ───────────────────────────
     # REASONING: 핵심 투자 판단 (PortfolioManager, SelfImprovement)
     model_reasoning: str = "gpt-5.4"
@@ -84,6 +87,14 @@ class LLMConfig:
     model_standard: str = "gpt-5.4-mini"
     # FAST: 단순 분류/복기/보조 분석
     model_fast: str = "gpt-5.4-mini"
+
+    # ── OpenRouter 전용 설정 ───────────────────────────────────────────────
+    openrouter_base_url: str = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    openrouter_http_referer: str = os.environ.get("OPENROUTER_HTTP_REFERER", "").strip()
+    openrouter_app_title: str = os.environ.get("OPENROUTER_APP_TITLE", "MQK-v3").strip()
+    openrouter_model_reasoning: str = os.environ.get("OPENROUTER_MODEL_REASONING", "").strip()
+    openrouter_model_standard: str = os.environ.get("OPENROUTER_MODEL_STANDARD", "").strip()
+    openrouter_model_fast: str = os.environ.get("OPENROUTER_MODEL_FAST", "").strip()
 
     max_tokens: int = 2048
     # o-series는 temperature 미지원 — LLMClient에서 모델별 자동 처리
@@ -93,6 +104,18 @@ class LLMConfig:
     max_llm_calls_per_day: int = 100
 
     def model_for(self, tier: ModelTier) -> str:
+        return self.model_for_provider(self.provider, tier)
+
+    def model_for_provider(self, provider: str, tier: ModelTier) -> str:
+        provider_name = (provider or self.provider or "openai").strip().lower()
+        if provider_name == "openrouter":
+            provider_models = {
+                ModelTier.REASONING: self.openrouter_model_reasoning,
+                ModelTier.STANDARD: self.openrouter_model_standard,
+                ModelTier.FAST: self.openrouter_model_fast,
+            }
+            if provider_models[tier]:
+                return provider_models[tier]
         return {
             ModelTier.REASONING: self.model_reasoning,
             ModelTier.STANDARD:  self.model_standard,

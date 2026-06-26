@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from broker.telegram_news import get_recent_news
+from broker.telegram_news import get_recent_news, search_recent_news
 from codes.news_fetcher import NaverNewsFetcher
 from market_intelligence.base import MILContext, ToolFailure
 
@@ -92,37 +92,75 @@ def get_realtime_price(ctx: MILContext, phase: str, tickers: list[str]) -> dict:
 
 
 def get_intraday_candles(ctx: MILContext, phase: str, ticker: str) -> dict:
-    """주식당일분봉조회."""
+    """주식당일분봉조회 - KIS 우선, 실패시 키움 API 폴백."""
+    import logging
+    logger = logging.getLogger("mqk_v3")
 
     def fetch():
-        raw = ctx.kis_api.raw_get(
-            "FHKST03010200",
-            "domestic-stock/v1/quotations/inquire-time-itemchartprice",
-            {
-                "FID_ETC_CLS_CODE": "",
-                "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_INPUT_ISCD": ticker,
-                # 기준시각(HHMMSS) 이전 최대 30건 — "60" 같은 비정상 값을 주면
-                # 전일 15시대 캔들이 반환된다 (D1 라이브 테스트에서 확인).
-                "FID_INPUT_HOUR_1": datetime.now().strftime("%H%M%S"),
-                # N=당일만 — Y는 전일 캔들이 섞인다.
-                "FID_PW_DATA_INCU_YN": "N",
-            },
-        )
-        candles = [
-            {
-                "time": row.get("stck_cntg_hour"),
-                "open": _to_float(row.get("stck_oprc")),
-                "high": _to_float(row.get("stck_hgpr")),
-                "low": _to_float(row.get("stck_lwpr")),
-                "close": _to_float(row.get("stck_prpr")),
-                "volume": _to_float(row.get("cntg_vol")),
-            }
-            for row in raw.get("output2", [])
-        ]
-        # 최신 우선 응답 → 시간 오름차순 정렬 (candles[0]=가장 이른 분봉)
-        candles.sort(key=lambda c: c["time"] or "")
-        return {"ticker": ticker, "candles": candles}
+        # 1. KIS API 시도
+        try:
+            logger.debug(f"[get_intraday_candles] KIS API 호출: {ticker}")
+            raw = ctx.kis_api.raw_get(
+                "FHKST03010200",
+                "domestic-stock/v1/quotations/inquire-time-itemchartprice",
+                {
+                    "FID_ETC_CLS_CODE": "",
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": ticker,
+                    "FID_INPUT_HOUR_1": datetime.now().strftime("%H%M%S"),
+                    "FID_PW_DATA_INCU_YN": "N",
+                },
+            )
+            candles_data = raw.get("output2", [])
+            if candles_data:
+                logger.info(f"[get_intraday_candles] KIS API 성공: {ticker}, {len(candles_data)}개 분봉")
+                candles = [
+                    {
+                        "time": row.get("stck_cntg_hour"),
+                        "open": _to_float(row.get("stck_oprc")),
+                        "high": _to_float(row.get("stck_hgpr")),
+                        "low": _to_float(row.get("stck_lwpr")),
+                        "close": _to_float(row.get("stck_prpr")),
+                        "volume": _to_float(row.get("cntg_vol")),
+                    }
+                    for row in candles_data
+                ]
+                candles.sort(key=lambda c: c["time"] or "")
+                return {"ticker": ticker, "candles": candles, "source": "KIS"}
+            else:
+                logger.warning(f"[get_intraday_candles] KIS API 빈 응답: {ticker}")
+        except Exception as e:
+            logger.warning(f"[get_intraday_candles] KIS API 실패: {ticker}, {str(e)[:100]}")
+
+        # 2. 키움 API 폴백
+        if ctx.kiwoom_api and ctx.kiwoom_api.available:
+            try:
+                logger.debug(f"[get_intraday_candles] 키움 API 폴백: {ticker}")
+                raw = ctx.kiwoom_api.intraday_candles(ticker, limit=30)
+                candles_data = raw.get("stk_min_pole_chart_qry", [])
+                if candles_data:
+                    logger.info(f"[get_intraday_candles] 키움 API 성공: {ticker}, {len(candles_data)}개 분봉")
+                    candles = [
+                        {
+                            "time": row.get("cntr_tm"),
+                            "open": _to_float(row.get("open_pric")),
+                            "high": _to_float(row.get("high_pric")),
+                            "low": _to_float(row.get("low_pric")),
+                            "close": _to_float(row.get("cur_prc")),
+                            "volume": _to_float(row.get("trde_qty")),
+                        }
+                        for row in candles_data
+                    ]
+                    candles.sort(key=lambda c: c["time"] or "")
+                    return {"ticker": ticker, "candles": candles, "source": "KIWOOM"}
+                else:
+                    logger.warning(f"[get_intraday_candles] 키움 API 빈 응답: {ticker}")
+            except Exception as e:
+                logger.warning(f"[get_intraday_candles] 키움 API 폴백 실패: {ticker}, {str(e)[:100]}")
+
+        # 3. 모든 시도 실패
+        logger.error(f"[get_intraday_candles] 모든 소스 실패: {ticker}")
+        return {"ticker": ticker, "candles": [], "source": "NONE"}
 
     return ctx.cached_call("get_intraday_candles", phase, {"ticker": ticker}, fetch)
 
@@ -243,6 +281,40 @@ def get_news_stock(ctx: MILContext, phase: str, ticker: str) -> dict:
         return result
 
     return ctx.cached_call("get_news_stock", phase, {"ticker": ticker}, fetch)
+
+
+def search_telegram_news(ctx: MILContext, phase: str, query: str, hours: int = 72, limit: int = 20) -> dict:
+    """텔레그램 속보를 자유 질의로 검색한다.
+
+    정치테마/인맥/정책 테마처럼 종목명 자체보다 시장이 어떤 이슈와 엮어 인식하는지가
+    중요한 경우에 사용한다.
+    """
+
+    def fetch():
+        return {
+            "query": query,
+            "hours": int(hours),
+            "results": [
+                {
+                    "ticker": row.get("ticker", ""),
+                    "title": row.get("title", ""),
+                    "content": row.get("content", ""),
+                    "sentiment": row.get("sentiment", ""),
+                    "score": row.get("score", 0.0),
+                    "source": row.get("source", ""),
+                    "url": row.get("url", ""),
+                    "date": row.get("date", ""),
+                }
+                for row in search_recent_news(query=query, hours=hours, limit=limit)
+            ],
+        }
+
+    return ctx.cached_call(
+        "search_telegram_news",
+        phase,
+        {"query": query, "hours": int(hours), "limit": int(limit)},
+        fetch,
+    )
 
 
 def get_watchlist_intraday_snapshot(ctx: MILContext, phase: str, tickers: list[str]) -> dict:

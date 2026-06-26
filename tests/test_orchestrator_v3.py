@@ -72,17 +72,21 @@ def test_save_and_load_watchlist_preserves_metadata_entries(tmp_path):
     save_watchlist(
         [
             {"ticker": "005930", "setup": "TREND", "confidence": 81, "reason": "leader", "cluster": "memory_core"},
-            {
-                "ticker": "000660",
-                "setup": "D_DAY",
-                "confidence": 77,
-                "reason": "event",
-                "cluster": "memory_core",
-                "d_day": "2026-07-10",
-            },
-        ],
-        path=path,
-    )
+        {
+            "ticker": "000660",
+            "setup": "D_DAY",
+            "confidence": 77,
+            "reason": "event",
+            "cluster": "memory_core",
+            "theme": "반도체",
+            "subtheme": "HBM",
+            "role": "본류 대장주",
+            "theme_evidence": ["HBM 수요 기사", "거래대금 상위"],
+            "d_day": "2026-07-10",
+        },
+    ],
+    path=path,
+)
 
     assert load_watchlist(path=path) == ["005930", "000660"]
     assert load_watchlist_entries(path=path) == [
@@ -93,6 +97,10 @@ def test_save_and_load_watchlist_preserves_metadata_entries(tmp_path):
             "confidence": 77,
             "reason": "event",
             "cluster": "memory_core",
+            "theme": "반도체",
+            "subtheme": "HBM",
+            "role": "본류 대장주",
+            "theme_evidence": ["HBM 수요 기사", "거래대금 상위"],
             "d_day": "2026-07-10",
         },
     ]
@@ -111,6 +119,10 @@ def test_watchlist_entries_from_scan_result_preserves_cluster(tmp_path):
                 "confidence": 77,
                 "reason": "event",
                 "cluster": "memory_core",
+                "theme": "반도체",
+                "subtheme": "HBM",
+                "role": "본류 대장주",
+                "theme_evidence": ["HBM 수요 기사", "거래대금 상위"],
                 "d_day": "2026-07-10",
             },
         ],
@@ -124,6 +136,10 @@ def test_watchlist_entries_from_scan_result_preserves_cluster(tmp_path):
             "confidence": 77,
             "reason": "event",
             "cluster": "memory_core",
+            "theme": "반도체",
+            "subtheme": "HBM",
+            "role": "본류 대장주",
+            "theme_evidence": ["HBM 수요 기사", "거래대금 상위"],
             "d_day": "2026-07-10",
         },
     ]
@@ -174,6 +190,33 @@ def test_load_watchlist_returns_empty_on_corrupt_json(tmp_path):
     path.write_bytes(b"{not valid json!!")
 
     assert load_watchlist(path=path) == []
+
+
+def test_load_watchlist_returns_empty_when_stale_date(monkeypatch, tmp_path):
+    import orchestrator_v3 as mod
+
+    class _FakeDateTime:
+        @classmethod
+        def now(cls):
+            from datetime import datetime
+            return datetime(2026, 6, 10, 9, 0, 0)
+
+    path = tmp_path / "watchlist.json"
+    path.write_text(
+        json.dumps(
+            {
+                "watchlist": [{"ticker": "376900", "setup": "LIMIT_UP_PULLBACK"}],
+                "tickers": ["376900"],
+                "updated_at": "2026-06-09T15:00:00",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "datetime", _FakeDateTime)
+
+    assert load_watchlist(path=path) == []
+    assert load_watchlist_entries(path=path) == []
 
 
 def test_save_drift_state_writes_atomically(tmp_path):
@@ -247,10 +290,10 @@ def test_build_context_uses_mil_portfolio_tools(monkeypatch, tmp_path):
         "psearch_title", "psearch_result",
         "kw_psearch_title", "kw_psearch_result",
         "get_top_movers", "get_attention_rank",
-        "get_foreign_institution_rank", "get_sector_investor_flow",
+        "get_foreign_institution_rank", "get_program_netbuy_rank", "get_sector_investor_flow",
         "get_volume_surge", "get_bid_queue_surge", "get_intraday_investor_rank",
         "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot", "get_intraday_candles",
-        "get_flow", "get_intraday_institutional_flow", "get_news_stock", "get_stock_status",
+        "get_flow", "get_intraday_institutional_flow", "get_news_stock", "search_telegram_news", "get_stock_status",
         "get_orderbook",
         "get_intraday_volume_trend",
     ]
@@ -472,6 +515,25 @@ class FakeTradingAgent:
         return self._response
 
 
+class FakeSelfImprovementAgent:
+    def __init__(self, proposals=None):
+        self._proposals = proposals or []
+        self.calls = []
+
+    def suggest_from_reflection(self, **kwargs):
+        self.calls.append(kwargs)
+        return list(self._proposals)
+
+
+class FakeImprovementManager:
+    def __init__(self):
+        self.saved = []
+
+    def save(self, proposal):
+        self.saved.append(proposal)
+        return len(self.saved)
+
+
 def test_run_scan_v3_backfills_watchlist_when_agent_returns_empty(monkeypatch, tmp_path):
     import market_intelligence.portfolio as mil_portfolio
     import market_intelligence.screening as mil_screening
@@ -632,6 +694,113 @@ def test_run_scan_v3_injects_next_day_prior_into_context(monkeypatch, tmp_path):
     assert injected["focus_themes"] == ["반도체"]
 
 
+def test_run_scan_v3_uses_volume_surge_stocks_key(monkeypatch, tmp_path):
+    import market_intelligence.portfolio as mil_portfolio
+    import market_intelligence.screening as mil_screening
+    import market_intelligence.market as mil_market
+    import market_intelligence.theme as mil_theme
+
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [], "position_count": 0})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0, "total_eval_amt": 10_000_000})
+    monkeypatch.setattr(mil_market, "get_market_context", lambda ctx, phase: {"status": "ok"})
+    monkeypatch.setattr(mil_market, "get_sector_breadth", lambda ctx, phase: {"market_breadth": {}})
+    monkeypatch.setattr(mil_market, "get_news_market", lambda ctx, phase: {"headlines": []})
+    monkeypatch.setattr(mil_theme, "get_theme_candidates", lambda ctx, phase: {"candidates": []})
+    monkeypatch.setattr(mil_screening, "get_top_movers", lambda ctx, phase: {"trading_value_stock_top": []})
+    monkeypatch.setattr(mil_screening, "get_attention_rank", lambda ctx, phase: {"kiwoom_viewing_rank": []})
+    monkeypatch.setattr(mil_screening, "get_foreign_institution_rank", lambda ctx, phase: {"foreign_netbuy_top": []})
+    monkeypatch.setattr(mil_screening, "get_program_netbuy_rank", lambda ctx, phase: {"stocks": []})
+    monkeypatch.setattr(mil_screening, "get_foreign_continuous_rank", lambda ctx, phase: {"stocks": []})
+    monkeypatch.setattr(mil_screening, "get_volume_surge",
+                         lambda ctx, phase: {"stocks": [{"ticker": "376900", "surge_rate_pct": 321.0}]})
+
+    orch = make_orchestrator(tmp_path)
+    orch._trading_agent = FakeTradingAgent({
+        "next_action": "final",
+        "action": "WATCHLIST_UPDATE",
+        "watchlist": ["376900"],
+        "candidates": [{"ticker": "376900", "setup": "TREND", "confidence": 80, "reason": "ok"}],
+        "reason": "ok",
+    })
+
+    regime = {
+        "status": "GREEN", "regime": "THEME_MARKET", "confidence": 80,
+        "risk_guidance": {"max_positions": 2, "buy_confidence_threshold": 75,
+                           "risk_per_trade_pct": 0.35, "min_trading_value_krw": 12_000_000_000},
+        "timestamp": "2026-06-09T09:03:00",
+    }
+    (tmp_path / "last_regime.json").write_text(json.dumps(regime), encoding="utf-8")
+    (tmp_path / "next_day_premarket_context.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr("orchestrator_v3._LAST_REGIME_PATH", tmp_path / "last_regime.json")
+    monkeypatch.setattr("orchestrator_v3._DRIFT_STATE_PATH", tmp_path / "drift_state.json")
+    monkeypatch.setattr("orchestrator_v3._WATCHLIST_PATH", tmp_path / "watchlist.json")
+    monkeypatch.setattr("orchestrator_v3._NEXT_DAY_PREMARKET_CONTEXT_PATH", tmp_path / "next_day_premarket_context.json")
+
+    orch.run_scan_v3()
+
+    assert orch._trading_agent.calls[0][1]["volume_surge_candidates"] == [
+        {"ticker": "376900", "surge_rate_pct": 321.0}
+    ]
+
+
+def test_run_scan_v3_builds_candidate_pool_into_context(monkeypatch, tmp_path):
+    import market_intelligence.portfolio as mil_portfolio
+    import market_intelligence.screening as mil_screening
+    import market_intelligence.market as mil_market
+    import market_intelligence.theme as mil_theme
+
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [], "position_count": 0})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0, "total_eval_amt": 10_000_000})
+    monkeypatch.setattr(mil_market, "get_market_context", lambda ctx, phase: {"kospi": 2800.0})
+    monkeypatch.setattr(mil_market, "get_sector_breadth", lambda ctx, phase: {"market_breadth": {"advancers": 100}})
+    monkeypatch.setattr(mil_market, "get_news_market", lambda ctx, phase: {"headlines": ["headline"]})
+    monkeypatch.setattr(mil_theme, "get_theme_candidates", lambda ctx, phase: {"candidates": [{"ticker": "000660"}]})
+    monkeypatch.setattr(mil_screening, "get_top_movers", lambda ctx, phase: {"trading_value_stock_top": [{"ticker": "000660"}]})
+    monkeypatch.setattr(mil_screening, "get_attention_rank", lambda ctx, phase: {"kiwoom_viewing_rank": [{"ticker": "000660"}]})
+    monkeypatch.setattr(mil_screening, "get_foreign_institution_rank", lambda ctx, phase: {"foreign_netbuy_top": [{"ticker": "000660"}]})
+    monkeypatch.setattr(mil_screening, "get_program_netbuy_rank", lambda ctx, phase: {"stocks": [{"ticker": "000660"}]})
+    monkeypatch.setattr(mil_screening, "get_foreign_continuous_rank", lambda ctx, phase: {"stocks": [{"ticker": "000660"}]})
+    monkeypatch.setattr(mil_screening, "get_volume_surge", lambda ctx, phase: {"stocks": []})
+
+    orch = make_orchestrator(tmp_path)
+    orch._trading_agent = FakeTradingAgent({
+        "next_action": "final",
+        "action": "WATCHLIST_UPDATE",
+        "watchlist": ["000660"],
+        "candidates": [{"ticker": "000660", "setup": "THEME_CATALYST", "confidence": 80, "reason": "ok"}],
+        "reason": "ok",
+    })
+
+    regime = {
+        "status": "GREEN", "regime": "THEME_MARKET", "confidence": 80,
+        "risk_guidance": {"max_positions": 2, "buy_confidence_threshold": 75,
+                           "risk_per_trade_pct": 0.35, "min_trading_value_krw": 12_000_000_000},
+        "timestamp": "2026-06-09T09:03:00",
+    }
+    (tmp_path / "last_regime.json").write_text(json.dumps(regime), encoding="utf-8")
+    (tmp_path / "next_day_premarket_context.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr("orchestrator_v3._LAST_REGIME_PATH", tmp_path / "last_regime.json")
+    monkeypatch.setattr("orchestrator_v3._DRIFT_STATE_PATH", tmp_path / "drift_state.json")
+    monkeypatch.setattr("orchestrator_v3._WATCHLIST_PATH", tmp_path / "watchlist.json")
+    monkeypatch.setattr("orchestrator_v3._NEXT_DAY_PREMARKET_CONTEXT_PATH", tmp_path / "next_day_premarket_context.json")
+
+    orch.run_scan_v3()
+
+    injected_pool = orch._trading_agent.calls[0][1]["candidate_pool"]
+    assert injected_pool
+    assert injected_pool[0]["ticker"] == "000660"
+    assert injected_pool[0]["facts"]["trading_value_rank"] == 1
+    assert injected_pool[0]["facts"]["program_netbuy_rank"] == 1
+    assert injected_pool[0]["facts"]["foreign_netbuy"] is True
+    assert orch._trading_agent.calls[0][1]["market_story_brief"]["market_context"]["kospi_change_pct"] is None
+
+
 def test_run_market_close_v3_persists_next_day_prior_to_data_path(monkeypatch, tmp_path):
     import json as _json
     import market_intelligence.portfolio as mil_portfolio
@@ -658,6 +827,79 @@ def test_run_market_close_v3_persists_next_day_prior_to_data_path(monkeypatch, t
 
     saved = load_next_day_premarket_context(path=tmp_path / "next_day_premarket_context_data.json")
     assert saved["focus_themes"] == ["반도체"]
+
+
+def test_run_market_close_v3_runs_self_improvement_without_closed_trades(monkeypatch, tmp_path):
+    import json as _json
+    import market_intelligence.portfolio as mil_portfolio
+    from agents.self_improvement_agent import ChangeType, ImprovementProposal
+
+    orch = make_orchestrator(tmp_path)
+    orch._collect_market_close_snapshot = lambda: {"kospi": 2800.0}
+    orch._collect_daily_reflection = lambda: {
+        "missed_opportunities": [{"ticker": "123456", "name": "테스트", "change_pct": 12.3}],
+        "intraday_summary": {"assessment": "도구 미호출 반복"},
+    }
+    orch._trading_agent = FakeTradingAgent({
+        "close_market_read": {"market_quality": "POOR"},
+        "next_day_premarket_context": {"focus_themes": ["정책주"]},
+    })
+    orch._si_agent = FakeSelfImprovementAgent([
+        ImprovementProposal(
+            title="놓친 종목 분석 기반 스캔 강화",
+            hypothesis="상승 종목 누락 방지",
+            change_type=ChangeType.SCANNER,
+            expected_effect="후보 발굴 강화",
+            risk="오탐 증가",
+            requires_backtest=True,
+        )
+    ])
+    orch._improvement_mgr = FakeImprovementManager()
+    orch.run_close_review = lambda: None
+    orch._save_json = lambda filename, payload: (tmp_path / filename).write_text(
+        _json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
+    orch._summarize_tool_gaps = lambda: {"top_missing_capabilities": []}
+
+    monkeypatch.setattr(mil_portfolio, "get_open_positions",
+                         lambda ctx, phase: {"positions": [], "position_count": 0})
+    monkeypatch.setattr(mil_portfolio, "get_daily_pnl",
+                         lambda ctx, phase: {"realized_pnl_pct": 0.0, "realized_pnl_krw": 0.0, "total_eval_amt": 0.0})
+    monkeypatch.setattr("orchestrator_v3._NEXT_DAY_PREMARKET_CONTEXT_PATH", tmp_path / "next_day_premarket_context_data.json")
+
+    orch.run_market_close_v3()
+
+    assert len(orch._si_agent.calls) == 1
+    assert orch._si_agent.calls[0]["daily_reflection"]["missed_opportunities"][0]["ticker"] == "123456"
+    assert len(orch._improvement_mgr.saved) == 1
+    saved_review = _json.loads((tmp_path / "self_improvement_review.json").read_text(encoding="utf-8"))
+    assert saved_review["proposal_count"] == 1
+    assert saved_review["proposals"][0]["title"] == "놓친 종목 분석 기반 스캔 강화"
+
+
+def test_run_self_improvement_review_saves_empty_summary_when_no_proposals(tmp_path):
+    import json as _json
+
+    orch = make_orchestrator(tmp_path)
+    orch._si_agent = FakeSelfImprovementAgent([])
+    orch._improvement_mgr = FakeImprovementManager()
+
+    saved_payloads = {}
+
+    def _save_json(name, payload):
+        saved_payloads[name] = payload
+        (tmp_path / name).write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    orch._save_json = _save_json
+
+    saved = orch.run_self_improvement_review(
+        daily_reflection={"missed_opportunities": [], "intraday_summary": {}},
+        market_close_snapshot={"kospi": 2700.0},
+        tool_gap_summary={"top_missing_capabilities": []},
+    )
+
+    assert saved == []
+    assert saved_payloads["self_improvement_review.json"]["proposal_count"] == 0
 
 
 def test_run_intraday_v3_stable_executes_no_trade(monkeypatch, tmp_path):
@@ -1253,10 +1495,6 @@ def test_orchestrator_init_builds_milcontext_with_kiwoom_api(monkeypatch, tmp_pa
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-    class StubNewsFetcher:
-        def __init__(self):
-            self.available = True
-
     class StubImprovementManager:
         def __init__(self, telegram=None):
             self.telegram = telegram
@@ -1292,7 +1530,6 @@ def test_orchestrator_init_builds_milcontext_with_kiwoom_api(monkeypatch, tmp_pa
     monkeypatch.setattr(mod, "TelegramApproval", StubApproval)
     monkeypatch.setattr(mod, "TradeJournal", StubJournal)
     monkeypatch.setattr(mod, "OrderManager", StubOrderManager)
-    monkeypatch.setattr(mod, "NaverNewsFetcher", StubNewsFetcher)
     monkeypatch.setattr(mod, "ImprovementManager", StubImprovementManager)
     monkeypatch.setattr(mod, "MILContext", StubMILContext)
     monkeypatch.setattr(mod, "MILCache", lambda: object())

@@ -11,7 +11,7 @@ MQK_PHASE 환경변수 (KST, ecosystem.config.cjs 기준):
   close        - 15:18 정규장 내 청산 판단 (복기는 market_close가 수행)
   market_close - 17:00 장마감 분석 + 거래 복기 + 다음날 prior 생성
 
-휴장일 가드는 v2와 동일하게 codes/market_calendar의 캐시를 사용한다.
+휴장일 가드는 codes/market_calendar의 캐시를 사용한다.
 """
 from __future__ import annotations
 
@@ -83,6 +83,18 @@ def _guard_trading_day() -> None:
     if not cached:
         logger.info("[휴장일 가드] 오늘은 휴장일 — 작동 중단")
         sys.exit(0)
+
+
+def run_holiday_check() -> None:
+    """00:30 휴장일 여부 판단 + 캐시 저장."""
+    from codes.market_calendar import check_trading_day
+
+    result = check_trading_day()
+    status = "영업일" if result else "휴장일"
+    logger.info(f"[00:30 휴장일 체크] 오늘은 {status}")
+
+    if not result:
+        logger.info("[00:30 휴장일 체크] 오늘 모든 MQK v3 단계 스킵 예정")
 
 
 def _acquire_lock(path: Path = _LOCK_PATH):
@@ -176,6 +188,7 @@ def run_premarket_close() -> None:
 
 
 _RUNNERS = {
+    "holiday_check": run_holiday_check,
     "premarket_early": run_premarket_early,
     "premarket_sejuk": run_premarket_early,   # v4 PM2 앱 호환 별칭
     "premarket_first": run_premarket_first,   # 08:50 첫 레짐 (장전, US 데이터 기반)
@@ -196,7 +209,7 @@ if __name__ == "__main__":
     if PHASE not in _RUNNERS:
         logger.error(
             f"MQK_PHASE={PHASE!r} 미지원. "
-            f"premarket | scan | intraday | close | market_close 중 하나를 설정하세요."
+            f"holiday_check | premarket | scan | intraday | close | market_close 중 하나를 설정하세요."
         )
         sys.exit(1)
 

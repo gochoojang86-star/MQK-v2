@@ -9,8 +9,8 @@ Market Calendar - 한국 주식시장 휴장일 판단
   4순위: 공공데이터포털 API  — KIS 실패 시 fallback
   5순위: 하드코딩 폴백       — 전부 실패 시
 
-매일 00:30 run_schedule.py → run_holiday_check()에서 호출해 캐시 갱신.
-이후 08:00/08:30/intraday/15:30 단계는 캐시만 읽어 즉시 판단.
+매일 00:30 run_schedule_v3.py → run_holiday_check()에서 호출해 캐시 갱신.
+이후 v3 각 phase는 캐시만 읽어 즉시 판단.
 """
 from __future__ import annotations
 

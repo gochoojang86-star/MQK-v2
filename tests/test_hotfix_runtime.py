@@ -8,11 +8,19 @@ from broker.telegram_news import _source_from_event
 class FakeConfig:
     max_tokens = 123
     temperature = 0.7
+    provider = "openai"
+    openrouter_base_url = "https://openrouter.ai/api/v1"
+    openrouter_http_referer = ""
+    openrouter_app_title = "MQK-v3"
 
     def __init__(self, model):
         self._model = model
 
     def model_for(self, tier):
+        assert tier == ModelTier.STANDARD
+        return self._model
+
+    def model_for_provider(self, provider, tier):
         assert tier == ModelTier.STANDARD
         return self._model
 
@@ -43,6 +51,7 @@ class FakeOpenAIClient:
 def make_client(model):
     client = LLMClient.__new__(LLMClient)
     client._cfg = FakeConfig(model)
+    client._provider_name = "openai"
     client._client = FakeOpenAIClient()
     client._usage_log_dir = ""
     return client
@@ -81,6 +90,23 @@ def test_non_reasoning_models_use_max_tokens_and_log_usage():
     assert "max_completion_tokens" not in kwargs
     assert records[0]["model"] == "gpt-4.1-mini"
     assert records[0]["tier"] == "standard"
+    assert records[0]["provider"] == "openai"
+
+
+def test_openrouter_uses_max_tokens_even_for_gpt5_models():
+    client = make_client("gpt-5.4")
+    client._provider_name = "openrouter"
+    records = []
+    client._append_usage_record = records.append
+
+    result = client.call("system", "user", tier=ModelTier.STANDARD)
+
+    kwargs = client._client.chat.completions.kwargs
+    assert result == {"ok": True}
+    assert kwargs["max_tokens"] == 123
+    assert kwargs["temperature"] == 0.7
+    assert "max_completion_tokens" not in kwargs
+    assert records[0]["provider"] == "openrouter"
 
 
 def test_telegram_news_source_handles_none_chat():

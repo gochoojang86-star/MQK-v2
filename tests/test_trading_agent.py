@@ -89,6 +89,32 @@ def test_run_executes_allowed_tool_then_returns_final(monkeypatch):
     assert "kospi_change_pct" in llm.calls[1][1]
 
 
+def test_run_scan_requires_tool_before_final(monkeypatch):
+    def fake_get_market_context(ctx, phase):
+        return {"status": "GREEN", "confidence": 88, "kospi_change_pct": 1.2}
+
+    monkeypatch.setitem(TOOL_REGISTRY, "get_market_context", fake_get_market_context)
+
+    llm = FakeLLMClient([
+        {"next_action": "final", "action": "WATCHLIST_UPDATE", "watchlist": ["005930"], "candidates": [], "reason": "blind"},
+        {"next_action": "call_tool", "tool": "get_market_context", "tool_args": {}},
+        {"next_action": "final", "action": "WATCHLIST_UPDATE", "watchlist": ["005930"], "candidates": [], "reason": "after_tool"},
+    ])
+    agent = TradingAgent(mil=object(), llm=llm)
+    context = build_context(
+        phase=TradingPhase.SCAN, trading_date="2026-06-09",
+        regime={"status": "YELLOW"}, drift_status="STABLE",
+        risk_guidance={}, portfolio_snapshot={}, daily_pnl={}, risk_budget_remaining={},
+    )
+
+    result = agent.run(TradingPhase.SCAN, context)
+
+    assert result["action"] == "WATCHLIST_UPDATE"
+    assert result["watchlist"] == ["005930"]
+    assert len(llm.calls) == 3
+    assert "tool_call_required" in llm.calls[1][1]
+
+
 def test_run_blocks_tool_not_allowed_in_phase():
     llm = FakeLLMClient([
         {"next_action": "call_tool", "tool": "get_open_positions", "tool_args": {}},
@@ -258,7 +284,48 @@ def test_close_prompt_mentions_gap_risk_and_time_exit():
     text = Path("prompts/agents/trading_agent/close.md").read_text(encoding="utf-8")
     assert "GAP_RISK_EXIT" in text
     assert "TIME_EXIT" in text
-    assert "익일 갭 리스크" in text
+
+
+def test_scan_prompt_includes_brand_to_theme_bridge_rules():
+    text = Path("prompts/agents/trading_agent/scan.md").read_text(encoding="utf-8")
+    assert "브랜드명/제품명/서비스명/약물명 브리지 규칙" in text
+    assert "위고비" in text
+    assert "GLP-1" in text
+    assert "기능/적응증/용도" in text
+
+
+def test_scan_prompt_mentions_political_theme_via_telegram_search():
+    text = Path("prompts/agents/trading_agent/scan.md").read_text(encoding="utf-8")
+    assert "정치테마/정책테마 동적 판정 규칙" in text
+    assert "search_telegram_news" in text
+    assert "시장이 어떤 서사로 그 종목을 거래하고 있는지" in text
+
+
+def test_scan_prompt_mentions_program_and_trading_value_stock_rank_usage():
+    text = Path("prompts/agents/trading_agent/scan.md").read_text(encoding="utf-8")
+    assert "trading_value_stock_top" in text
+    assert "get_program_netbuy_rank" in text
+    assert "`trading_value_rank`가 앞설수록 본류 가능성이 높다" in text
+
+
+def test_scan_prompt_mentions_candidate_pool_as_primary_input():
+    text = Path("prompts/agents/trading_agent/scan.md").read_text(encoding="utf-8")
+    assert "candidate_pool" in text
+    assert "출발점" in text
+    assert "주입된 후보 facts는 이미 1차 검증 입력" in text
+
+
+def test_scan_prompt_mentions_llm_peer_comparison_within_theme_cluster():
+    text = Path("prompts/agents/trading_agent/scan.md").read_text(encoding="utf-8")
+    assert "같은 `theme/subtheme`에 속하는 후보가 여러 개면, **그 그룹 안에서 직접 비교**" in text
+    assert "상승률만으로 1등을 정하지 마라" in text
+    assert "가장 강한 1개만 `본류 대장주`" in text
+
+
+def test_intraday_prompt_mentions_recompare_within_same_theme_subtheme():
+    text = Path("prompts/agents/trading_agent/intraday.md").read_text(encoding="utf-8")
+    assert "같은 `theme/subtheme` 안에 watchlist 종목이 여러 개면, **장중에도 다시 비교**" in text
+    assert "후발주는 진입 금지하고 본류만 본다" in text
 
 
 def test_v3_reversal_prompts_use_single_reversal_tactic_name():
@@ -511,6 +578,8 @@ def test_scan_fallback_keeps_monitoring_watchlist_when_positions_left_zero(monke
 
 def test_scan_phase_allows_watchlist_intraday_snapshot():
     assert "get_watchlist_intraday_snapshot" in PHASE_TOOLS[TradingPhase.SCAN]
+    assert "search_telegram_news" in PHASE_TOOLS[TradingPhase.SCAN]
+    assert "search_telegram_news" in PHASE_TOOLS[TradingPhase.INTRADAY]
 
 
 def test_psearch_tools_inject_hts_user_id_from_env(monkeypatch):

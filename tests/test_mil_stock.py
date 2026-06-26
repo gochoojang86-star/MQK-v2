@@ -6,6 +6,7 @@ from market_intelligence.stock import (
     get_intraday_candles,
     get_flow,
     get_news_stock,
+    search_telegram_news,
     get_fundamentals,
     get_watchlist_intraday_snapshot,
 )
@@ -297,6 +298,27 @@ def test_get_news_stock_isolates_source_failures(monkeypatch):
     assert result["telegram_headlines"] == []
     assert result["naver_headlines"] == []
     assert set(result["missing_fields"]) == {"telegram_headlines", "naver_headlines"}
+
+
+def test_search_telegram_news_returns_query_results(monkeypatch):
+    import market_intelligence.stock as mil_stock
+
+    monkeypatch.setattr(
+        mil_stock,
+        "search_recent_news",
+        lambda query, hours=72, limit=20: [
+            {"ticker": "011080", "title": "형지I&C 이재명 테마주 부각", "content": "정책 기대", "sentiment": "positive",
+             "score": 0.8, "source": "FastStockNews", "url": "https://example.com", "date": "2026-06-25T10:00:00"}
+        ],
+    )
+
+    ctx = make_ctx(raw_responses={})
+    result = search_telegram_news(ctx, "SCAN", query="형지I&C 이재명", hours=48, limit=5)
+
+    assert result["query"] == "형지I&C 이재명"
+    assert result["hours"] == 48
+    assert result["results"][0]["ticker"] == "011080"
+    assert "이재명" in result["results"][0]["title"]
 
 
 def test_get_watchlist_intraday_snapshot_bundles_price_news_and_status(monkeypatch):

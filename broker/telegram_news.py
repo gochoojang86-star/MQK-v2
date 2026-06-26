@@ -38,7 +38,7 @@ _POSITIVE = ["수주", "흑자", "급등", "상승", "호재", "신고가", "매
              "실적", "흑전", "상향", "출시", "특허", "FDA", "승인"]
 _NEGATIVE = ["하락", "적자", "급락", "손실", "악재", "하한가", "매도", "부도", "조사", "리콜",
              "소송", "손상", "취소", "철회", "감소", "실적부진"]
-_SKIP = ["대통령", "날씨", "연예", "부동산", "스포츠", "야구", "축구", "농구", "배구", "선거"]
+_SKIP = ["날씨", "연예", "부동산", "스포츠", "야구", "축구", "농구", "배구"]
 
 # ── 회사명 → 종목코드 매핑 ────────────────────────────────────────────────────
 COMPANY_MAP: dict[str, str] = {
@@ -211,6 +211,33 @@ def get_recent_news(ticker: str = "", hours: int = 2) -> list[dict]:
                 "ORDER BY created_at DESC LIMIT 50",
                 (cutoff,),
             ).fetchall()
+    return [
+        {"ticker": r[0], "title": r[1], "content": r[2], "sentiment": r[3],
+         "score": r[4], "source": r[5], "url": r[6], "date": r[7]}
+        for r in rows
+    ]
+
+
+def search_recent_news(query: str, hours: int = 72, limit: int = 20) -> list[dict]:
+    """SQLite에서 최근 텔레그램 뉴스를 자유 질의로 검색한다.
+
+    title/content/source에서 부분 일치 검색을 수행한다. 정치테마처럼 종목명보다
+    인물명·정책명·이슈 키워드 연관성이 중요한 경우에 사용한다.
+    """
+    normalized_query = str(query or "").strip()
+    if not normalized_query or not DB_PATH.exists():
+        return []
+
+    cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+    like = f"%{normalized_query}%"
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT ticker,title,content,sentiment,score,source,url,created_at "
+            "FROM news_queue "
+            "WHERE created_at>? AND (title LIKE ? OR content LIKE ? OR source LIKE ?) "
+            "ORDER BY created_at DESC LIMIT ?",
+            (cutoff, like, like, like, int(limit)),
+        ).fetchall()
     return [
         {"ticker": r[0], "title": r[1], "content": r[2], "sentiment": r[3],
          "score": r[4], "source": r[5], "url": r[6], "date": r[7]}

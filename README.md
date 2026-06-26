@@ -1,4 +1,4 @@
-# MQK-v2
+# MQK v3
 
 **한국형 테마 스윙 마스터들의 철학을 가진 멀티 Agent 자율 트레이더**
 
@@ -32,7 +32,7 @@ LLM이 운전하고, Code가 가드레일을 친다.
 ## 프로젝트 구조
 
 ```
-MQK-v2/
+MQK-v3/
 ├── agents/                  # LLM 판단 Agent (7개)
 │   ├── regime_agent.py      # 시장 체제 판단 (GREEN/YELLOW/RED)
 │   ├── theme_agent.py       # 주도 테마 분석
@@ -75,8 +75,8 @@ MQK-v2/
 ├── config/
 │   └── settings.py          # 리스크·스캐너·LLM 파라미터 단일 관리
 │
-├── orchestrator.py          # 전체 플로우 조율
-├── run_schedule.py          # PM2 단계별 진입점
+├── orchestrator_v3.py       # 전체 플로우 조율
+├── run_schedule_v3.py       # PM2 단계별 진입점
 └── ecosystem.config.cjs     # PM2 자동 운영 설정
 ```
 
@@ -126,10 +126,6 @@ OPENAI_API_KEY=...              # 직접 API 키 (있으면 우선 사용)
 # ── 주문 안전 ─────────────────────────────────────────────────────────────
 ORDER_DRY_RUN=true              # 실전 전 반드시 true
 
-# ── KIS MCP (선택) ────────────────────────────────────────────────────────
-KIS_USE_MCP=false               # true + 서버 실행 시 MCP 경로로 주문
-KIS_MCP_URL=http://localhost:8080
-
 # ── 운영 자본금 ───────────────────────────────────────────────────────────
 MQK_CAPITAL=50000000            # 5천만원 기본값
 ```
@@ -149,12 +145,14 @@ pm2 list
 
 | 프로세스 | 실행 시간 | 역할 |
 |---------|---------|------|
-| `mqk-premarket` | 평일 08:00 | 시장 체제 판단 |
-| `mqk-scan` | 평일 08:30 | 후보 종목 스캔 |
-| `mqk-intraday` | 평일 09:00~15:55 (5분마다) | STP 점검 + 진입 평가 |
-| `mqk-close` | 평일 15:30 | 복기 + 개선 제안 |
+| `mqk-v3-premarket-early` | 평일 08:45 | 장전 진입 후보 선별 |
+| `mqk-v3-premarket-first` | 평일 08:50 | 장전 첫 레짐 판단 |
+| `mqk-v3-premarket` | 평일 09:03/11:03/13:03 | 장중 레짐 재평가 |
+| `mqk-v3-scan` | 평일 09:17/11:17/13:17 | 후보 종목 스캔 |
+| `mqk-v3-intraday` | 평일 09:00~14:50 (10분마다) | 장중 진입/청산 판단 |
+| `mqk-v3-close` | 평일 15:18 | 정규장 내 청산 판단 |
+| `mqk-v3-market-close` | 평일 17:00 | 장마감 복기 + 개선 제안 |
 | `mqk-telegram-news` | 상시 | 텔레그램 채널 뉴스 수집 |
-| `mqk-kis-mcp` | 상시 (KIS_USE_MCP=true 시) | KIS MCP 서버 |
 
 ---
 
@@ -201,6 +199,7 @@ pm2 list
 
 ---
 
-## 스펙 문서
+## 문서
 
-[PROJECT_MASTER_SPEC.md](PROJECT_MASTER_SPEC.md)
+- 현재 운영 스펙: [PROJECT_MASTER_SPEC.md](PROJECT_MASTER_SPEC.md)
+- 문서 인덱스: [docs/README.md](docs/README.md)

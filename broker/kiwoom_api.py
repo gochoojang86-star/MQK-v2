@@ -389,6 +389,30 @@ class KiwoomApi:
             },
         )
 
+    def program_netbuy_top(
+        self,
+        trde_upper_tp: str = "2",
+        amt_qty_tp: str = "1",
+        mrkt_tp: str = "P00101",
+        stex_tp: str = "1",
+    ) -> dict[str, Any]:
+        """ka90003 프로그램순매수상위50요청.
+
+        trde_upper_tp: "1"=순매도상위, "2"=순매수상위.
+        amt_qty_tp: "1"=금액, "2"=수량.
+        mrkt_tp: "P00101"=코스피, "P10102"=코스닥.
+        """
+        return self._rest_request(
+            "ka90003",
+            "/api/dostk/stkinfo",
+            {
+                "trde_upper_tp": trde_upper_tp,
+                "amt_qty_tp": amt_qty_tp,
+                "mrkt_tp": mrkt_tp,
+                "stex_tp": stex_tp,
+            },
+        )
+
     def foreign_continuous_rank(
         self,
         mrkt_tp: str = "000",
@@ -415,6 +439,26 @@ class KiwoomApi:
     def intraday_investor_rank(self, trde_tp: str) -> dict[str, Any]:
         """ka10065 장중투자자별매매상위요청. trde_tp: 1=기관, 2=외국인, 3=개인."""
         return self._rest_request("ka10065", "/api/dostk/rkinfo", {"trde_tp": trde_tp})
+
+    def intraday_candles(self, ticker: str, tic_scope: str = "1") -> dict[str, Any]:
+        """ka10080 주식분봉차트조회요청 - 당일 분봉 데이터 조회.
+
+        Args:
+            ticker: 종목코드 (예: "005930")
+            tic_scope: 틱범위 (1=1분, 3=3분, 5=5분, 10=10분, 15=15분, 30=30분, 45=45분, 60=60분)
+
+        Returns:
+            {"stk_min_pole_chart_qry": [{"cntr_tm": "...", "cur_prc": ..., "trde_qty": ...}, ...]}
+        """
+        return self._rest_request(
+            "ka10080",
+            "/api/dostk/chart",
+            {
+                "stk_cd": ticker,
+                "tic_scope": tic_scope,
+                "upd_stkpc_tp": "1",
+            },
+        )
 
 
 def _expires_dt_to_epoch(value: str) -> float:

@@ -4,54 +4,12 @@ module.exports = {
     {
       name: "mqk-holiday-check",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
-      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule.py",
+      args: "/mnt/c/Users/gocho/MQK-v2/run_schedule_v3.py",
       cwd: "/mnt/c/Users/gocho/MQK-v2",
       env: { MQK_PHASE: "holiday_check" },
       cron_restart: "30 0 * * *",   // KST 00:30
       autorestart: false,
     },
-    // ── v2 트레이딩 앱 4개 — 2026-06-12 v3 전환으로 비활성화 (사용자 결정) ──
-    // 롤백 시 아래 주석을 해제하고 v3 앱들을 중지하세요.
-    // {
-    //   name: "mqk-premarket",
-    //   script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
-    //   args: "/mnt/c/Users/gocho/MQK-v2/run_schedule.py",
-    //   cwd: "/mnt/c/Users/gocho/MQK-v2",
-    //   env: { MQK_PHASE: "premarket" },
-    //   cron_restart: "0 8 * * 1-5",
-    //   autorestart: false,
-    // },
-    // {
-    //   name: "mqk-scan",
-    //   script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
-    //   args: "/mnt/c/Users/gocho/MQK-v2/run_schedule.py",
-    //   cwd: "/mnt/c/Users/gocho/MQK-v2",
-    //   env: { MQK_PHASE: "scan" },
-    //   cron_restart: "30 8 * * 1-5",
-    //   autorestart: false,
-    // },
-    // {
-    //   name: "mqk-intraday",
-    //   script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
-    //   args: "/mnt/c/Users/gocho/MQK-v2/run_schedule.py",
-    //   cwd: "/mnt/c/Users/gocho/MQK-v2",
-    //   env: { MQK_PHASE: "intraday" },
-    //   cron_restart: "*/5 9-15 * * 1-5",  // 평일 09:00~15:55 매 5분
-    //   autorestart: false,
-    // },
-    // {
-    //   name: "mqk-close",
-    //   script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",
-    //   args: "/mnt/c/Users/gocho/MQK-v2/run_schedule.py",
-    //   cwd: "/mnt/c/Users/gocho/MQK-v2",
-    //   env: { MQK_PHASE: "close" },
-    //   cron_restart: "30 15 * * 1-5",
-    //   autorestart: false,
-    // },
-    // ⚠️ 경고: 아래 v3 앱들과 위의 v2 트레이딩 앱(mqk-premarket/scan/intraday/close)을
-    // 동시에 실행하면 같은 계좌에서 두 개의 자율 트레이더가 동시에 주문합니다.
-    // v3로 전환 시 반드시 v2 4개 앱을 `pm2 stop`/`pm2 delete` 하거나 cron_restart를
-    // 주석 처리한 후 v3를 시작하세요. (운영 전환은 수동 결정 사항)
     {
       name: "mqk-v3-premarket-early",
       script: "/mnt/c/Users/gocho/MQK-v2/.venv/bin/python",

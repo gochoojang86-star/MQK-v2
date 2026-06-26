@@ -91,15 +91,46 @@ def get_top_movers(ctx: MILContext, phase: str) -> dict:
             }
             for row in volume_rows
         ]
-        # 거래대금 순위 — 거래량순위 응답에 acml_tr_pbmn이 포함되어 있어 별도 API 불필요
-        trading_value_top = sorted(
-            [m for m in movers if m["trading_value_krw"] > 0],
-            key=lambda x: x["trading_value_krw"],
-            reverse=True,
-        )[:20]
+
+        # 거래대금 상위는 별도 정렬 모드(FID_BLNG_CLS_CODE=3)로 직접 받아 온다.
+        trading_value_raw = ctx.kis_api.raw_get(
+            "FHPST01710000",
+            "domestic-stock/v1/quotations/volume-rank",
+            {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_COND_SCR_DIV_CODE": "20171",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_BLNG_CLS_CODE": "3",
+                "FID_TRGT_CLS_CODE": "111111111",
+                "FID_TRGT_EXLS_CLS_CODE": "0000000000",
+                "FID_INPUT_PRICE_1": "",
+                "FID_INPUT_PRICE_2": "",
+                "FID_VOL_CNT": "",
+                "FID_INPUT_DATE_1": "",
+            },
+        )
+        trading_value_rows = trading_value_raw.get("output", [])
+        trading_value_top = [
+            {
+                "ticker": row.get("mksc_shrn_iscd"),
+                "name": row.get("hts_kor_isnm"),
+                "price": _to_float(row.get("stck_prpr")),
+                "change_pct": _to_float(row.get("prdy_ctrt")),
+                "volume": _to_float(row.get("acml_vol")),
+                "trading_value_krw": _to_float(row.get("acml_tr_pbmn")),
+            }
+            for row in trading_value_rows[:20]
+        ]
+        trading_value_stock_top = [
+            row for row in trading_value_top
+            if row.get("ticker") and not _is_non_equity_product(row.get("ticker"), row.get("name", ""))
+        ]
         result = {
             "movers": movers,
             "trading_value_top": trading_value_top,
+            "trading_value_stock_top": trading_value_stock_top,
+            "excluded_non_equity_count": max(len(trading_value_top) - len(trading_value_stock_top), 0),
             "overheated_bias_warning": True,
             "warning_reason": "psearch 실패로 거래량순위 백업 사용 — 단기 과열주 비중이 높을 수 있음",
         }
@@ -647,6 +678,67 @@ def get_foreign_continuous_rank(ctx: MILContext, phase: str) -> dict:
     return ctx.cached_call("get_foreign_continuous_rank", phase, {}, fetch)
 
 
+def get_program_netbuy_rank(ctx: MILContext, phase: str) -> dict:
+    """키움 ka90003 프로그램순매수상위50.
+
+    코스피/코스닥을 각각 조회한 뒤 합쳐서 정렬한다.
+    프로그램 순매수금액이 크고 동시에 비주식성 상품(ETF/ETN/레버리지/인버스)이 아닌
+    종목은 장중 본류 리더 확인용으로 사용한다.
+    """
+
+    def fetch():
+        result: dict = {}
+        missing_fields: list[str] = []
+
+        if not (ctx.kiwoom_api and ctx.kiwoom_api.available):
+            result["stocks"] = None
+            missing_fields.append("program_netbuy_rank(credentials not configured)")
+            result["missing_fields"] = missing_fields
+            return result
+
+        merged: dict[str, dict] = {}
+        for mrkt_tp in ("P00101", "P10102"):
+            try:
+                raw = ctx.kiwoom_api.program_netbuy_top(mrkt_tp=mrkt_tp)
+                rows = raw.get("prm_netprps_upper_50") or []
+                for row in rows:
+                    ticker = str(row.get("stk_cd") or "").strip()
+                    name = row.get("stk_nm", "")
+                    if not ticker or _is_non_equity_product(ticker, name):
+                        continue
+                    entry = {
+                        "ticker": ticker,
+                        "name": name,
+                        "rank": _to_int(row.get("rank")),
+                        "price": _to_float(row.get("cur_prc")),
+                        "change_pct": _to_float(row.get("flu_rt")),
+                        "program_sell_amount_mnkrw": _to_float(row.get("prm_sell_amt")),
+                        "program_buy_amount_mnkrw": _to_float(row.get("prm_buy_amt")),
+                        "program_netbuy_amount_mnkrw": _to_float(row.get("prm_netprps_amt")),
+                        "acc_volume": _to_float(row.get("acc_trde_qty")),
+                        "market": "KOSPI" if mrkt_tp == "P00101" else "KOSDAQ",
+                    }
+                    current = merged.get(ticker)
+                    if current is None or entry["program_netbuy_amount_mnkrw"] > current["program_netbuy_amount_mnkrw"]:
+                        merged[ticker] = entry
+            except Exception as e:
+                missing_fields.append(f"program_netbuy_rank({mrkt_tp}: {e})")
+
+        stocks = sorted(
+            merged.values(),
+            key=lambda row: row["program_netbuy_amount_mnkrw"],
+            reverse=True,
+        )
+        result["stocks"] = stocks[:30]
+        result["note"] = "프로그램 순매수 상위. 거래대금 상위와 겹치면 본류 대장주 가능성이 높다."
+
+        if missing_fields:
+            result["missing_fields"] = missing_fields
+        return result
+
+    return ctx.cached_call("get_program_netbuy_rank", phase, {}, fetch)
+
+
 def get_volume_surge(ctx: MILContext, phase: str) -> dict:
     """키움 ka10023 거래량급증.
 
@@ -801,3 +893,28 @@ def _to_float(value) -> float:
 
 def _to_int(value) -> int:
     return int(_to_float(value))
+
+
+def _is_non_equity_product(ticker: str, name: str) -> bool:
+    label = f"{ticker} {name}".upper()
+    markers = (
+        "KODEX",
+        "TIGER",
+        "KBSTAR",
+        "RISE",
+        "ACE",
+        "PLUS",
+        "HANARO",
+        "KOSEF",
+        "ARIRANG",
+        "SOL",
+        "ETF",
+        "ETN",
+        "레버리지",
+        "인버스",
+        "선물",
+        "채권혼합",
+        "커버드콜",
+        "단일종목",
+    )
+    return any(marker.upper() in label for marker in markers) or ticker.startswith("Q")

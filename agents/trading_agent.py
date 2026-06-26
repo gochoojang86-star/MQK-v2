@@ -1,12 +1,13 @@
 """TradingAgent - 단일 LLM이 Phase별 ReAct 루프로 MIL 16개 도구를 사용해
 PREMARKET/SCAN/INTRADAY/CLOSE/MARKET_CLOSE 단계를 수행한다.
 
-최종 출력은 proposal일 뿐이며, v2 Safety Layer(RiskOfficer/PositionSizer/
+최종 출력은 proposal일 뿐이며, 실행 가드레일(RiskOfficer/PositionSizer/
 Telegram approval/OrderManager)가 코드로 강제한다.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from enum import Enum
@@ -17,6 +18,8 @@ from llm.client import LLMClient
 from llm.soul import inject_agent
 from market_intelligence import market, portfolio, risk_filter, screening, stock, theme
 from market_intelligence.base import MILContext, ToolFailure
+
+logger = logging.getLogger("mqk_v3")
 
 
 class TradingPhase(str, Enum):
@@ -58,6 +61,7 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "get_disparity_rank": screening.get_disparity_rank,
     "get_foreign_institution_rank": screening.get_foreign_institution_rank,
     "get_foreign_continuous_rank": screening.get_foreign_continuous_rank,
+    "get_program_netbuy_rank": screening.get_program_netbuy_rank,
     "get_volume_surge": screening.get_volume_surge,
     "get_intraday_investor_rank": screening.get_intraday_investor_rank,
     "get_ohlcv": stock.get_ohlcv,
@@ -66,6 +70,7 @@ TOOL_REGISTRY: dict[str, Callable] = {
     "get_intraday_candles": stock.get_intraday_candles,
     "get_flow": stock.get_flow,
     "get_news_stock": stock.get_news_stock,
+    "search_telegram_news": stock.search_telegram_news,
     "get_fundamentals": stock.get_fundamentals,
     "get_intraday_institutional_flow": stock.get_intraday_institutional_flow,
     "get_orderbook": stock.get_orderbook,
@@ -98,9 +103,10 @@ PHASE_TOOLS: dict[TradingPhase, list[str]] = {
         "get_top_movers", "get_attention_rank",
         "get_premarket_movers", "get_disparity_rank",
         "get_foreign_institution_rank", "get_foreign_continuous_rank",
+        "get_program_netbuy_rank",
         "get_sector_investor_flow", "get_volume_surge", "get_bid_queue_surge",
         "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot",
-        "get_flow", "get_stock_status", "get_news_stock", "get_fundamentals",
+        "get_flow", "get_stock_status", "get_news_stock", "search_telegram_news", "get_fundamentals",
         "get_intraday_institutional_flow", "get_orderbook",
     ],
     TradingPhase.INTRADAY: [
@@ -108,10 +114,10 @@ PHASE_TOOLS: dict[TradingPhase, list[str]] = {
         "psearch_title", "psearch_result",
         "kw_psearch_title", "kw_psearch_result",
         "get_top_movers", "get_attention_rank",
-        "get_foreign_institution_rank", "get_sector_investor_flow",
+        "get_foreign_institution_rank", "get_program_netbuy_rank", "get_sector_investor_flow",
         "get_volume_surge", "get_bid_queue_surge", "get_intraday_investor_rank",
         "get_ohlcv", "get_realtime_price", "get_watchlist_intraday_snapshot", "get_intraday_candles",
-        "get_flow", "get_intraday_institutional_flow", "get_news_stock", "get_stock_status",
+        "get_flow", "get_intraday_institutional_flow", "get_news_stock", "search_telegram_news", "get_stock_status",
         "get_orderbook",
         "get_intraday_volume_trend",  # 세력 이탈 감지 (VOLUME_DRY 신호)
     ],
@@ -146,6 +152,7 @@ _NO_ARG_TOOLS = {
     "get_disparity_rank",
     "get_foreign_institution_rank",
     "get_foreign_continuous_rank",
+    "get_program_netbuy_rank",
     "get_sector_investor_flow",
     "get_volume_surge",
     "get_bid_queue_surge",
@@ -165,6 +172,7 @@ _ALLOWED_TOOL_ARGS: dict[str, set[str]] = {
     "get_intraday_candles": {"ticker"},
     "get_flow": {"ticker"},
     "get_news_stock": {"ticker"},
+    "search_telegram_news": {"query", "hours", "limit"},
     "get_fundamentals": {"ticker"},
     "get_intraday_institutional_flow": {"ticker"},
     "get_stock_status": {"ticker"},
@@ -279,6 +287,19 @@ class TradingAgent:
             if next_action == "final":
                 _phase_str = phase.value if hasattr(phase, "value") else str(phase)
                 if _phase_str == "SCAN":
+                    candidate_pool = context.get("candidate_pool") or []
+                    if not tool_history and not candidate_pool:
+                        transcript.append(json.dumps({
+                            "error": "tool_call_required",
+                            "instruction": (
+                                "도구 호출 없이 SCAN 최종 판단 금지. "
+                                "반드시 get_market_context 또는 get_news_market 중 하나를 먼저 호출하고, "
+                                "가능하면 get_top_movers 또는 get_volume_surge로 후보를 검증하라. "
+                                "도구 호출 형식: {\"next_action\": \"call_tool\", "
+                                "\"tool\": \"get_market_context\", \"tool_args\": {}}"
+                            ),
+                        }, ensure_ascii=False))
+                        continue
                     response = self._maybe_backfill_scan_result(context, tool_history, response)
                     return response
 
@@ -308,7 +329,20 @@ class TradingAgent:
             if next_action == "call_tool":
                 tool_name = response.get("tool", "")
                 tool_args = response.get("tool_args", {})
+                phase_str = phase.value if hasattr(phase, "value") else str(phase)
+
+                # 도구 호출 로깅
+                logger.info(f"[{phase_str}] 도구 호출: {tool_name}, args={json.dumps(tool_args, ensure_ascii=False)}")
+
                 tool_result = self._execute_tool(phase, tool_name, tool_args)
+
+                # 도구 응답 로깅
+                if "error" in tool_result:
+                    logger.warning(f"[{phase_str}] 도구 실패: {tool_name}, error={tool_result.get('error')}, message={tool_result.get('message')}")
+                else:
+                    result_summary = json.dumps(tool_result, ensure_ascii=False, default=str)[:500]
+                    logger.info(f"[{phase_str}] 도구 응답: {tool_name}, result={result_summary}")
+
                 tool_history.append({
                     "tool": tool_name,
                     "args": tool_args,
@@ -472,15 +506,22 @@ class TradingAgent:
         return response
 
     def _execute_tool(self, phase, tool_name: str, tool_args: dict) -> dict:
+        phase_str = phase.value if hasattr(phase, "value") else str(phase)
+
         if tool_name not in TOOL_REGISTRY:
-            return {"error": "unknown_tool", "tool": tool_name}
+            error_msg = {"error": "unknown_tool", "tool": tool_name}
+            logger.warning(f"[{phase_str}] {tool_name}: 등록되지 않은 도구")
+            return error_msg
 
         if tool_name not in self._phase_tools.get(phase, PHASE_TOOLS.get(phase, [])):
-            phase_str = phase.value if hasattr(phase, "value") else str(phase)
-            return {"error": "tool_not_allowed_in_phase", "tool": tool_name, "phase": phase_str}
+            error_msg = {"error": "tool_not_allowed_in_phase", "tool": tool_name, "phase": phase_str}
+            logger.warning(f"[{phase_str}] {tool_name}: phase에서 허용되지 않음")
+            return error_msg
 
         if not isinstance(tool_args, dict):
-            return {"error": "invalid_tool_args", "tool": tool_name}
+            error_msg = {"error": "invalid_tool_args", "tool": tool_name}
+            logger.warning(f"[{phase_str}] {tool_name}: 잘못된 도구 인자 형식")
+            return error_msg
 
         func = TOOL_REGISTRY[tool_name]
         call_args = self._sanitize_tool_args(tool_name, tool_args)
@@ -488,12 +529,18 @@ class TradingAgent:
             call_args["user_id"] = os.environ.get("KIS_HTS_ID", "")
 
         try:
-            phase_str = phase.value if hasattr(phase, "value") else str(phase)
-            return func(self._mil, phase_str, **call_args)
+            logger.debug(f"[{phase_str}] {tool_name} 실행 중... (args={json.dumps(call_args, ensure_ascii=False, default=str)[:200]})")
+            result = func(self._mil, phase_str, **call_args)
+            logger.debug(f"[{phase_str}] {tool_name} 완료: {type(result).__name__}")
+            return result
         except ToolFailure as e:
-            return {"error": "tool_failure", "tool": tool_name, "message": str(e)}
+            error_msg = {"error": "tool_failure", "tool": tool_name, "message": str(e)}
+            logger.warning(f"[{phase_str}] {tool_name} ToolFailure: {str(e)[:200]}")
+            return error_msg
         except Exception as e:
-            return {"error": "tool_execution_error", "tool": tool_name, "message": str(e)}
+            error_msg = {"error": "tool_execution_error", "tool": tool_name, "message": str(e)}
+            logger.error(f"[{phase_str}] {tool_name} Exception: {type(e).__name__}: {str(e)[:200]}")
+            return error_msg
 
     def _sanitize_tool_args(self, tool_name: str, tool_args: dict[str, Any]) -> dict[str, Any]:
         if tool_name in _NO_ARG_TOOLS:

@@ -1,8 +1,8 @@
-"""MQK v3 오케스트레이터 - 단일 TradingAgent + MIL + v2 Safety Layer.
+"""MQK v3 오케스트레이터 - 단일 TradingAgent + MIL + 실행 가드레일 계층.
 
 RegimeAgent는 시장 상태를 해석하는 상위 지표일 뿐, 개별 phase의 전략 선택이나
 매수/청산 문턱을 직접 통제하지 않는다. TradingAgent는 phase별로 MIL 도구를 사용해
-proposal을 생성하고, v2 Safety Layer(RiskOfficer/PositionSizer/Telegram/OrderManager)가
+proposal을 생성하고, 실행 가드레일(RiskOfficer/PositionSizer/Telegram/OrderManager)이
 이를 코드로 강제한다.
 """
 from __future__ import annotations
@@ -27,7 +27,6 @@ from broker.kiwoom_api import KiwoomApi
 from broker.telegram import ApprovalRequest, TelegramApproval
 from codes.improvement_manager import ImprovementManager
 from codes.market_data import MarketData
-from codes.news_fetcher import NaverNewsFetcher
 from codes.order_manager import OrderManager
 from codes.order_manager import OrderRequest
 from codes.position_sizer import PositionSizer
@@ -302,14 +301,6 @@ class MQKOrchestratorV3:
         self._telegram = TelegramApproval()
         self._journal = TradeJournal()
 
-        # KIS MCP 주문 경로 — MCP 서버 인증 불안정으로 비활성화 (KISApi 직접 사용)
-        # if os.environ.get("KIS_USE_MCP", "false").lower() in {"1", "true", "yes"}:
-        #     mcp = KISMCPClient()
-        #     if mcp.available:
-        #         logger.info("[V3 OrderManager] KIS MCP 서버 감지 → MCP 주문 경로 사용")
-        #         order_api = mcp
-        #     else:
-        #         logger.info("[V3 OrderManager] KIS MCP 서버 미실행 → KIS API 폴백")
         order_api = self._kis_api
         self._order_manager = OrderManager(
             kis_api=order_api,
@@ -317,9 +308,6 @@ class MQKOrchestratorV3:
             dry_run=EXECUTION.order_dry_run if dry_run_orders is None else dry_run_orders,
             journal=self._journal,
         )
-        self._naver_news = NaverNewsFetcher()
-        if not self._naver_news.available:
-            logger.warning("NAVER_CLIENT_ID/SECRET 미설정 — Naver 뉴스 비활성화")
         self._improvement_mgr = ImprovementManager(telegram=self._telegram)
         self._current_theme = ""
         self._last_regime = None
@@ -339,7 +327,6 @@ class MQKOrchestratorV3:
         self._mil = mil or MILContext(
             kis_api=self._kis_api,
             kiwoom_api=KiwoomApi(),
-            # mcp_client=KISMCPClient(),  # MCP 비활성화
             cache=MILCache(),
             circuit_breaker=CircuitBreaker(),
         )
@@ -398,7 +385,7 @@ class MQKOrchestratorV3:
 
     # ── 09:03 PREMARKET (장중 첫번째 레짐 평가) ──────────────────────────────
     def run_premarket_v3(self, session_type: str = "PREMARKET_REGIME") -> dict:
-        market_status = self.run_premarket()  # v2 RegimeAgent.judge() 재사용
+        market_status = self._evaluate_regime_v3()
         regime = self._last_regime
         save_last_regime(regime, path=_LAST_REGIME_PATH)
         save_drift_state(_default_drift_state(self._today), path=_DRIFT_STATE_PATH)
@@ -427,6 +414,8 @@ class MQKOrchestratorV3:
             watchlist=existing_watchlist,
         )
         context["next_day_prior"] = load_next_day_premarket_context(path=_NEXT_DAY_PREMARKET_CONTEXT_PATH)
+        context["candidate_pool"] = self._build_scan_candidate_pool()
+        context["market_story_brief"] = self._build_scan_market_story_brief()
 
         # 거래대금 폭증 종목 사전 탐지 (코드가 수집 → LLM이 검증)
         try:
@@ -471,24 +460,45 @@ class MQKOrchestratorV3:
 
         watchlist = load_watchlist_entries(path=_WATCHLIST_PATH)
 
+        # 폭락 감지: 지수가 -3% 이상 하락했는지 확인
+        is_crash = False
+        crash_reason = ""
+        try:
+            market_ctx = mil_market.get_market_context(self._mil, TradingPhase.INTRADAY.value)
+            kospi_chg = _to_float(market_ctx.get("kospi_change_pct"))
+            kosdaq_chg = _to_float(market_ctx.get("kosdaq_change_pct"))
+            is_crash = (
+                kospi_chg <= self._CRASH_GATE_CHANGE_PCT
+                or kosdaq_chg <= self._CRASH_GATE_CHANGE_PCT
+            )
+            if is_crash:
+                crash_reason = f"KOSPI {kospi_chg:+.2f}%, KOSDAQ {kosdaq_chg:+.2f}%"
+                logger.warning(f"[INTRADAY] 폭락 감지 ({crash_reason}) — REVERSAL 낙주 헌팅 모드")
+        except ToolFailure as e:
+            logger.debug(f"[INTRADAY] 시장 데이터 조회 불가 — 폭락 감지 스킵: {e}")
+
         # 비용 절감 게이트: 평가할 후보도, 청산할 보유 포지션도 없고 시장도 STABLE이면
         # LLM을 호출하지 않는다. 보유 여부는 v3 포지션의 진실의 원천인 TradeJournal 기준
         # (실계좌 잔고 기준이면 모의 매매 중 보유를 놓친다). 조회 실패 시 보수적으로 진행.
         journal = getattr(self, "_journal", None)
-        if drift_judgment == "STABLE" and not watchlist and journal is not None:
+        if drift_judgment == "STABLE" and not watchlist and journal is not None and not is_crash:
             try:
                 has_positions = bool(journal.get_open_positions())
             except Exception as e:
                 logger.warning(f"[INTRADAY] 저널 조회 실패 — 스킵 게이트 미적용, LLM 진행: {e}")
                 has_positions = True
             if not has_positions:
-                logger.info("[INTRADAY] watchlist 0 + 보유 0 + STABLE — LLM 미호출 스킵")
+                logger.info("[INTRADAY] watchlist 0 + 보유 0 + STABLE + 정상장 — LLM 미호출 스킵")
                 return {"action": "NO_TRADE", "reason": "idle_skip"}
 
         context = self._build_context(
             TradingPhase.INTRADAY, regime, drift_judgment,
             watchlist=watchlist,
         )
+        # 폭락 감지 정보를 context에 추가
+        context["is_crash"] = is_crash
+        if is_crash:
+            context["crash_reason"] = crash_reason
         result = self._trading_agent.run(TradingPhase.INTRADAY, context)
         result = self._sanitize_intraday_result(result)
         self._record_tool_request(result, TradingPhase.INTRADAY, regime)
@@ -586,12 +596,18 @@ class MQKOrchestratorV3:
         result = self._trading_agent.run(TradingPhase.MARKET_CLOSE, context)
         self._record_tool_request(result, TradingPhase.MARKET_CLOSE, regime)
         self._alert_on_tool_failures(result, TradingPhase.MARKET_CLOSE)
-        self.run_close_review()  # v2 거래 복기 — 마감 확정 데이터 기준
+        self.run_close_review()  # 거래 복기 — 마감 확정 데이터 기준
+        tool_gap_summary = self._summarize_tool_gaps()
+        self.run_self_improvement_review(
+            daily_reflection=daily_reflection,
+            market_close_snapshot=snapshot,
+            tool_gap_summary=tool_gap_summary,
+        )
         self._save_json("close_market_read.json", result.get("close_market_read", {}))
         next_day_context = result.get("next_day_premarket_context", {})
         self._save_json("next_day_premarket_context.json", next_day_context)
         save_next_day_premarket_context(next_day_context, path=_NEXT_DAY_PREMARKET_CONTEXT_PATH)
-        self._save_json("tool_gap_summary.json", self._summarize_tool_gaps())
+        self._save_json("tool_gap_summary.json", tool_gap_summary)
         return result
 
     def _collect_daily_reflection(self) -> dict:
@@ -856,6 +872,206 @@ class MQKOrchestratorV3:
             missing.append("news")
         snapshot["data_quality"] = {"missing_fields": missing}
         return snapshot
+
+    def _build_scan_market_story_brief(self) -> dict:
+        """SCAN 시작 전 시장 서사 힌트를 매우 짧게 요약한다."""
+        phase = TradingPhase.SCAN.value
+        brief: dict = {}
+        missing: list[str] = []
+
+        try:
+            market_ctx = mil_market.get_market_context(self._mil, phase)
+            brief["market_context"] = {
+                "kospi_change_pct": market_ctx.get("kospi_change_pct"),
+                "kosdaq_change_pct": market_ctx.get("kosdaq_change_pct"),
+                "foreign_net_buy_krw": market_ctx.get("foreign_net_buy_krw"),
+                "institution_net_buy_krw": market_ctx.get("institution_net_buy_krw"),
+                "program_net_buy_krw": market_ctx.get("program_net_buy_krw"),
+            }
+        except Exception as e:
+            logger.warning(f"[SCAN BRIEF] market_context 실패: {e}")
+            missing.append("market_context")
+
+        try:
+            news = mil_market.get_news_market(self._mil, phase)
+            brief["headlines"] = [
+                str(item.get("title") or "")
+                for item in (news.get("headlines") or [])[:5]
+                if str(item.get("title") or "").strip()
+            ]
+        except Exception as e:
+            logger.warning(f"[SCAN BRIEF] news_market 실패: {e}")
+            missing.append("news_market")
+
+        try:
+            themes = mil_theme.get_theme_candidates(self._mil, phase)
+            theme_names: list[str] = []
+            for row in themes.get("candidates", [])[:8]:
+                name = str(row.get("theme_name") or row.get("group_name") or "").strip()
+                if name and name not in theme_names:
+                    theme_names.append(name)
+            brief["theme_hints"] = theme_names[:5]
+        except Exception as e:
+            logger.warning(f"[SCAN BRIEF] theme_candidates 실패: {e}")
+            missing.append("theme_candidates")
+
+        if missing:
+            brief["data_quality"] = {"missing_fields": missing}
+        return brief
+
+    def _build_scan_candidate_pool(self) -> list[dict]:
+        """LLM이 바로 비교할 수 있는 압축된 후보 풀만 만든다.
+
+        원본 API 응답 전체를 넣지 않고, 의미 있는 종목에 대한 핵심 fact만 남긴다.
+        """
+        phase = TradingPhase.SCAN.value
+        pool: dict[str, dict] = {}
+
+        def _entry(ticker: str, name: str | None = None) -> dict:
+            item = pool.setdefault(ticker, {
+                "ticker": ticker,
+                "name": name or "",
+                "facts": {
+                    "trading_value_rank": None,
+                    "attention_rank": None,
+                    "program_netbuy_rank": None,
+                    "foreign_netbuy": False,
+                    "institution_netbuy": False,
+                    "foreign_continuous_rank": None,
+                    "volume_surge": False,
+                    "theme_hints": [],
+                    "change_pct": None,
+                    "trading_value_krw": None,
+                },
+                "why_in_pool": [],
+            })
+            if name and not item["name"]:
+                item["name"] = name
+            return item
+
+        try:
+            movers = mil_screening.get_top_movers(self._mil, phase)
+            for idx, row in enumerate((movers.get("trading_value_stock_top") or [])[:8], start=1):
+                ticker = str(row.get("ticker") or "").strip()
+                if not ticker:
+                    continue
+                item = _entry(ticker, row.get("name"))
+                item["facts"]["trading_value_rank"] = idx
+                item["facts"]["change_pct"] = row.get("change_pct")
+                item["facts"]["trading_value_krw"] = row.get("trading_value_krw")
+                item["why_in_pool"].append("trading_value_top")
+        except Exception as e:
+            logger.warning(f"[SCAN POOL] top_movers 실패: {e}")
+
+        try:
+            attention = mil_screening.get_attention_rank(self._mil, phase)
+            for row in (attention.get("kiwoom_viewing_rank") or [])[:10]:
+                ticker = str(row.get("ticker") or "").strip()
+                if not ticker:
+                    continue
+                item = _entry(ticker, row.get("name"))
+                item["facts"]["attention_rank"] = row.get("rank")
+                item["why_in_pool"].append("attention_rank")
+            for idx, ticker in enumerate((attention.get("kis_hts_top") or [])[:10], start=1):
+                code = str(ticker or "").strip()
+                if not code:
+                    continue
+                item = _entry(code)
+                if item["facts"]["attention_rank"] is None:
+                    item["facts"]["attention_rank"] = idx
+                item["why_in_pool"].append("kis_hts_top")
+        except Exception as e:
+            logger.warning(f"[SCAN POOL] attention_rank 실패: {e}")
+
+        try:
+            program = mil_screening.get_program_netbuy_rank(self._mil, phase)
+            for idx, row in enumerate((program.get("stocks") or [])[:8], start=1):
+                ticker = str(row.get("ticker") or "").strip()
+                if not ticker:
+                    continue
+                item = _entry(ticker, row.get("name"))
+                item["facts"]["program_netbuy_rank"] = idx
+                if item["facts"]["change_pct"] is None:
+                    item["facts"]["change_pct"] = row.get("change_pct")
+                item["why_in_pool"].append("program_netbuy")
+        except Exception as e:
+            logger.warning(f"[SCAN POOL] program_netbuy_rank 실패: {e}")
+
+        try:
+            fi = mil_screening.get_foreign_institution_rank(self._mil, phase)
+            for row in (fi.get("foreign_netbuy_top") or [])[:8]:
+                ticker = str(row.get("ticker") or "").strip()
+                if not ticker:
+                    continue
+                item = _entry(ticker, row.get("name"))
+                item["facts"]["foreign_netbuy"] = True
+                item["why_in_pool"].append("foreign_netbuy")
+            for row in (fi.get("institution_netbuy_top") or [])[:8]:
+                ticker = str(row.get("ticker") or "").strip()
+                if not ticker:
+                    continue
+                item = _entry(ticker, row.get("name"))
+                item["facts"]["institution_netbuy"] = True
+                item["why_in_pool"].append("institution_netbuy")
+        except Exception as e:
+            logger.warning(f"[SCAN POOL] foreign_institution_rank 실패: {e}")
+
+        try:
+            cont = mil_screening.get_foreign_continuous_rank(self._mil, phase)
+            for idx, row in enumerate((cont.get("stocks") or [])[:8], start=1):
+                ticker = str(row.get("ticker") or "").strip()
+                if not ticker:
+                    continue
+                item = _entry(ticker, row.get("name"))
+                item["facts"]["foreign_continuous_rank"] = idx
+                item["why_in_pool"].append("foreign_continuous")
+        except Exception as e:
+            logger.warning(f"[SCAN POOL] foreign_continuous_rank 실패: {e}")
+
+        try:
+            surge = mil_screening.get_volume_surge(self._mil, phase)
+            for row in (surge.get("stocks") or [])[:8]:
+                ticker = str(row.get("ticker") or "").strip()
+                if not ticker:
+                    continue
+                item = _entry(ticker, row.get("name"))
+                item["facts"]["volume_surge"] = True
+                if item["facts"]["change_pct"] is None:
+                    item["facts"]["change_pct"] = row.get("change_pct")
+                item["why_in_pool"].append("volume_surge")
+        except Exception as e:
+            logger.warning(f"[SCAN POOL] volume_surge 실패: {e}")
+
+        try:
+            themes = mil_theme.get_theme_candidates(self._mil, phase)
+            for row in (themes.get("candidates") or [])[:12]:
+                ticker = str(row.get("ticker") or "").strip()
+                if not ticker:
+                    continue
+                item = _entry(ticker, row.get("name"))
+                hint = str(row.get("theme_name") or row.get("group_name") or "").strip()
+                if hint and hint not in item["facts"]["theme_hints"]:
+                    item["facts"]["theme_hints"].append(hint)
+                item["why_in_pool"].append("theme_candidate")
+        except Exception as e:
+            logger.warning(f"[SCAN POOL] theme_candidates 실패: {e}")
+
+        candidates = list(pool.values())
+        for item in candidates:
+            item["why_in_pool"] = sorted(set(item["why_in_pool"]))
+        candidates.sort(
+            key=lambda item: (
+                0 if item["facts"]["trading_value_rank"] is None else 1,
+                -(item["facts"]["trading_value_rank"] or 999),
+                0 if item["facts"]["attention_rank"] is None else 1,
+                int(bool(item["facts"]["program_netbuy_rank"])),
+                int(item["facts"]["foreign_netbuy"]),
+                int(item["facts"]["institution_netbuy"]),
+                int(item["facts"]["volume_surge"]),
+            ),
+            reverse=True,
+        )
+        return candidates[:12]
 
     # ── 컨텍스트/스냅샷 빌더 ───────────────────────────────────────────────────
 
@@ -1607,16 +1823,21 @@ class MQKOrchestratorV3:
             theme_exposure=theme_exposure,
         )
 
-    def run_premarket(self) -> dict:
+    def _evaluate_regime_v3(self) -> dict:
         now = datetime.now()
         evaluation_mode = _resolve_regime_evaluation_mode(now)
         logger.info("[V3 %s] 레짐 평가 시작 (%s)", now.strftime("%H:%M"), evaluation_mode)
-        index = self._market_data.get_index_status()
-        market_news_items = self._naver_news.search("코스피 코스닥 시장 주식", display=10)
-        market_news_summary = " | ".join(n.title for n in market_news_items[:5])
+
+        market_context = mil_market.get_market_context(self._mil, TradingPhase.PREMARKET.value)
+        breadth_data = mil_market.get_sector_breadth(self._mil, TradingPhase.PREMARKET.value)
+        news_payload = mil_market.get_news_market(self._mil, TradingPhase.PREMARKET.value)
+        market_news_summary = " | ".join(
+            str(item.get("title") or "")
+            for item in (news_payload.get("headlines") or [])[:5]
+            if str(item.get("title") or "").strip()
+        ) or "없음"
 
         try:
-            breadth_data = mil_market.get_sector_breadth(self._mil, TradingPhase.PREMARKET.value)
             sectors = breadth_data.get("sectors", [])
             top_rising = sorted(sectors, key=lambda x: x["change_pct"], reverse=True)[:5]
             top_falling = sorted(sectors, key=lambda x: x["change_pct"])[:3]
@@ -1632,18 +1853,18 @@ class MQKOrchestratorV3:
             self._sector_performance = {}
 
         market_ctx = {
-            "kospi_change_pct": index.kospi_change_pct,
-            "kosdaq_change_pct": index.kosdaq_change_pct,
-            "kospi_trading_value": index.kospi_trading_value,
-            "kosdaq_trading_value": index.kosdaq_trading_value,
-            "kospi_advancers": index.kospi_advancers,
-            "kospi_decliners": index.kospi_decliners,
-            "kosdaq_advancers": index.kosdaq_advancers,
-            "kosdaq_decliners": index.kosdaq_decliners,
-            "prev_kospi_change_pct": index.prev_kospi_change_pct,
-            "prev_kosdaq_change_pct": index.prev_kosdaq_change_pct,
-            "prev_kospi_trading_value": index.prev_kospi_trading_value,
-            "prev_kosdaq_trading_value": index.prev_kosdaq_trading_value,
+            "kospi_change_pct": _to_float(market_context.get("kospi_change_pct")),
+            "kosdaq_change_pct": _to_float(market_context.get("kosdaq_change_pct")),
+            "kospi_trading_value": _to_float(market_context.get("kospi_trading_value")),
+            "kosdaq_trading_value": _to_float(market_context.get("kosdaq_trading_value")),
+            "kospi_advancers": int((breadth_data.get("market_breadth") or {}).get("advancers") or 0),
+            "kospi_decliners": int((breadth_data.get("market_breadth") or {}).get("decliners") or 0),
+            "kosdaq_advancers": int((breadth_data.get("market_breadth") or {}).get("advancers") or 0),
+            "kosdaq_decliners": int((breadth_data.get("market_breadth") or {}).get("decliners") or 0),
+            "prev_kospi_change_pct": _to_float(market_context.get("prev_kospi_change_pct")),
+            "prev_kosdaq_change_pct": _to_float(market_context.get("prev_kosdaq_change_pct")),
+            "prev_kospi_trading_value": _to_float(market_context.get("prev_kospi_trading_value")),
+            "prev_kosdaq_trading_value": _to_float(market_context.get("prev_kosdaq_trading_value")),
             "market_news_summary": market_news_summary,
             "sector_performance": self._sector_performance,
         }
@@ -1673,18 +1894,18 @@ class MQKOrchestratorV3:
             "date": self._today,
             "evaluation_mode": evaluation_mode,
             "evaluation_time": now.strftime("%H:%M"),
-            "kospi": index.kospi,
-            "kosdaq": index.kosdaq,
-            "kospi_trading_value": index.kospi_trading_value,
-            "kosdaq_trading_value": index.kosdaq_trading_value,
-            "kospi_advancers": index.kospi_advancers,
-            "kospi_decliners": index.kospi_decliners,
-            "kosdaq_advancers": index.kosdaq_advancers,
-            "kosdaq_decliners": index.kosdaq_decliners,
-            "prev_kospi_change_pct": index.prev_kospi_change_pct,
-            "prev_kosdaq_change_pct": index.prev_kosdaq_change_pct,
-            "prev_kospi_trading_value": index.prev_kospi_trading_value,
-            "prev_kosdaq_trading_value": index.prev_kosdaq_trading_value,
+            "kospi": _to_float(market_context.get("kospi")),
+            "kosdaq": _to_float(market_context.get("kosdaq")),
+            "kospi_trading_value": _to_float(market_context.get("kospi_trading_value")),
+            "kosdaq_trading_value": _to_float(market_context.get("kosdaq_trading_value")),
+            "kospi_advancers": int((breadth_data.get("market_breadth") or {}).get("advancers") or 0),
+            "kospi_decliners": int((breadth_data.get("market_breadth") or {}).get("decliners") or 0),
+            "kosdaq_advancers": int((breadth_data.get("market_breadth") or {}).get("advancers") or 0),
+            "kosdaq_decliners": int((breadth_data.get("market_breadth") or {}).get("decliners") or 0),
+            "prev_kospi_change_pct": _to_float(market_context.get("prev_kospi_change_pct")),
+            "prev_kosdaq_change_pct": _to_float(market_context.get("prev_kosdaq_change_pct")),
+            "prev_kospi_trading_value": _to_float(market_context.get("prev_kospi_trading_value")),
+            "prev_kosdaq_trading_value": _to_float(market_context.get("prev_kosdaq_trading_value")),
             "status": regime.status.value,
             "regime": regime.regime.value,
             "confidence": regime.confidence,
@@ -1735,11 +1956,50 @@ class MQKOrchestratorV3:
             reviews.append(review)
             logger.info(f"복기: {review.ticker} {review.result} {review.pnl_pct:+.2f}%")
 
-        journal_summary = "\n".join(f"- {r.ticker}: {r.result} {r.pnl_pct:+.2f}%" for r in reviews)
-        proposals = self._si_agent.suggest(today_trades, journal_summary)
-        for p in proposals:
-            pid = self._improvement_mgr.save(p)
-            logger.info(f"[V3 개선 제안] #{pid} {p.title} → 텔레그램 통보 완료")
+    def run_self_improvement_review(
+        self,
+        daily_reflection: dict | None = None,
+        market_close_snapshot: dict | None = None,
+        tool_gap_summary: dict | None = None,
+    ) -> list[dict]:
+        """거래 유무와 무관하게 일일 반성 데이터로 개선안을 생성한다."""
+        daily_reflection = daily_reflection or {}
+        market_close_snapshot = market_close_snapshot or {}
+        tool_gap_summary = tool_gap_summary or {}
+        si_agent = getattr(self, "_si_agent", None)
+        improvement_mgr = getattr(self, "_improvement_mgr", None)
+
+        if si_agent is None or improvement_mgr is None:
+            self._save_json("self_improvement_review.json", {
+                "proposal_count": 0,
+                "proposals": [],
+                "daily_reflection_present": bool(daily_reflection),
+                "skipped_reason": "self_improvement_dependencies_unavailable",
+            })
+            return []
+
+        proposals = si_agent.suggest_from_reflection(
+            daily_reflection=daily_reflection,
+            market_close_snapshot=market_close_snapshot,
+            tool_gap_summary=tool_gap_summary,
+        )
+        saved: list[dict] = []
+        for proposal in proposals:
+            pid = improvement_mgr.save(proposal)
+            saved.append({
+                "id": pid,
+                "title": proposal.title,
+                "change_type": proposal.change_type.value,
+                "requires_backtest": proposal.requires_backtest,
+            })
+            logger.info(f"[V3 개선 제안] #{pid} {proposal.title} → 텔레그램 통보 완료")
+
+        self._save_json("self_improvement_review.json", {
+            "proposal_count": len(saved),
+            "proposals": saved,
+            "daily_reflection_present": bool(daily_reflection),
+        })
+        return saved
 
     def _save_json(self, filename: str, data: dict) -> None:
         path = self._log_dir / filename

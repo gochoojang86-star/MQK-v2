@@ -73,6 +73,40 @@ class SelfImprovementAgent:
             ))
         return proposals
 
+    def suggest_from_reflection(
+        self,
+        daily_reflection: dict[str, Any],
+        market_close_snapshot: dict[str, Any] | None = None,
+        tool_gap_summary: dict[str, Any] | None = None,
+    ) -> list[ImprovementProposal]:
+        """거래 유무와 무관한 일일 반성 데이터로 개선안을 제안한다."""
+        reflection = daily_reflection or {}
+        if not reflection:
+            return []
+
+        user_msg = self._build_reflection_prompt(
+            reflection,
+            market_close_snapshot or {},
+            tool_gap_summary or {},
+        )
+        raw = self._llm.call(system=_SYSTEM_PROMPT, user=user_msg, tier=ModelTier.FAST)
+        return self._parse_proposals(raw)
+
+    def _parse_proposals(self, raw: dict[str, Any]) -> list[ImprovementProposal]:
+        proposals = []
+        for p in raw.get("improvement_proposals", [])[:5]:
+            proposals.append(ImprovementProposal(
+                title=p["title"],
+                hypothesis=p.get("hypothesis", ""),
+                change_type=ChangeType(p["change_type"]),
+                expected_effect=p.get("expected_effect", ""),
+                risk=p.get("risk", ""),
+                requires_backtest=p.get("requires_backtest", True),
+                settings_patch=p.get("settings_patch", []),
+                auto_apply=False,
+            ))
+        return proposals
+
     def _compute_stats(self, history: list[dict]) -> dict:
         wins   = [t for t in history if t.get("pnl", 0) > 0]
         losses = [t for t in history if t.get("pnl", 0) < 0]
@@ -100,6 +134,49 @@ class SelfImprovementAgent:
 {journal_summary or '복기 데이터 없음'}
 
 위 데이터를 분석하여 전략 개선안을 JSON으로 제안하세요.
+모든 제안은 백테스트 검증 + 사용자 승인 후 반영됨을 전제로 합니다.
+auto_apply는 항상 false입니다.
+
+각 제안이 실제 설정 변경으로 연결될 수 있다면 settings_patch를 포함하세요.
+형식:
+"settings_patch": [
+  {{"section": "RISK|SCANNER|LLM_CONFIG|EXECUTION", "key": "필드명", "value": 값}}
+]
+
+허용되지 않은 키는 넣지 마세요."""
+
+    def _build_reflection_prompt(
+        self,
+        daily_reflection: dict[str, Any],
+        market_close_snapshot: dict[str, Any],
+        tool_gap_summary: dict[str, Any],
+    ) -> str:
+        missed = daily_reflection.get("missed_opportunities", []) or []
+        intraday = daily_reflection.get("intraday_summary", {}) or {}
+        watchlist = daily_reflection.get("today_watchlist", []) or []
+        positions = daily_reflection.get("open_positions", []) or []
+        top_missing = tool_gap_summary.get("top_missing_capabilities", []) or []
+
+        return f"""오늘 일일 반성 데이터:
+- watchlist 종목 수: {len(watchlist)}
+- 보유 종목 수: {len(positions)}
+- 놓친 기회 수: {len(missed)}
+- intraday total ticks: {intraday.get('total_ticks', 0)}
+- intraday action counts: {intraday.get('action_counts', {})}
+- intraday assessment: {intraday.get('assessment', '')}
+- latest intraday reason: {intraday.get('last_reason_sample', '')}
+
+놓친 기회:
+{missed or '없음'}
+
+시장 마감 스냅샷:
+{market_close_snapshot or '없음'}
+
+도구 공백 요약:
+{top_missing or '없음'}
+
+위 데이터를 바탕으로, 오늘 매매가 없었거나 부족했던 이유, 실제로 강했는데 watchlist/매수 후보로 못 올린 종목이 있었는지, 도구 사용 구조에 어떤 결함이 있었는지 분석하여 개선안을 JSON으로 제안하세요.
+거래가 없어도 개선안은 제안할 수 있습니다.
 모든 제안은 백테스트 검증 + 사용자 승인 후 반영됨을 전제로 합니다.
 auto_apply는 항상 false입니다.
 

@@ -1,5 +1,5 @@
 """
-Soul Loader - MQK-v2 핵심 페르소나 + Agent별 프롬프트 주입 모듈
+Soul Loader - MQK v3 핵심 페르소나 + Agent별 프롬프트 주입 모듈
 
 계층 구조:
   soul.md          ← 공통 철학 (모든 Agent)

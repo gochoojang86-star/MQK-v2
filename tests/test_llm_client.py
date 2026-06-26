@@ -1,6 +1,9 @@
 """LLMClient JSON 파싱 보강 테스트"""
 import json
 
+import pytest
+
+import llm.client as llm_client_mod
 from llm.client import LLMClient
 
 
@@ -49,7 +52,42 @@ def test_call_takes_first_json_object_when_extra_data(tmp_path):
 
 
 def test_call_raises_on_totally_invalid_json(tmp_path):
-    import pytest
     c = _client_with_response("이건 JSON이 아닙니다", tmp_path)
     with pytest.raises(ValueError):
         c.call("sys", "user")
+
+
+def test_openrouter_client_builds_sdk_with_base_url_and_headers(monkeypatch):
+    captured = {}
+
+    class FakeSDK:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class FakeConfig:
+        provider = "openrouter"
+        openrouter_base_url = "https://openrouter.ai/api/v1"
+        openrouter_http_referer = "https://mqk.example"
+        openrouter_app_title = "MQK-v3"
+
+    monkeypatch.setattr(llm_client_mod, "OpenAI", FakeSDK)
+    monkeypatch.setattr(llm_client_mod, "_resolve_openrouter_api_key", lambda: "or-key")
+
+    client = LLMClient.__new__(LLMClient)
+    client._cfg = FakeConfig()
+    client._provider_name = "openrouter"
+
+    sdk = client._build_client()
+
+    assert isinstance(sdk, FakeSDK)
+    assert captured["api_key"] == "or-key"
+    assert captured["base_url"] == "https://openrouter.ai/api/v1"
+    assert captured["default_headers"]["HTTP-Referer"] == "https://mqk.example"
+    assert captured["default_headers"]["X-OpenRouter-Title"] == "MQK-v3"
+
+
+def test_openrouter_requires_api_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError):
+        llm_client_mod._resolve_openrouter_api_key()
